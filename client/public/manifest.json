@@ -1,0 +1,17 @@
+{
+  "short_name": "Healis",
+  "name": "Healis",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#2b6cff",
+  "background_color": "#ffffff"
+}
+
+
