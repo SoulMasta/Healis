@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronRight, LayoutGrid, CalendarDays, Settings } from 'lucide-react';
-import styles from './HomePage.module.css';
+import styles from '../styles/HomePage.module.css';
 
 const MENU = [
   { key: 'workspace', label: 'Workspace', icon: LayoutGrid, to: '/workspace' },

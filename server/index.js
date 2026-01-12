@@ -1,17 +1,10 @@
 require('dotenv').config();
-
+const sequelize = require('./db');
+const models = require('./models/models');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
 
-// Optional DB (Sequelize). App should still run without env vars.
-let sequelize = null;
-try {
-  // eslint-disable-next-line global-require
-  sequelize = require('./db');
-} catch (_) {
-  sequelize = null;
-}
 
 const homeRoutes = require('./routes/home');
 const workspaceRoutes = require('./routes/workspace');
@@ -76,33 +69,16 @@ app.use((req, res) => {
 });
 
 async function start() {
-  const hasDbEnv = Boolean(
-    process.env.DB_NAME &&
-      process.env.DB_USER &&
-      process.env.DB_PASSWORD &&
-      process.env.DB_HOST &&
-      process.env.DB_PORT
-  );
-
-  if (hasDbEnv && sequelize) {
-    try {
-      await sequelize.authenticate();
-      await sequelize.sync();
+  try {
+    await sequelize.authenticate();
+    await sequelize.sync();
+    app.listen(PORT, () => {
       // eslint-disable-next-line no-console
-      console.log('DB connected');
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('DB connection failed (continuing without DB):', e?.message || e);
-    }
-  } else {
-    // eslint-disable-next-line no-console
-    console.log('DB env not set; starting without DB.');
+      console.log(`Server started: http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error('DB connection failed:', error.message);
   }
-
-  app.listen(PORT, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Server started: http://localhost:${PORT}`);
-  });
 }
 
 start();

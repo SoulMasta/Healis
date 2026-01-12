@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, Home, Moon, Shield, User } from 'lucide-react';
-import styles from './SettingsPage.module.css';
+import styles from '../styles/SettingsPage.module.css';
 
 function Toggle({ value, onChange, label, description }) {
   return (

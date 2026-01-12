@@ -16,8 +16,8 @@ import {
   Type,
   Users,
 } from 'lucide-react';
-import { getHealth } from '../services/health';
-import styles from './WorkspacePage.module.css';
+import { getHealth } from '../http/health';
+import styles from '../styles/WorkspacePage.module.css';
 
 function IconBtn({ label, children, onClick }) {
   return (

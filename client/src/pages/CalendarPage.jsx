@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Home } from 'lucide-react';
-import styles from './CalendarPage.module.css';
+import styles from '../styles/CalendarPage.module.css';
 
 function pad2(n) {
   return String(n).padStart(2, '0');
