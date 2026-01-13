@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronRight, LayoutGrid, CalendarDays, Settings, Plus, X, Loader2 } from 'lucide-react';
 import { getAllWorkspaces, createWorkspace } from '../http/workspaceAPI';
+import UserMenu from '../components/UserMenu';
 import styles from '../styles/HomePage.module.css';
 
 const MENU = [
@@ -223,6 +224,7 @@ export default function HomePage() {
         </div>
         <div className={styles.headerRight}>
           <div className={styles.pill}>Free</div>
+          <UserMenu />
         </div>
       </header>
 

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { getHealth } from '../http/health';
 import { getWorkspace } from '../http/workspaceAPI';
+import UserMenu from '../components/UserMenu';
 import styles from '../styles/WorkspacePage.module.css';
 
 function IconBtn({ label, children, onClick }) {
@@ -155,6 +156,7 @@ export default function WorkspacePage() {
           <IconBtn label="Notifications">
             <Bell size={18} />
           </IconBtn>
+          <UserMenu variant="compact" />
         </div>
       </header>
 

@@ -4,6 +4,7 @@ import HomePage from '../pages/HomePage';
 import WorkspacePage from '../pages/WorkspacePage';
 import CalendarPage from '../pages/CalendarPage';
 import SettingsPage from '../pages/SettingsPage';
+import AuthPage from '../pages/AuthPage';
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/home" replace />} />
         <Route path="/home" element={<HomePage />} />
+        <Route path="/auth" element={<AuthPage />} />
         <Route path="/workspace" element={<Navigate to="/home" replace />} />
         <Route path="/workspace/:id" element={<WorkspacePage />} />
         <Route path="/calendar" element={<CalendarPage />} />
