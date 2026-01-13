@@ -7,9 +7,8 @@ const cors = require('cors');
 
 
 const homeRoutes = require('./routes/home');
-const workspaceRoutes = require('./routes/workspace');
-const calendarRoutes = require('./routes/calendar');
-const settingsRoutes = require('./routes/settings');
+const workspaceRoutes = require('./routes/workspaceRouter');
+const userRoutes = require('./routes/userRouter');
 
 const PORT = Number(process.env.PORT) || 5000;
 const app = express();
@@ -50,8 +49,8 @@ app.get('/api/health', async (req, res) => {
 // Mount "page" routes
 app.use('/home', homeRoutes);
 app.use('/workspace', workspaceRoutes);
-app.use('/calendar', calendarRoutes);
-app.use('/settings', settingsRoutes);
+app.use('/api/user', userRoutes);
+
 
 // Root -> Home
 app.get('/', (req, res) => res.redirect('/home'));

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   Bell,
@@ -15,8 +15,10 @@ import {
   StickyNote,
   Type,
   Users,
+  Loader2,
 } from 'lucide-react';
 import { getHealth } from '../http/health';
+import { getWorkspace } from '../http/workspaceAPI';
 import styles from '../styles/WorkspacePage.module.css';
 
 function IconBtn({ label, children, onClick }) {
@@ -28,7 +30,12 @@ function IconBtn({ label, children, onClick }) {
 }
 
 export default function WorkspacePage() {
+  const { id } = useParams();
+  const navigate = useNavigate();
   const [health, setHealth] = useState(null);
+  const [workspace, setWorkspace] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     let mounted = true;
@@ -40,6 +47,69 @@ export default function WorkspacePage() {
     };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    
+    async function fetchWorkspace() {
+      if (!id) {
+        setError('No workspace ID provided');
+        setLoading(false);
+        return;
+      }
+      
+      try {
+        const data = await getWorkspace(id);
+        if (mounted) {
+          setWorkspace(data);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (mounted) {
+          if (err.response?.status === 404) {
+            setError('Workspace not found');
+          } else {
+            setError(err.response?.data?.error || 'Failed to load workspace');
+          }
+          setLoading(false);
+        }
+      }
+    }
+    
+    fetchWorkspace();
+    return () => {
+      mounted = false;
+    };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.loadingContainer}>
+          <Loader2 size={40} className={styles.spinner} />
+          <span>Loading workspace...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.errorContainer}>
+          <div className={styles.errorTitle}>Oops!</div>
+          <div className={styles.errorMessage}>{error}</div>
+          <button 
+            type="button" 
+            className={styles.backHomeBtn}
+            onClick={() => navigate('/home')}
+          >
+            Back to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.page}>
       <header className={styles.topBar}>
@@ -50,7 +120,7 @@ export default function WorkspacePage() {
           <div className={styles.brand}>
             <div className={styles.logo}>H</div>
             <div className={styles.boardName}>
-              My First Board <span className={styles.badge}>free</span>
+              {workspace?.name || 'Workspace'} <span className={styles.badge}>free</span>
             </div>
           </div>
         </div>
@@ -119,8 +189,10 @@ export default function WorkspacePage() {
         <main className={styles.canvas} aria-label="Workspace canvas">
           <div className={styles.grid} />
           <div className={styles.emptyHint}>
-            <div className={styles.emptyTitle}>Workspace</div>
-            <div className={styles.emptySub}>This board starts empty — add items using the left toolbar.</div>
+            <div className={styles.emptyTitle}>{workspace?.name}</div>
+            <div className={styles.emptySub}>
+              {workspace?.description || 'This board starts empty — add items using the left toolbar.'}
+            </div>
           </div>
         </main>
 
@@ -137,5 +209,3 @@ export default function WorkspacePage() {
     </div>
   );
 }
-
-

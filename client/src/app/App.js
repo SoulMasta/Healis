@@ -11,7 +11,8 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/home" replace />} />
         <Route path="/home" element={<HomePage />} />
-        <Route path="/workspace" element={<WorkspacePage />} />
+        <Route path="/workspace" element={<Navigate to="/home" replace />} />
+        <Route path="/workspace/:id" element={<WorkspacePage />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/home" replace />} />
@@ -19,5 +20,3 @@ export default function App() {
     </BrowserRouter>
   );
 }
-
-
