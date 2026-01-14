@@ -213,41 +213,25 @@
 .canvas {
   position: relative;
   overflow: hidden;
+  cursor: var(--canvas-cursor, default);
+  touch-action: none;
 }
 
 .grid {
   position: absolute;
   inset: 0;
   background-image: linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size: 40px 40px;
+    linear-gradient(90deg, var(--grid) 2px, transparent 2px);
+  background-size: 60px 60px;
+  background-position: var(--grid-offset-x, 0px) var(--grid-offset-y, 0px);
 }
 
-.emptyHint {
+.selectionRect {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 18px 18px;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
-  backdrop-filter: blur(8px);
-  width: min(520px, calc(100% - 44px));
-}
-
-.emptyTitle {
-  font-weight: 800;
-  font-size: 18px;
-  letter-spacing: -0.2px;
-}
-
-.emptySub {
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.35;
+  border: 2px dotted rgba(0, 0, 0, 0.9);
+  background: transparent;
+  pointer-events: none;
+  box-sizing: border-box;
 }
 
 .zoom {
