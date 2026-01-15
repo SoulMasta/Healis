@@ -17,11 +17,16 @@ const Group = sequelize.define('group', {
 
 const Desk = sequelize.define('desk', {
   deskId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-  name: { type: DataTypes.STRING, unique: true, allowNull: false },
+  name: { type: DataTypes.STRING, allowNull: false },
   description: { type: DataTypes.STRING, allowNull: true },
   type: { type: DataTypes.STRING, allowNull: true },
   userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
   groupId: { type: DataTypes.INTEGER, allowNull: true, references: { model: Group, key: 'groupId' } },
+}, {
+  indexes: [
+    // Allow two different users to have the same desk name, but keep names unique per user.
+    { unique: true, fields: ['userId', 'name'] },
+  ],
 });
 
 const Element = sequelize.define('element', {

@@ -15,10 +15,11 @@ import {
   Type,
   Users,
   Loader2,
+  Trash2,
 } from 'lucide-react';
 import { getHealth } from '../http/health';
 import { getWorkspace } from '../http/workspaceAPI';
-import { createElementOnDesk, getElementsByDesk, updateElement } from '../http/elementsAPI';
+import { createElementOnDesk, getElementsByDesk, updateElement, deleteElement } from '../http/elementsAPI';
 import UserMenu from '../components/UserMenu';
 import styles from '../styles/WorkspacePage.module.css';
 import note2Img from '../static/note2.png';
@@ -75,6 +76,7 @@ export default function WorkspacePage() {
   const [isPanning, setIsPanning] = useState(false);
   const [elements, setElements] = useState([]);
   const [editingElementId, setEditingElementId] = useState(null);
+  const [deletingElementId, setDeletingElementId] = useState(null);
 
   const selectStartRef = useRef(null);
   const panStartRef = useRef(null);
@@ -188,6 +190,27 @@ export default function WorkspacePage() {
 
   const updateLocalElement = (elementId, patch) => {
     setElements((prev) => prev.map((el) => (el.id === elementId ? { ...el, ...patch } : el)));
+  };
+
+  const handleDeleteElement = async (el) => {
+    if (!el?.id) return;
+    const ok = window.confirm('Удалить элемент с доски? Несохранённые изменения будут потеряны.');
+    if (!ok) return;
+
+    setDeletingElementId(el.id);
+    setActionError(null);
+    try {
+      await deleteElement(el.id);
+      setEditingElementId((cur) => (cur === el.id ? null : cur));
+      setElements((prev) => prev.filter((x) => x.id !== el.id));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete element:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || 'Failed to delete element');
+      window.setTimeout(() => setActionError(null), 4000);
+    } finally {
+      setDeletingElementId(null);
+    }
   };
 
   const startDrag = (elementId, e) => {
@@ -620,6 +643,26 @@ export default function WorkspacePage() {
 
                   {isEditing ? (
                     <div className={styles.transformBox}>
+                      <div className={styles.elementActions}>
+                        <button
+                          type="button"
+                          className={styles.deleteElementBtn}
+                          onPointerDown={(ev) => ev.stopPropagation()}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            handleDeleteElement(el);
+                          }}
+                          disabled={deletingElementId === el.id}
+                          aria-label="Delete element"
+                          title="Delete element"
+                        >
+                          {deletingElementId === el.id ? (
+                            <Loader2 size={16} className={styles.spinner} />
+                          ) : (
+                            <Trash2 size={16} />
+                          )}
+                        </button>
+                      </div>
                       <div className={styles.dragHandle} onPointerDown={(ev) => startDrag(el.id, ev)} />
                       <div
                         className={`${styles.resizeHandle} ${styles.hNW}`}

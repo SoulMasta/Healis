@@ -15,6 +15,9 @@ export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+// Initialize axios auth header on app load/refresh (so other API calls are authorized).
+setAuthToken(getToken());
+
 export function logout() {
   localStorage.removeItem(TOKEN_KEY);
   setAuthToken(null);

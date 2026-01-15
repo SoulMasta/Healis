@@ -15,8 +15,8 @@ function normalizeWorkspaceList(list) {
 }
 
 export async function getAllWorkspaces(userId) {
-  const params = userId ? { userId } : {};
-  const res = await axios.get(`${API_BASE}/desk`, { params });
+  // Backend derives userId from JWT; query param is ignored/unsupported now.
+  const res = await axios.get(`${API_BASE}/desk`);
   return normalizeWorkspaceList(res.data);
 }
 
@@ -26,7 +26,8 @@ export async function getWorkspace(id) {
 }
 
 export async function createWorkspace({ name, description, userId, type }) {
-  const res = await axios.post(`${API_BASE}/desk`, { name, description, userId, type });
+  // Backend derives userId from JWT; do not send userId from client.
+  const res = await axios.post(`${API_BASE}/desk`, { name, description, type });
   return normalizeWorkspace(res.data);
 }
 

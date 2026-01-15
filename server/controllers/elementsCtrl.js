@@ -44,9 +44,12 @@ class ElementsController {
   async getAllByDesk(req, res) {
     try {
       const { deskId } = req.params;
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
       const desk = await Desk.findByPk(deskId);
       if (!desk) return res.status(404).json({ error: 'Workspace not found' });
+      if (desk.userId !== userId) return res.status(404).json({ error: 'Workspace not found' });
 
       const elements = await Element.findAll({
         where: { deskId },
@@ -63,8 +66,13 @@ class ElementsController {
   async getOne(req, res) {
     try {
       const { elementId } = req.params;
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Not authorized' });
       const element = await Element.findByPk(elementId, { include: elementInclude() });
       if (!element) return res.status(404).json({ error: 'Element not found' });
+
+      const desk = await Desk.findByPk(element.deskId);
+      if (!desk || desk.userId !== userId) return res.status(404).json({ error: 'Element not found' });
       return res.json(element);
     } catch (error) {
       return res.status(500).json({ error: error.message });
@@ -75,6 +83,11 @@ class ElementsController {
     const t = await sequelize.transaction();
     try {
       const { deskId } = req.params;
+      const userId = req.user?.id;
+      if (!userId) {
+        await t.rollback();
+        return res.status(401).json({ error: 'Not authorized' });
+      }
       const {
         type,
         x,
@@ -96,6 +109,7 @@ class ElementsController {
 
       const desk = await Desk.findByPk(deskId);
       if (!desk) return res.status(404).json({ error: 'Workspace not found' });
+      if (desk.userId !== userId) return res.status(404).json({ error: 'Workspace not found' });
 
       const element = await Element.create(
         {
@@ -135,10 +149,21 @@ class ElementsController {
     const t = await sequelize.transaction();
     try {
       const { elementId } = req.params;
+      const userId = req.user?.id;
+      if (!userId) {
+        await t.rollback();
+        return res.status(401).json({ error: 'Not authorized' });
+      }
       const { type, payload, ...rest } = req.body || {};
 
       const element = await Element.findByPk(elementId, { include: elementInclude(), transaction: t });
       if (!element) return res.status(404).json({ error: 'Element not found' });
+
+      const desk = await Desk.findByPk(element.deskId, { transaction: t });
+      if (!desk || desk.userId !== userId) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Element not found' });
+      }
 
       if (type && type !== element.type) {
         return res.status(400).json({ error: 'Changing type is not supported' });
@@ -182,8 +207,13 @@ class ElementsController {
   async delete(req, res) {
     try {
       const { elementId } = req.params;
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Not authorized' });
       const element = await Element.findByPk(elementId);
       if (!element) return res.status(404).json({ error: 'Element not found' });
+
+      const desk = await Desk.findByPk(element.deskId);
+      if (!desk || desk.userId !== userId) return res.status(404).json({ error: 'Element not found' });
       await element.destroy(); // cascades to child rows
       return res.json({ message: 'Element deleted successfully' });
     } catch (error) {
