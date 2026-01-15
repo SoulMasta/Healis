@@ -2,25 +2,37 @@ import axios from 'axios';
 
 const API_BASE = '/workspace';
 
+function normalizeWorkspace(ws) {
+  if (!ws || typeof ws !== 'object') return ws;
+  // Backend model uses deskId as PK. Frontend historically expects `id`.
+  if (ws.id == null && ws.deskId != null) return { ...ws, id: ws.deskId };
+  return ws;
+}
+
+function normalizeWorkspaceList(list) {
+  if (!Array.isArray(list)) return list;
+  return list.map(normalizeWorkspace);
+}
+
 export async function getAllWorkspaces(userId) {
   const params = userId ? { userId } : {};
   const res = await axios.get(`${API_BASE}/desk`, { params });
-  return res.data;
+  return normalizeWorkspaceList(res.data);
 }
 
 export async function getWorkspace(id) {
   const res = await axios.get(`${API_BASE}/desk/${id}`);
-  return res.data;
+  return normalizeWorkspace(res.data);
 }
 
 export async function createWorkspace({ name, description, userId, type }) {
   const res = await axios.post(`${API_BASE}/desk`, { name, description, userId, type });
-  return res.data;
+  return normalizeWorkspace(res.data);
 }
 
 export async function updateWorkspace(id, data) {
   const res = await axios.put(`${API_BASE}/desk/${id}`, data);
-  return res.data;
+  return normalizeWorkspace(res.data);
 }
 
 export async function deleteWorkspace(id) {
