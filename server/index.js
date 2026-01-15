@@ -70,7 +70,9 @@ app.use((req, res) => {
 async function start() {
   try {
     await sequelize.authenticate();
-    await sequelize.sync();
+    // In early development it's convenient to auto-align schema with models.
+    // Set DB_SYNC_ALTER=true to enable non-destructive alters (still be careful in production).
+    await sequelize.sync({ alter: process.env.DB_SYNC_ALTER === 'true' });
     app.listen(PORT, () => {
       // eslint-disable-next-line no-console
       console.log(`Server started: http://localhost:${PORT}`);

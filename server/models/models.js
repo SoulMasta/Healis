@@ -1,36 +1,139 @@
 const sequelize = require('../db');
-const {DataTypes} = require('sequelize');
+const { DataTypes } = require('sequelize');
 
 const User = sequelize.define('user', {
-    id: {type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true},
-    email: {type: DataTypes.STRING, unique: true},
-    password: {type: DataTypes.STRING},
-    role: {type: DataTypes.STRING, defaultValue: "USER"},
-})
-
-const Desk = sequelize.define('desk', {
-    id: {type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true},
-    name: {type: DataTypes.STRING, unique: true},
-    description: {type: DataTypes.STRING},
-    userId: {type: DataTypes.INTEGER, references: {model: User, key: 'id'}},
-    type: {type: DataTypes.STRING},
-})
+  id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  email: { type: DataTypes.STRING, unique: true, allowNull: false },
+  password: { type: DataTypes.STRING, allowNull: false },
+  role: { type: DataTypes.STRING, defaultValue: 'USER', allowNull: false },
+});
 
 const Group = sequelize.define('group', {
-    id: {type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true},
-    name: {type: DataTypes.STRING, unique: true},
-    description: {type: DataTypes.STRING},
-})
+  groupId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  name: { type: DataTypes.STRING, unique: true, allowNull: false },
+  description: { type: DataTypes.STRING, allowNull: true },
+  userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+});
 
-User.hasMany(Desk, {foreignKey: 'userId'});
-Desk.belongsTo(User, {foreignKey: 'userId'});
-User.hasMany(Group, {foreignKey: 'userId'});
-Group.belongsTo(User, {foreignKey: 'userId'});
-Group.hasMany(Desk, {foreignKey: 'groupId'});
-Desk.belongsTo(Group, {foreignKey: 'groupId'});
+const Desk = sequelize.define('desk', {
+  deskId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  name: { type: DataTypes.STRING, unique: true, allowNull: false },
+  description: { type: DataTypes.STRING, allowNull: true },
+  type: { type: DataTypes.STRING, allowNull: true },
+  userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+  groupId: { type: DataTypes.INTEGER, allowNull: true, references: { model: Group, key: 'groupId' } },
+});
+
+const Element = sequelize.define('element', {
+  elementId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  type: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    validate: { isIn: [['note', 'text', 'document', 'link', 'drawing']] },
+  },
+  x: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  y: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  width: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 240 },
+  height: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 160 },
+  rotation: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+  zIndex: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  deskId: { type: DataTypes.INTEGER, allowNull: false, references: { model: Desk, key: 'deskId' } },
+});
+
+const Note = sequelize.define('note', {
+  elementId: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+    references: { model: Element, key: 'elementId' },
+  },
+  text: { type: DataTypes.TEXT, allowNull: false, defaultValue: '' },
+});
+
+const Text = sequelize.define('text', {
+  elementId: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+    references: { model: Element, key: 'elementId' },
+  },
+  content: { type: DataTypes.TEXT, allowNull: false, defaultValue: '' },
+  fontFamily: { type: DataTypes.STRING, allowNull: true },
+  fontSize: { type: DataTypes.INTEGER, allowNull: true },
+  color: { type: DataTypes.STRING, allowNull: true },
+});
+
+const Document = sequelize.define('document', {
+  elementId: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+    references: { model: Element, key: 'elementId' },
+  },
+  title: { type: DataTypes.STRING, allowNull: true },
+  url: { type: DataTypes.TEXT, allowNull: false },
+});
+
+const Link = sequelize.define('link', {
+  elementId: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+    references: { model: Element, key: 'elementId' },
+  },
+  title: { type: DataTypes.STRING, allowNull: true },
+  url: { type: DataTypes.TEXT, allowNull: false },
+  previewImageUrl: { type: DataTypes.TEXT, allowNull: true },
+});
+
+const Drawing = sequelize.define('drawing', {
+  elementId: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+    references: { model: Element, key: 'elementId' },
+  },
+  // Store vector strokes or serialized canvas JSON.
+  data: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+});
+
+
+// --- Relationships ---
+User.hasMany(Desk, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Desk.belongsTo(User, { foreignKey: 'userId' });
+
+User.hasMany(Group, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Group.belongsTo(User, { foreignKey: 'userId' });
+
+Group.hasMany(Desk, { foreignKey: 'groupId', onDelete: 'SET NULL', onUpdate: 'CASCADE' });
+Desk.belongsTo(Group, { foreignKey: 'groupId' });
+
+Desk.hasMany(Element, { foreignKey: 'deskId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Element.belongsTo(Desk, { foreignKey: 'deskId' });
+
+Element.hasOne(Note, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Note.belongsTo(Element, { foreignKey: 'elementId' });
+
+Element.hasOne(Text, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Text.belongsTo(Element, { foreignKey: 'elementId' });
+
+Element.hasOne(Document, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Document.belongsTo(Element, { foreignKey: 'elementId' });
+
+Element.hasOne(Link, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Link.belongsTo(Element, { foreignKey: 'elementId' });
+
+Element.hasOne(Drawing, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Drawing.belongsTo(Element, { foreignKey: 'elementId' });
 
 module.exports = {
-    User,
-    Desk,
-    Group,
-}
+  User,
+  Desk,
+  Group,
+  Element,
+  Note,
+  Text,
+  Document,
+  Link,
+  Drawing,
+};
