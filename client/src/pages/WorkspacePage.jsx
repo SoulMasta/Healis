@@ -1,14 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
+import axios from 'axios';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   Bell,
   ChevronDown,
   CircleHelp,
+  File,
+  FileArchive,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
   Hand,
-  Image,
   Link2,
   MousePointer2,
+  Paperclip,
   PenLine,
   Search,
   Square,
@@ -16,13 +22,25 @@ import {
   Users,
   Loader2,
   Trash2,
+  Download,
+  ExternalLink,
 } from 'lucide-react';
 import { getHealth } from '../http/health';
 import { getWorkspace } from '../http/workspaceAPI';
-import { createElementOnDesk, getElementsByDesk, updateElement, deleteElement } from '../http/elementsAPI';
+import {
+  createElementOnDesk,
+  getElementsByDesk,
+  updateElement,
+  deleteElement,
+  uploadFileToDesk,
+  getLinkPreview,
+} from '../http/elementsAPI';
 import UserMenu from '../components/UserMenu';
 import styles from '../styles/WorkspacePage.module.css';
 import note2Img from '../static/note2.png';
+
+const TEXT_PREVIEW_EXTS = new Set(['txt', 'md', 'csv', 'rtf']);
+const MAX_PREVIEW_CHARS = 2200;
 
 function IconBtn({ label, children, onClick }) {
   return (
@@ -38,7 +56,7 @@ const TOOLS = [
   { id: 'note', label: 'Note', Icon: Square, hotspot: [12, 12], fallbackCursor: 'copy' },
   { id: 'text', label: 'Text', Icon: Type, hotspot: [8, 18], fallbackCursor: 'text' },
   { id: 'pen', label: 'Pen', Icon: PenLine, hotspot: [2, 20], fallbackCursor: 'crosshair' },
-  { id: 'image', label: 'Image', Icon: Image, hotspot: [2, 2], fallbackCursor: 'crosshair' },
+  { id: 'attach', label: 'Attach file', Icon: Paperclip, hotspot: [2, 2], fallbackCursor: 'pointer' },
   { id: 'link', label: 'Link', Icon: Link2, hotspot: [2, 2], fallbackCursor: 'pointer' },
 ];
 
@@ -61,15 +79,84 @@ function iconToCursorValue(IconComponent, hotspot = [2, 2], fallbackCursor = 'au
   return `url("data:image/svg+xml,${encoded}") ${hx} ${hy}, ${fallbackCursor}`;
 }
 
+function getExt(nameOrUrl) {
+  const s = String(nameOrUrl || '').split('?')[0].split('#')[0];
+  const m = s.match(/\.([a-z0-9]+)$/i);
+  return (m?.[1] || '').toLowerCase();
+}
+
+function normalizeUrlClient(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+  const withProto = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(withProto);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return raw;
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function safeHostname(inputUrl) {
+  try {
+    const u = new URL(normalizeUrlClient(inputUrl));
+    return u.hostname;
+  } catch {
+    return '';
+  }
+}
+
+function fixMojibakeNameClient(name) {
+  const s = String(name || '');
+  const looksMojibake = /[ÐÑ]/.test(s) && !/[А-Яа-яЁё]/.test(s);
+  if (!looksMojibake) return s;
+  try {
+    const bytes = Uint8Array.from(Array.from(s, (ch) => ch.charCodeAt(0)));
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch {
+    return s;
+  }
+}
+
+function pickDocIcon(ext) {
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(ext)) return FileImage;
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return FileSpreadsheet;
+  if (['zip', 'rar', '7z'].includes(ext)) return FileArchive;
+  if (!ext) return File;
+  return FileText;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'file';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+async function fetchFileBlob(url) {
+  const res = await axios.get(url, { responseType: 'blob' });
+  return res.data;
+}
+
 export default function WorkspacePage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const canvasRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const linkInputRef = useRef(null);
   const [health, setHealth] = useState(null);
   const [workspace, setWorkspace] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [actionError, setActionError] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [creatingLink, setCreatingLink] = useState(false);
+  const [linkDraftUrl, setLinkDraftUrl] = useState('');
   const [activeTool, setActiveTool] = useState(TOOLS[0].id);
   const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
   const [selectionRect, setSelectionRect] = useState(null);
@@ -77,10 +164,12 @@ export default function WorkspacePage() {
   const [elements, setElements] = useState([]);
   const [editingElementId, setEditingElementId] = useState(null);
   const [deletingElementId, setDeletingElementId] = useState(null);
+  const [docTextPreview, setDocTextPreview] = useState({});
 
   const selectStartRef = useRef(null);
   const panStartRef = useRef(null);
   const interactionRef = useRef(null);
+  const fetchingPreviewsRef = useRef(new Set());
 
   const activeToolDef = TOOLS.find((t) => t.id === activeTool) || TOOLS[0];
   const canvasCursor = iconToCursorValue(
@@ -89,6 +178,12 @@ export default function WorkspacePage() {
     activeToolDef.fallbackCursor
   );
   const effectiveCursor = activeTool === 'hand' && isPanning ? 'grabbing' : canvasCursor;
+
+  useEffect(() => {
+    if (activeTool !== 'link') return;
+    // Let the popover render first, then focus.
+    window.setTimeout(() => linkInputRef.current?.focus?.(), 0);
+  }, [activeTool]);
 
   const getCanvasPoint = (e) => {
     const el = canvasRef.current;
@@ -128,11 +223,18 @@ export default function WorkspacePage() {
 
   const elementToVm = (el) => {
     if (!el || typeof el !== 'object') return el;
-    return {
+    const vm = {
       ...el,
       id: el.id ?? el.elementId,
       content: el.content ?? extractContent(el),
     };
+    // Normalize association names (Sequelize can return lower-case; legacy code used UpperCamelCase).
+    if (vm.note == null && vm.Note != null) vm.note = vm.Note;
+    if (vm.text == null && vm.Text != null) vm.text = vm.Text;
+    if (vm.document == null && vm.Document != null) vm.document = vm.Document;
+    if (vm.link == null && vm.Link != null) vm.link = vm.Link;
+    if (vm.drawing == null && vm.Drawing != null) vm.drawing = vm.Drawing;
+    return vm;
   };
 
   const persistElement = async (el) => {
@@ -145,12 +247,18 @@ export default function WorkspacePage() {
       rotation: el.rotation ?? 0,
       zIndex: el.zIndex ?? 0,
     };
+    const doc = el.type === 'document' ? el.document ?? el.Document : null;
+    const link = el.type === 'link' ? el.link ?? el.Link : null;
     const payload =
       el.type === 'note'
         ? { text: el.content ?? '' }
         : el.type === 'text'
           ? { content: el.content ?? '' }
-          : undefined;
+          : el.type === 'document'
+            ? { title: doc?.title, url: doc?.url }
+            : el.type === 'link'
+              ? { title: link?.title, url: link?.url, previewImageUrl: link?.previewImageUrl }
+              : undefined;
 
     const updated = await updateElement(el.id, { ...base, payload });
     const vm = elementToVm(updated);
@@ -194,9 +302,6 @@ export default function WorkspacePage() {
 
   const handleDeleteElement = async (el) => {
     if (!el?.id) return;
-    const ok = window.confirm('Удалить элемент с доски? Несохранённые изменения будут потеряны.');
-    if (!ok) return;
-
     setDeletingElementId(el.id);
     setActionError(null);
     try {
@@ -210,6 +315,145 @@ export default function WorkspacePage() {
       window.setTimeout(() => setActionError(null), 4000);
     } finally {
       setDeletingElementId(null);
+    }
+  };
+
+  const openDocument = async (docUrl) => {
+    if (!docUrl) return;
+    try {
+      const blob = await fetchFileBlob(docUrl);
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to open document:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || 'Failed to open file');
+      window.setTimeout(() => setActionError(null), 4000);
+    }
+  };
+
+  const openExternalUrl = (url) => {
+    const normalized = normalizeUrlClient(url);
+    if (!normalized) return;
+    window.open(normalized, '_blank', 'noopener,noreferrer');
+  };
+
+  const downloadDocument = async (docUrl, docTitle) => {
+    if (!docUrl) return;
+    try {
+      const blob = await fetchFileBlob(docUrl);
+      downloadBlob(blob, docTitle);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to download document:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || 'Failed to download file');
+      window.setTimeout(() => setActionError(null), 4000);
+    }
+  };
+
+  const openAttachDialog = () => {
+    if (uploading) return;
+    setActionError(null);
+    fileInputRef.current?.click?.();
+  };
+
+  const handleAttachSelected = async (e) => {
+    const file = e.target?.files?.[0];
+    // Allow picking the same file again.
+    // eslint-disable-next-line no-param-reassign
+    e.target.value = '';
+    if (!file) return;
+
+    const deskId = workspace?.id ?? workspace?.deskId ?? id;
+    if (!deskId) return;
+
+    const width = 320;
+    const height = 200;
+    const rect = canvasRef.current?.getBoundingClientRect?.();
+    const canvasW = rect?.width ?? 1200;
+    const canvasH = rect?.height ?? 800;
+    const x = Math.round(canvasW / 2 - width / 2 - viewOffset.x);
+    const y = Math.round(canvasH / 2 - height / 2 - viewOffset.y);
+    const zIndex = Math.round(elementsRef.current.reduce((m, el) => Math.max(m, el.zIndex ?? 0), 0) + 1);
+
+    setUploading(true);
+    setActionError(null);
+    try {
+      const uploaded = await uploadFileToDesk(deskId, file);
+      const created = await createElementOnDesk(deskId, {
+        type: 'document',
+        x,
+        y,
+        width,
+        height,
+        zIndex,
+        payload: { title: uploaded?.title || file.name, url: uploaded?.url },
+      });
+      const vm = elementToVm(created);
+      setElements((prev) => [...prev, vm]);
+      setEditingElementId(vm.id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to upload/create document:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || 'Failed to upload file');
+      window.setTimeout(() => setActionError(null), 5000);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const submitLink = async () => {
+    const deskId = workspace?.id ?? workspace?.deskId ?? id;
+    if (!deskId) return;
+    const raw = linkDraftUrl;
+    const url = normalizeUrlClient(raw);
+    if (!url) return;
+
+    const width = 360;
+    const height = 220;
+    const rect = canvasRef.current?.getBoundingClientRect?.();
+    const canvasW = rect?.width ?? 1200;
+    const canvasH = rect?.height ?? 800;
+    const x = Math.round(canvasW / 2 - width / 2 - viewOffset.x);
+    const y = Math.round(canvasH / 2 - height / 2 - viewOffset.y);
+    const zIndex = Math.round(elementsRef.current.reduce((m, el) => Math.max(m, el.zIndex ?? 0), 0) + 1);
+
+    setCreatingLink(true);
+    setActionError(null);
+    try {
+      let preview = null;
+      try {
+        preview = await getLinkPreview(url);
+      } catch {
+        preview = null;
+      }
+      const payload = {
+        url: preview?.url || url,
+        title: preview?.title || safeHostname(url) || url,
+        previewImageUrl: preview?.previewImageUrl || null,
+      };
+
+      const created = await createElementOnDesk(deskId, {
+        type: 'link',
+        x,
+        y,
+        width,
+        height,
+        zIndex,
+        payload,
+      });
+      const vm = elementToVm(created);
+      setElements((prev) => [...prev, vm]);
+      setEditingElementId(vm.id);
+      setLinkDraftUrl('');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to create link:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || 'Failed to create link');
+      window.setTimeout(() => setActionError(null), 5000);
+    } finally {
+      setCreatingLink(false);
     }
   };
 
@@ -471,6 +715,47 @@ export default function WorkspacePage() {
     };
   }, [workspace?.id, workspace?.deskId, id]);
 
+  useEffect(() => {
+    // Best-effort previews for text-like formats. For everything else we show an icon/thumbnail/pdf embed.
+    let cancelled = false;
+
+    const docs = elements
+      .filter((el) => el?.type === 'document')
+      .map((el) => {
+        const doc = el.document ?? el.Document;
+        const title = doc?.title || 'Document';
+        const url = doc?.url;
+        const ext = getExt(title) || getExt(url);
+        return { url, title, ext };
+      })
+      .filter((d) => d.url && TEXT_PREVIEW_EXTS.has(d.ext));
+
+    const need = docs.filter((d) => docTextPreview[d.url] == null && !fetchingPreviewsRef.current.has(d.url));
+    if (!need.length) return () => {};
+
+    (async () => {
+      for (const d of need.slice(0, 6)) {
+        fetchingPreviewsRef.current.add(d.url);
+        try {
+          const res = await axios.get(d.url, { responseType: 'text' });
+          if (cancelled) return;
+          const text = String(res.data ?? '')
+            .replace(/\r\n/g, '\n')
+            .slice(0, MAX_PREVIEW_CHARS);
+          setDocTextPreview((prev) => ({ ...prev, [d.url]: text }));
+        } catch {
+          if (cancelled) return;
+          // Avoid refetch loops.
+          setDocTextPreview((prev) => ({ ...prev, [d.url]: '' }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [elements, docTextPreview]);
+
   if (loading) {
     return (
       <div className={styles.page}>
@@ -509,9 +794,6 @@ export default function WorkspacePage() {
           </Link>
           <div className={styles.brand}>
             <div className={styles.logo}>H</div>
-            <div className={styles.boardName}>
-              {workspace?.name || 'Workspace'} <span className={styles.badge}>free</span>
-            </div>
           </div>
         </div>
 
@@ -523,9 +805,7 @@ export default function WorkspacePage() {
             <IconBtn label="Share options">
               <Users size={18} />
             </IconBtn>
-            <IconBtn label="Help">
-              <CircleHelp size={18} />
-            </IconBtn>
+            
           </div>
         </div>
 
@@ -536,9 +816,6 @@ export default function WorkspacePage() {
               {health?.ok ? 'backend online' : 'backend offline'}
             </span>
           </div>
-          <button type="button" className={styles.presentBtn}>
-            Present <ChevronDown size={16} />
-          </button>
           <button type="button" className={styles.shareBtn}>
             Share
           </button>
@@ -552,21 +829,75 @@ export default function WorkspacePage() {
       <div className={styles.body}>
         <aside className={styles.leftRail} aria-label="Tools">
           {TOOLS.map(({ id: toolId, label, Icon }) => {
-            const isActive = activeTool === toolId;
-            return (
+            const isActive = toolId !== 'attach' && activeTool === toolId;
+            const btn = (
               <button
                 key={toolId}
                 type="button"
                 className={`${styles.tool} ${isActive ? styles.toolActive : ''}`}
                 aria-label={label}
                 aria-pressed={isActive}
-                onClick={() => setActiveTool(toolId)}
+                onClick={() => {
+                  if (toolId === 'attach') {
+                    openAttachDialog();
+                    return;
+                  }
+                  setActionError(null);
+                  setActiveTool(toolId);
+                }}
               >
-                <Icon size={18} />
+                {toolId === 'attach' && uploading ? (
+                  <Loader2 size={18} className={styles.spinner} />
+                ) : (
+                  <Icon size={18} />
+                )}
               </button>
+            );
+
+            if (toolId !== 'link') return btn;
+
+            return (
+              <div key={toolId} className={styles.toolWrap}>
+                {btn}
+                {activeTool === 'link' ? (
+                  <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
+                    <div className={styles.toolPopoverRow}>
+                      <input
+                        ref={linkInputRef}
+                        className={styles.linkInput}
+                        placeholder="Paste URL and press Enter"
+                        value={linkDraftUrl}
+                        disabled={creatingLink}
+                        onChange={(ev) => setLinkDraftUrl(ev.target.value)}
+                        onKeyDown={(ev) => {
+                          if (ev.key === 'Escape') {
+                            ev.preventDefault();
+                            setLinkDraftUrl('');
+                            setActiveTool('select');
+                            return;
+                          }
+                          if (ev.key === 'Enter' && !ev.shiftKey) {
+                            ev.preventDefault();
+                            submitLink();
+                          }
+                        }}
+                      />
+                      {creatingLink ? <Loader2 size={16} className={styles.spinner} /> : null}
+                    </div>
+                    <div className={styles.toolPopoverHint}>Enter — add to board · Esc — close</div>
+                  </div>
+                ) : null}
+              </div>
             );
           })}
         </aside>
+        <input
+          ref={fileInputRef}
+          type="file"
+          className={styles.hiddenFileInput}
+          onChange={handleAttachSelected}
+          accept=".txt,.md,.rtf,.csv,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp"
+        />
 
         <main
           className={styles.canvas}
@@ -591,14 +922,28 @@ export default function WorkspacePage() {
           <div className={styles.boardContent}>
             {elements.map((el) => {
               const isEditing = editingElementId === el.id;
+              const isDocument = el.type === 'document';
+              const isLink = el.type === 'link';
               const innerClass =
-                el.type === 'note'
-                  ? `${styles.elementInner} ${styles.noteInner}`
-                  : `${styles.elementInner} ${styles.textInner}`;
-              const displayTextClass =
-                el.type === 'note' ? `${styles.displayText} ${styles.notePad}` : styles.displayText;
-              const editorClass =
-                el.type === 'note' ? `${styles.editor} ${styles.noteEditorPad}` : styles.editor;
+                isDocument || isLink
+                  ? `${styles.elementInner} ${styles.documentInner} ${isLink ? styles.linkInner : ''}`
+                  : el.type === 'note'
+                    ? `${styles.elementInner} ${styles.noteInner}`
+                    : `${styles.elementInner} ${styles.textInner}`;
+              const displayTextClass = el.type === 'note' ? `${styles.displayText} ${styles.notePad}` : styles.displayText;
+              const editorClass = el.type === 'note' ? `${styles.editor} ${styles.noteEditorPad}` : styles.editor;
+
+              const doc = isDocument ? el.document ?? el.Document : null;
+              const docTitle = fixMojibakeNameClient(doc?.title || 'Document');
+              const docUrl = doc?.url;
+              const docExt = getExt(docTitle) || getExt(docUrl);
+              const DocIcon = pickDocIcon(docExt);
+
+              const link = isLink ? el.link ?? el.Link : null;
+              const linkUrl = link?.url || '';
+              const linkTitle = fixMojibakeNameClient(link?.title || safeHostname(linkUrl) || linkUrl || 'Link');
+              const linkPreview = link?.previewImageUrl || '';
+              const linkHost = safeHostname(linkUrl);
 
               return (
                 <div
@@ -617,7 +962,221 @@ export default function WorkspacePage() {
                   onDoubleClick={() => setEditingElementId(el.id)}
                 >
                   <div className={innerClass}>
-                    {isEditing ? (
+                    {isDocument ? (
+                      <div className={styles.docCard}>
+                        <div className={styles.docHeader}>
+                          <div className={styles.docIcon}>
+                            <DocIcon size={18} />
+                          </div>
+                          <div className={styles.docInfo}>
+                            <div className={styles.docTitleRow}>
+                              <button
+                                type="button"
+                                className={styles.docTitleBtn}
+                                onPointerDown={(ev) => ev.stopPropagation()}
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  openDocument(docUrl);
+                                }}
+                                disabled={!docUrl}
+                                title={docUrl ? 'Open' : 'No file'}
+                              >
+                                {docTitle}
+                              </button>
+                              <div className={styles.docActions}>
+                                <button
+                                  type="button"
+                                  className={styles.docActionBtn}
+                                  onPointerDown={(ev) => ev.stopPropagation()}
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    openDocument(docUrl);
+                                  }}
+                                  disabled={!docUrl}
+                                  aria-label="Open file"
+                                  title="Open"
+                                >
+                                  <ExternalLink size={16} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.docActionBtn}
+                                  onPointerDown={(ev) => ev.stopPropagation()}
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    downloadDocument(docUrl, docTitle);
+                                  }}
+                                  disabled={!docUrl}
+                                  aria-label="Download file"
+                                  title="Download"
+                                >
+                                  <Download size={16} />
+                                </button>
+                              </div>
+                            </div>
+                            <div className={styles.docMeta}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
+                          </div>
+                        </div>
+                        <div className={styles.docPreview}>
+                          {docUrl && ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(docExt) ? (
+                            <img
+                              className={styles.docThumb}
+                              src={docUrl}
+                              alt={docTitle}
+                              draggable={false}
+                              onPointerDown={(ev) => ev.stopPropagation()}
+                            />
+                          ) : docUrl && docExt === 'pdf' ? (
+                            <object
+                              className={styles.docPdf}
+                              data={docUrl}
+                              type="application/pdf"
+                              aria-label={docTitle}
+                            >
+                              <div className={styles.docPreviewFallback}>Preview not available</div>
+                            </object>
+                          ) : docUrl && TEXT_PREVIEW_EXTS.has(docExt) ? (
+                            <div className={styles.docTextPreview} aria-label="Text preview">
+                              <pre className={styles.docTextPre}>
+                                {docTextPreview[docUrl] != null
+                                  ? docTextPreview[docUrl] || 'Preview not available'
+                                  : 'Loading preview...'}
+                              </pre>
+                            </div>
+                          ) : (
+                            <div className={styles.docPreviewFallback}>
+                              <div className={styles.docFallbackIcon}>
+                                <DocIcon size={34} />
+                              </div>
+                              <div className={styles.docFallbackExt}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : isLink ? (
+                      <div className={styles.linkCard}>
+                        <div className={styles.linkHeader}>
+                          <div className={styles.linkIcon}>
+                            <Link2 size={18} />
+                          </div>
+                          <div className={styles.linkInfo}>
+                            {isEditing ? (
+                              <div className={styles.linkEdit}>
+                                <input
+                                  className={styles.linkEditTitle}
+                                  value={link?.title ?? ''}
+                                  placeholder="Title (optional)"
+                                  onPointerDown={(ev) => ev.stopPropagation()}
+                                  onChange={(ev) => {
+                                    const next = { ...(link || {}), title: ev.target.value };
+                                    updateLocalElement(el.id, { link: next, Link: next });
+                                  }}
+                                />
+                                <input
+                                  className={styles.linkEditUrl}
+                                  value={linkUrl}
+                                  placeholder="https://example.com"
+                                  onPointerDown={(ev) => ev.stopPropagation()}
+                                  onChange={(ev) => {
+                                    const next = { ...(link || {}), url: ev.target.value };
+                                    updateLocalElement(el.id, { link: next, Link: next });
+                                  }}
+                                  onKeyDown={(ev) => {
+                                    if (ev.key === 'Escape') {
+                                      ev.preventDefault();
+                                      setEditingElementId(null);
+                                      return;
+                                    }
+                                    if (ev.key === 'Enter' && !ev.shiftKey) {
+                                      ev.preventDefault();
+                                      const nextUrl = normalizeUrlClient(ev.currentTarget.value);
+                                      const nextLink = { ...(link || {}), url: nextUrl };
+                                      updateLocalElement(el.id, { link: nextLink, Link: nextLink });
+                                      setEditingElementId(null);
+                                      (async () => {
+                                        try {
+                                          let preview = null;
+                                          try {
+                                            preview = await getLinkPreview(nextUrl);
+                                          } catch {
+                                            preview = null;
+                                          }
+                                          const hydrated =
+                                            preview && (preview.title || preview.previewImageUrl || preview.url)
+                                              ? {
+                                                  ...nextLink,
+                                                  url: preview.url || nextUrl,
+                                                  title: nextLink.title || preview.title,
+                                                  previewImageUrl: preview.previewImageUrl || nextLink.previewImageUrl,
+                                                }
+                                              : nextLink;
+                                          updateLocalElement(el.id, { link: hydrated, Link: hydrated });
+                                          await persistElement({ ...el, link: hydrated, Link: hydrated });
+                                        } catch {
+                                          // ignore
+                                        }
+                                      })();
+                                    }
+                                  }}
+                                />
+                              </div>
+                            ) : (
+                              <div className={styles.linkTitleRow}>
+                                <button
+                                  type="button"
+                                  className={styles.linkTitleBtn}
+                                  onPointerDown={(ev) => ev.stopPropagation()}
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    openExternalUrl(linkUrl);
+                                  }}
+                                  disabled={!linkUrl}
+                                  title={linkUrl || 'No url'}
+                                >
+                                  {linkTitle}
+                                </button>
+                                <div className={styles.docActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.docActionBtn}
+                                    onPointerDown={(ev) => ev.stopPropagation()}
+                                    onClick={(ev) => {
+                                      ev.stopPropagation();
+                                      openExternalUrl(linkUrl);
+                                    }}
+                                    disabled={!linkUrl}
+                                    aria-label="Open link"
+                                    title="Open"
+                                  >
+                                    <ExternalLink size={16} />
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                            <div className={styles.linkMeta}>{linkHost || 'LINK'}</div>
+                          </div>
+                        </div>
+
+                        <div className={styles.linkPreview}>
+                          {linkPreview ? (
+                            <img
+                              className={styles.linkThumb}
+                              src={linkPreview}
+                              alt={linkTitle}
+                              draggable={false}
+                              onPointerDown={(ev) => ev.stopPropagation()}
+                            />
+                          ) : (
+                            <div className={styles.linkPreviewFallback}>
+                              <div className={styles.linkFallbackIcon}>
+                                <Link2 size={34} />
+                              </div>
+                              <div className={styles.linkFallbackHost}>{linkHost || 'PREVIEW'}</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : isEditing ? (
                       <textarea
                         className={editorClass}
                         value={el.content ?? ''}

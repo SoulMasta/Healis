@@ -35,4 +35,16 @@ export async function deleteElement(elementId) {
   return res.data;
 }
 
+export async function uploadFileToDesk(deskId, file) {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await axios.post(`${API_BASE}/desk/${deskId}/upload`, form);
+  return res.data;
+}
+
+export async function getLinkPreview(url) {
+  const res = await axios.post(`${API_BASE}/link/preview`, { url });
+  return res.data;
+}
+
 

@@ -1,4 +1,5 @@
 const { Desk } = require('../models/models');
+const { canReadDesk, canManageDesk } = require('../utils/deskAccess');
 
 class WorkspacesController {
     async create(req, res) {
@@ -17,9 +18,6 @@ class WorkspacesController {
             const desk = await Desk.create({ name, description, userId, type });
             return res.status(201).json(desk);
         } catch (error) {
-            if (error.name === 'SequelizeUniqueConstraintError') {
-                return res.status(409).json({ error: 'Workspace with this name already exists' });
-            }
             return res.status(500).json({ error: error.message });
         }
     }
@@ -31,7 +29,8 @@ class WorkspacesController {
                 return res.status(401).json({ error: 'Not authorized' });
             }
 
-            const desks = await Desk.findAll({ where: { userId } });
+            // Personal desks only. Group desks are fetched via /api/groups/:id/desks.
+            const desks = await Desk.findAll({ where: { userId, groupId: null } });
             return res.json(desks);
         } catch (error) {
             return res.status(500).json({ error: error.message });
@@ -46,9 +45,10 @@ class WorkspacesController {
                 return res.status(401).json({ error: 'Not authorized' });
             }
 
-            // Always scope reads by owner to avoid leaking existence of other users' desks.
-            const desk = await Desk.findOne({ where: { deskId: id, userId } });
+            const desk = await Desk.findByPk(id);
             if (!desk) return res.status(404).json({ error: 'Workspace not found' });
+            const ok = await canReadDesk(desk, userId);
+            if (!ok) return res.status(404).json({ error: 'Workspace not found' });
             
             return res.json(desk);
         } catch (error) {
@@ -65,9 +65,10 @@ class WorkspacesController {
                 return res.status(401).json({ error: 'Not authorized' });
             }
 
-            // Always scope updates by owner.
-            const desk = await Desk.findOne({ where: { deskId: id, userId } });
+            const desk = await Desk.findByPk(id);
             if (!desk) return res.status(404).json({ error: 'Workspace not found' });
+            const ok = await canManageDesk(desk, userId);
+            if (!ok) return res.status(403).json({ error: 'Forbidden' });
             
             if (name !== undefined) desk.name = name;
             if (description !== undefined) desk.description = description;
@@ -76,9 +77,6 @@ class WorkspacesController {
             await desk.save();
             return res.json(desk);
         } catch (error) {
-            if (error.name === 'SequelizeUniqueConstraintError') {
-                return res.status(409).json({ error: 'Workspace with this name already exists' });
-            }
             return res.status(500).json({ error: error.message });
         }
     }
@@ -91,9 +89,10 @@ class WorkspacesController {
                 return res.status(401).json({ error: 'Not authorized' });
             }
 
-            // Always scope deletes by owner.
-            const desk = await Desk.findOne({ where: { deskId: id, userId } });
+            const desk = await Desk.findByPk(id);
             if (!desk) return res.status(404).json({ error: 'Workspace not found' });
+            const ok = await canManageDesk(desk, userId);
+            if (!ok) return res.status(403).json({ error: 'Forbidden' });
             
             await desk.destroy();
             return res.json({ message: 'Workspace deleted successfully' });

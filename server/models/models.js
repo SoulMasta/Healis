@@ -15,6 +15,31 @@ const Group = sequelize.define('group', {
   userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
 });
 
+// Users <-> Groups membership (roles inside a group)
+const GroupMember = sequelize.define(
+  'group_member',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    groupId: { type: DataTypes.INTEGER, allowNull: false, references: { model: Group, key: 'groupId' } },
+    userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+    role: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'MEMBER',
+      validate: { isIn: [['OWNER', 'ADMIN', 'MEMBER']] },
+    },
+    status: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'ACTIVE',
+      validate: { isIn: [['ACTIVE', 'INVITED']] },
+    },
+  },
+  {
+    indexes: [{ unique: true, fields: ['groupId', 'userId'] }],
+  }
+);
+
 const Desk = sequelize.define('desk', {
   deskId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   name: { type: DataTypes.STRING, allowNull: false },
@@ -22,11 +47,6 @@ const Desk = sequelize.define('desk', {
   type: { type: DataTypes.STRING, allowNull: true },
   userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
   groupId: { type: DataTypes.INTEGER, allowNull: true, references: { model: Group, key: 'groupId' } },
-}, {
-  indexes: [
-    // Allow two different users to have the same desk name, but keep names unique per user.
-    { unique: true, fields: ['userId', 'name'] },
-  ],
 });
 
 const Element = sequelize.define('element', {
@@ -110,6 +130,15 @@ Desk.belongsTo(User, { foreignKey: 'userId' });
 User.hasMany(Group, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Group.belongsTo(User, { foreignKey: 'userId' });
 
+User.hasMany(GroupMember, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+GroupMember.belongsTo(User, { foreignKey: 'userId' });
+
+Group.hasMany(GroupMember, { foreignKey: 'groupId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+GroupMember.belongsTo(Group, { foreignKey: 'groupId' });
+
+User.belongsToMany(Group, { through: GroupMember, foreignKey: 'userId', otherKey: 'groupId' });
+Group.belongsToMany(User, { through: GroupMember, foreignKey: 'groupId', otherKey: 'userId' });
+
 Group.hasMany(Desk, { foreignKey: 'groupId', onDelete: 'SET NULL', onUpdate: 'CASCADE' });
 Desk.belongsTo(Group, { foreignKey: 'groupId' });
 
@@ -135,6 +164,7 @@ module.exports = {
   User,
   Desk,
   Group,
+  GroupMember,
   Element,
   Note,
   Text,

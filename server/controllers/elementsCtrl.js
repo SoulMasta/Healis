@@ -1,5 +1,6 @@
 const sequelize = require('../db');
 const { Desk, Element, Note, Text, Document, Link, Drawing } = require('../models/models');
+const { canReadDesk, canManageDesk } = require('../utils/deskAccess');
 
 const TYPE_TO_MODEL = {
   note: Note,
@@ -49,7 +50,8 @@ class ElementsController {
 
       const desk = await Desk.findByPk(deskId);
       if (!desk) return res.status(404).json({ error: 'Workspace not found' });
-      if (desk.userId !== userId) return res.status(404).json({ error: 'Workspace not found' });
+      const ok = await canReadDesk(desk, userId);
+      if (!ok) return res.status(404).json({ error: 'Workspace not found' });
 
       const elements = await Element.findAll({
         where: { deskId },
@@ -72,7 +74,9 @@ class ElementsController {
       if (!element) return res.status(404).json({ error: 'Element not found' });
 
       const desk = await Desk.findByPk(element.deskId);
-      if (!desk || desk.userId !== userId) return res.status(404).json({ error: 'Element not found' });
+      if (!desk) return res.status(404).json({ error: 'Element not found' });
+      const ok = await canReadDesk(desk, userId);
+      if (!ok) return res.status(404).json({ error: 'Element not found' });
       return res.json(element);
     } catch (error) {
       return res.status(500).json({ error: error.message });
@@ -109,7 +113,8 @@ class ElementsController {
 
       const desk = await Desk.findByPk(deskId);
       if (!desk) return res.status(404).json({ error: 'Workspace not found' });
-      if (desk.userId !== userId) return res.status(404).json({ error: 'Workspace not found' });
+      const canManage = await canManageDesk(desk, userId);
+      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
 
       const element = await Element.create(
         {
@@ -160,9 +165,14 @@ class ElementsController {
       if (!element) return res.status(404).json({ error: 'Element not found' });
 
       const desk = await Desk.findByPk(element.deskId, { transaction: t });
-      if (!desk || desk.userId !== userId) {
+      if (!desk) {
         await t.rollback();
         return res.status(404).json({ error: 'Element not found' });
+      }
+      const canManage = await canManageDesk(desk, userId);
+      if (!canManage) {
+        await t.rollback();
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
       if (type && type !== element.type) {
@@ -213,7 +223,9 @@ class ElementsController {
       if (!element) return res.status(404).json({ error: 'Element not found' });
 
       const desk = await Desk.findByPk(element.deskId);
-      if (!desk || desk.userId !== userId) return res.status(404).json({ error: 'Element not found' });
+      if (!desk) return res.status(404).json({ error: 'Element not found' });
+      const canManage = await canManageDesk(desk, userId);
+      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
       await element.destroy(); // cascades to child rows
       return res.json({ message: 'Element deleted successfully' });
     } catch (error) {
