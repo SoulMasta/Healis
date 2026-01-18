@@ -7,8 +7,6 @@
 
 .topBar {
   height: 56px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -92,6 +90,17 @@
   background: rgba(15, 23, 42, 0.02);
 }
 
+.historyGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.65);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
 .iconBtn {
   width: 34px;
   height: 34px;
@@ -108,6 +117,171 @@
   background: rgba(43, 108, 255, 0.08);
   border-color: rgba(43, 108, 255, 0.18);
   color: var(--blue);
+}
+
+.iconBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.iconBtn:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+  color: rgba(15, 23, 42, 0.75);
+}
+
+.searchWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.searchPopover {
+  position: absolute;
+  top: 42px;
+  left: 0;
+  width: 340px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(10px);
+  z-index: 50;
+}
+
+.searchRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.searchInput {
+  flex: 1;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(15, 23, 42, 0.02);
+  padding: 0 10px;
+  outline: none;
+  font-size: 13px;
+  font-weight: 650;
+  color: rgba(15, 23, 42, 0.92);
+}
+
+.searchInput:focus {
+  border-color: rgba(43, 108, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(43, 108, 255, 0.14);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.searchClearBtn {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(15, 23, 42, 0.02);
+  color: rgba(15, 23, 42, 0.75);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.searchClearBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.searchMeta {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+.searchResults {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.searchResult {
+  width: 100%;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.85);
+  padding: 10px 10px;
+  cursor: pointer;
+}
+
+.searchResult:hover {
+  border-color: rgba(43, 108, 255, 0.22);
+  background: rgba(43, 108, 255, 0.06);
+}
+
+.searchResultTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.searchResultKind {
+  font-size: 11px;
+  font-weight: 850;
+  color: rgba(15, 23, 42, 0.60);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.searchResultCount {
+  font-size: 11px;
+  font-weight: 850;
+  color: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(15, 23, 42, 0.02);
+}
+
+.searchResultSnippet {
+  font-size: 12px;
+  line-height: 1.25;
+  color: rgba(15, 23, 42, 0.86);
+  word-break: break-word;
+}
+
+.searchEmpty {
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(15, 23, 42, 0.55);
+  padding: 10px 6px;
+}
+
+.searchHint {
+  margin-top: 10px;
+  font-size: 11px;
+  font-weight: 650;
+  color: rgba(15, 23, 42, 0.45);
+}
+
+.searchMark {
+  background: rgba(245, 158, 11, 0.35);
+  border-radius: 5px;
+  padding: 0 2px;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.22);
+}
+
+.elementSearchHit {
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.55), 0 14px 26px rgba(245, 158, 11, 0.18);
+  border-radius: 14px;
 }
 
 .presentBtn {
@@ -236,6 +410,49 @@
   gap: 8px;
 }
 
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  padding: 0;
+  cursor: pointer;
+}
+
+.swatchActive {
+  border-color: rgba(43, 108, 255, 0.55);
+  box-shadow: 0 0 0 3px rgba(43, 108, 255, 0.16);
+}
+
+.widthRow {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.widthSlider {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--blue);
+}
+
+.widthLabel {
+  width: 44px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 750;
+  color: rgba(15, 23, 42, 0.72);
+}
+
 .toolPopoverHint {
   margin-top: 8px;
   font-size: 11px;
@@ -287,10 +504,211 @@
   -webkit-user-select: none;
 }
 
+.drawingElement {
+  pointer-events: auto;
+}
+
+.drawingSvg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.liveStroke {
+  position: absolute;
+  pointer-events: none;
+}
+
 .elementInner {
   position: absolute;
   inset: 0;
   box-sizing: border-box;
+}
+
+.commentBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 30;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(15, 23, 42, 0.90);
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.12);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.element:hover .commentBtn,
+.element:focus-within .commentBtn {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.commentBtn:hover {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(43, 108, 255, 0.22);
+}
+
+.commentBtn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+@media (hover: none) {
+  .commentBtn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.commentsPanel {
+  position: fixed;
+  right: 18px;
+  top: 78px;
+  width: min(360px, calc(100vw - 24px));
+  height: min(520px, calc(100vh - 96px));
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 16px;
+  box-shadow: 0 26px 60px rgba(15, 23, 42, 0.22);
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  overflow: hidden;
+  z-index: 50;
+  backdrop-filter: blur(10px);
+}
+
+.commentsPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 8px 14px;
+}
+
+.commentsPanelTitle {
+  font-weight: 750;
+  color: rgba(15, 23, 42, 0.92);
+}
+
+.commentsPanelClose {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.85);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: rgba(15, 23, 42, 0.86);
+}
+
+.commentsPanelMeta {
+  padding: 0 14px 10px 14px;
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.60);
+}
+
+.commentsList {
+  padding: 10px 14px 14px 14px;
+  overflow: auto;
+}
+
+.commentsEmpty {
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.62);
+  padding: 8px 2px;
+}
+
+.commentItem {
+  padding: 10px 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.commentItem + .commentItem {
+  margin-top: 10px;
+}
+
+.commentTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.commentAuthor {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.86);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commentTime {
+  font-size: 11px;
+  color: rgba(15, 23, 42, 0.52);
+  white-space: nowrap;
+}
+
+.commentText {
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.86);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.commentComposer {
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 12px 14px 14px 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.commentInput {
+  width: 100%;
+  min-height: 70px;
+  max-height: 150px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(15, 23, 42, 0.92);
+  outline: none;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.commentInput:focus {
+  border-color: rgba(43, 108, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(43, 108, 255, 0.14);
+}
+
+.commentSendBtn {
+  justify-self: end;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(43, 108, 255, 0.22);
+  background: rgba(43, 108, 255, 0.92);
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.commentSendBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .noteInner {
@@ -969,6 +1387,110 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+.reactionsLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.reactionBubble {
+  position: absolute;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.12);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.reactionBubble:hover {
+  border-color: rgba(43, 108, 255, 0.28);
+  box-shadow: 0 12px 22px rgba(15, 23, 42, 0.14);
+}
+
+.reactionEmoji {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.reactionCount {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.72);
+  line-height: 1;
+}
+
+.reactionPicker {
+  position: fixed;
+  z-index: 1000;
+  transform: translate(-50%, calc(-100% - 10px));
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  min-width: 240px;
+}
+
+.reactionPickerRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.reactionPickerBtn {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(248, 250, 252, 0.95);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.reactionPickerBtn:hover {
+  background: rgba(43, 108, 255, 0.08);
+  border-color: rgba(43, 108, 255, 0.22);
+  transform: translateY(-1px);
+}
+
+.reactionPickerBtn:active {
+  transform: translateY(0);
+}
+
+.reactionPickerInput {
+  flex: 1;
+  min-width: 140px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(248, 250, 252, 0.95);
+  padding: 0 12px;
+  outline: none;
+}
+
+.reactionPickerInput:focus {
+  border-color: rgba(43, 108, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(43, 108, 255, 0.14);
+  background: rgba(255, 255, 255, 0.98);
 }
 
 @media (max-width: 900px) {

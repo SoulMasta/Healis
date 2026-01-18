@@ -2,8 +2,10 @@ const express = require('express');
 const { sendReactApp, navigate } = require('./pageHandlers');
 const workspacesCtrl = require('../controllers/workspacesCtrl');
 const elementsCtrl = require('../controllers/elementsCtrl');
+const noteVersionsCtrl = require('../controllers/noteVersionsCtrl');
 const uploadsCtrl = require('../controllers/uploadsCtrl');
 const linkPreviewCtrl = require('../controllers/linkPreviewCtrl');
+const commentsCtrl = require('../controllers/commentsCtrl');
 const authMiddleware = require('../middleware/authMiddleware');
 const { upload } = require('../middleware/uploadMiddleware');
 
@@ -26,6 +28,15 @@ router.post('/desk/:deskId/elements', authMiddleware, elementsCtrl.createOnDesk)
 router.get('/elements/:elementId', authMiddleware, elementsCtrl.getOne);
 router.put('/elements/:elementId', authMiddleware, elementsCtrl.update);
 router.delete('/elements/:elementId', authMiddleware, elementsCtrl.delete);
+
+// Note version history (for collaboration / restore)
+router.get('/elements/:elementId/versions', authMiddleware, noteVersionsCtrl.list);
+router.get('/elements/:elementId/versions/:version', authMiddleware, noteVersionsCtrl.get);
+router.post('/elements/:elementId/versions/:version/restore', authMiddleware, noteVersionsCtrl.restore);
+
+// Comments on elements (group desks only)
+router.get('/elements/:elementId/comments', authMiddleware, commentsCtrl.listByElement);
+router.post('/elements/:elementId/comments', authMiddleware, commentsCtrl.create);
 
 // Upload a file for a desk (returns a URL that can be used in a `document` element)
 // We wrap multer to return a clean 400 on validation issues (unsupported type, size limit, etc).

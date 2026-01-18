@@ -4,12 +4,16 @@ const models = require('./models/models');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
+const { initRealtime } = require('./realtime');
 
 
 const homeRoutes = require('./routes/home');
 const workspaceRoutes = require('./routes/workspaceRouter');
 const userRoutes = require('./routes/userRouter');
 const groupRoutes = require('./routes/groupRouter');
+const calendarRoutes = require('./routes/calendarRouter');
+const { startCalendarNotificationWorker } = require('./services/calendarNotificationWorker');
 
 const PORT = Number(process.env.PORT) || 5000;
 const app = express();
@@ -52,6 +56,7 @@ app.use('/home', homeRoutes);
 app.use('/workspace', workspaceRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/groups', groupRoutes);
+app.use('/api/calendar', calendarRoutes);
 
 // Serve uploaded files (documents, images, etc.)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -86,6 +91,15 @@ async function start() {
       // ignore
     }
 
+    // Schema back-compat: add reactions column if missing (we don't require DB_SYNC_ALTER for this).
+    try {
+      await sequelize.query(
+        'ALTER TABLE "elements" ADD COLUMN IF NOT EXISTS "reactions" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
+      );
+    } catch {
+      // ignore
+    }
+
     // In early development it's convenient to auto-align schema with models.
     // Set DB_SYNC_ALTER=true to enable non-destructive alters (still be careful in production).
     await sequelize.sync({ alter: process.env.DB_SYNC_ALTER === 'true' });
@@ -114,7 +128,11 @@ async function start() {
       // ignore
     }
 
-    app.listen(PORT, () => {
+    const server = http.createServer(app);
+    initRealtime(server);
+    startCalendarNotificationWorker({ intervalMs: 60_000 });
+
+    server.listen(PORT, () => {
       // eslint-disable-next-line no-console
       console.log(`Server started: http://localhost:${PORT}`);
     });

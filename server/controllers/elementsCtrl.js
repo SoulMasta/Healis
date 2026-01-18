@@ -1,6 +1,7 @@
 const sequelize = require('../db');
-const { Desk, Element, Note, Text, Document, Link, Drawing } = require('../models/models');
+const { Desk, Element, Note, NoteVersion, Text, Document, Link, Drawing } = require('../models/models');
 const { canReadDesk, canManageDesk } = require('../utils/deskAccess');
+const { emitToDesk } = require('../realtime/bus');
 
 const TYPE_TO_MODEL = {
   note: Note,
@@ -39,6 +40,27 @@ function pickAllowed(obj, allowed) {
     if (obj[key] !== undefined) out[key] = obj[key];
   }
   return out;
+}
+
+async function createNoteVersion({ elementId, text, userId, changeType = 'EDIT', transaction }) {
+  // "Best effort" monotonic versioning. If 2 writes race, UNIQUE(elementId,version) will force retry.
+  const current = (await NoteVersion.max('version', { where: { elementId }, transaction })) || 0;
+  const version = current + 1;
+  try {
+    return await NoteVersion.create(
+      { elementId, version, text: text ?? '', updatedBy: userId ?? null, changeType },
+      { transaction }
+    );
+  } catch (e) {
+    if (e?.name === 'SequelizeUniqueConstraintError') {
+      const again = (await NoteVersion.max('version', { where: { elementId }, transaction })) || 0;
+      return await NoteVersion.create(
+        { elementId, version: again + 1, text: text ?? '', updatedBy: userId ?? null, changeType },
+        { transaction }
+      );
+    }
+    throw e;
+  }
 }
 
 class ElementsController {
@@ -141,8 +163,20 @@ class ElementsController {
         { transaction: t }
       );
 
+      if (type === 'note') {
+        await createNoteVersion({
+          elementId: element.elementId,
+          text: filteredChildPayload.text ?? '',
+          userId,
+          changeType: 'CREATE',
+          transaction: t,
+        });
+      }
+
       await t.commit();
       const full = await Element.findByPk(element.elementId, { include: elementInclude() });
+      // Realtime broadcast to other connected users on the same desk.
+      emitToDesk(Number(deskId), 'element:created', typeof full?.toJSON === 'function' ? full.toJSON() : full);
       return res.status(201).json(full);
     } catch (error) {
       await t.rollback();
@@ -198,15 +232,35 @@ class ElementsController {
 
       if (ChildModel) {
         const existingChild = await ChildModel.findByPk(element.elementId, { transaction: t });
+        const beforeNoteText =
+          element.type === 'note' && existingChild ? String(existingChild.text ?? '') : null;
         if (existingChild) {
           await existingChild.update(filteredChildPayload, { transaction: t });
         } else if (Object.keys(filteredChildPayload).length) {
           await ChildModel.create({ elementId: element.elementId, ...filteredChildPayload }, { transaction: t });
         }
+
+        if (element.type === 'note' && 'text' in filteredChildPayload) {
+          const afterNoteText = String(filteredChildPayload.text ?? '');
+          if (beforeNoteText === null || beforeNoteText !== afterNoteText) {
+            await createNoteVersion({
+              elementId: element.elementId,
+              text: afterNoteText,
+              userId,
+              changeType: 'EDIT',
+              transaction: t,
+            });
+          }
+        }
       }
 
       await t.commit();
       const full = await Element.findByPk(element.elementId, { include: elementInclude() });
+      emitToDesk(
+        Number(element.deskId),
+        'element:updated',
+        typeof full?.toJSON === 'function' ? full.toJSON() : full
+      );
       return res.json(full);
     } catch (error) {
       await t.rollback();
@@ -221,12 +275,14 @@ class ElementsController {
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
       const element = await Element.findByPk(elementId);
       if (!element) return res.status(404).json({ error: 'Element not found' });
+      const deskId = element.deskId;
 
       const desk = await Desk.findByPk(element.deskId);
       if (!desk) return res.status(404).json({ error: 'Element not found' });
       const canManage = await canManageDesk(desk, userId);
       if (!canManage) return res.status(403).json({ error: 'Forbidden' });
       await element.destroy(); // cascades to child rows
+      emitToDesk(Number(deskId), 'element:deleted', { deskId, elementId: Number(elementId) });
       return res.json({ message: 'Element deleted successfully' });
     } catch (error) {
       return res.status(500).json({ error: error.message });

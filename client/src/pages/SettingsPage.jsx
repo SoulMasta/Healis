@@ -1,7 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, Home, Moon, Shield, User } from 'lucide-react';
+import { ChevronRight, Home, Keyboard, Moon, Shield, User } from 'lucide-react';
 import styles from '../styles/SettingsPage.module.css';
+import {
+  DEFAULT_SHORTCUTS,
+  SHORTCUT_ACTIONS,
+  formatShortcut,
+  loadShortcuts,
+  resetShortcutsToDefaults,
+  saveShortcuts,
+  shortcutFromKeyboardEvent,
+} from '../utils/shortcuts';
 
 function Toggle({ value, onChange, label, description }) {
   return (
@@ -26,6 +35,33 @@ export default function SettingsPage() {
   const [dark, setDark] = useState(false);
   const [notify, setNotify] = useState(true);
   const [tips, setTips] = useState(true);
+  const [shortcuts, setShortcuts] = useState(() => loadShortcuts());
+  const [capturingActionId, setCapturingActionId] = useState(null);
+
+  useEffect(() => {
+    if (!capturingActionId) return () => {};
+
+    const onKeyDown = (e) => {
+      if (e.code === 'Escape') {
+        e.preventDefault();
+        setCapturingActionId(null);
+        return;
+      }
+      // Avoid capturing pure modifier keys.
+      if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) {
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      const next = { ...shortcuts, [capturingActionId]: shortcutFromKeyboardEvent(e) };
+      setShortcuts(next);
+      saveShortcuts(next);
+      setCapturingActionId(null);
+    };
+
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+  }, [capturingActionId, shortcuts]);
 
   return (
     <div className={styles.page}>
@@ -87,6 +123,67 @@ export default function SettingsPage() {
             </button>
             <button type="button" className={styles.primary}>
               Save changes <ChevronRight size={16} />
+            </button>
+          </div>
+        </div>
+
+        <div className={styles.panel}>
+          <div className={styles.sectionTitle}>
+            <Keyboard size={18} /> Hotkeys
+          </div>
+          <div className={styles.hotkeysHint}>
+            Hotkeys use <span className={styles.kbd}>KeyboardEvent.code</span> so they work the same in EN/RU layouts.
+          </div>
+
+          <div className={styles.hotkeysList}>
+            {SHORTCUT_ACTIONS.map((a) => {
+              const current = shortcuts[a.id] || DEFAULT_SHORTCUTS[a.id];
+              const isCapturing = capturingActionId === a.id;
+              return (
+                <div key={a.id} className={styles.hotkeyRow}>
+                  <div>
+                    <div className={styles.hotkeyLabel}>{a.label}</div>
+                    <div className={styles.hotkeyDesc}>{a.description}</div>
+                  </div>
+                  <div className={styles.hotkeyRight}>
+                    <div className={`${styles.hotkeyValue} ${isCapturing ? styles.hotkeyValueActive : ''}`}>
+                      {isCapturing ? 'Press keys… (Esc — cancel)' : formatShortcut(current)}
+                    </div>
+                    <button
+                      type="button"
+                      className={styles.hotkeyEdit}
+                      onClick={() => setCapturingActionId(a.id)}
+                      aria-pressed={isCapturing}
+                    >
+                      {isCapturing ? 'Listening…' : 'Edit'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className={styles.actionRow}>
+            <button
+              type="button"
+              className={styles.secondary}
+              onClick={() => {
+                const next = resetShortcutsToDefaults();
+                setShortcuts(next);
+                setCapturingActionId(null);
+              }}
+            >
+              Reset hotkeys
+            </button>
+            <button
+              type="button"
+              className={styles.primary}
+              onClick={() => {
+                saveShortcuts(shortcuts);
+                setCapturingActionId(null);
+              }}
+            >
+              Save hotkeys <ChevronRight size={16} />
             </button>
           </div>
         </div>

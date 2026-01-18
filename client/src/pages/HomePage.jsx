@@ -201,6 +201,15 @@ export default function HomePage() {
   const activeItem = MENU.find((m) => m.key === active) || MENU[0];
   const inviteCount = invites.length;
 
+  const handleMenuClick = (item) => {
+    if (!item?.key) return;
+    setActive(item.key);
+    // Open standalone pages immediately (no extra "Let's start" click).
+    if (item.key === 'calendar' || item.key === 'settings') {
+      navigate(item.to);
+    }
+  };
+
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key === 'token') setToken(e.newValue);
@@ -928,7 +937,7 @@ export default function HomePage() {
                     key={item.key}
                     type="button"
                     className={`${styles.navItem} ${isActive ? styles.navItemActive : ''}`}
-                    onClick={() => setActive(item.key)}
+                    onClick={() => handleMenuClick(item)}
                   >
                     <span className={styles.navIcon} aria-hidden="true">
                       <Icon size={18} />

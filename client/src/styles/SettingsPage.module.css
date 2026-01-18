@@ -195,6 +195,86 @@
   font-size: 12px;
 }
 
+.hotkeysHint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: -4px;
+  margin-bottom: 10px;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.03);
+  color: rgba(15, 23, 42, 0.72);
+  font-weight: 750;
+  font-size: 11px;
+}
+
+.hotkeysList {
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.hotkeyRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.hotkeyLabel {
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.hotkeyDesc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.hotkeyRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.hotkeyValue {
+  min-width: 120px;
+  text-align: right;
+  font-weight: 850;
+  letter-spacing: -0.15px;
+  color: rgba(15, 23, 42, 0.82);
+}
+
+.hotkeyValueActive {
+  color: var(--blue);
+}
+
+.hotkeyEdit {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.02);
+  cursor: pointer;
+  font-weight: 850;
+  color: rgba(15, 23, 42, 0.78);
+}
+
+.hotkeyEdit:hover {
+  border-color: rgba(43, 108, 255, 0.25);
+  background: rgba(43, 108, 255, 0.08);
+  color: var(--blue);
+}
+
 @media (max-width: 720px) {
   .fieldRow {
     grid-template-columns: 1fr;
