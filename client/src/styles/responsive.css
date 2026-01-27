@@ -1,0 +1,57 @@
+:root {
+  /* Breakpoints (for JS/hints; CSS media queries use raw values) */
+  --bp-xs: 360px;
+  --bp-sm: 640px;
+  --bp-md: 768px;
+  --bp-lg: 1024px;
+
+  /* Mobile-first spacing defaults (override per page/component as needed) */
+  --page-pad: clamp(12px, 3vw, 24px);
+  --tap-min: 44px;
+}
+
+/* Safe-area helper utilities (use on fixed headers/footers, pages, etc.) */
+.safePad {
+  padding-top: var(--safe-top);
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+}
+.safePadX {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+.safePadY {
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+}
+.safeTopPad {
+  padding-top: var(--safe-top);
+}
+.safeBottomPad {
+  padding-bottom: var(--safe-bottom);
+}
+
+/* Touch ergonomics helpers */
+.tapTarget {
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+}
+
+/* Responsive visibility helpers */
+.mobileOnly {
+  display: none;
+}
+.desktopOnly {
+  display: initial;
+}
+@media (max-width: 640px) {
+  .mobileOnly {
+    display: initial;
+  }
+  .desktopOnly {
+    display: none;
+  }
+}
+
+

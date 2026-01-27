@@ -1,12 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import {
   ArrowLeft,
   Bell,
-  ChevronDown,
-  CircleHelp,
   File,
   FileArchive,
   FileImage,
@@ -15,6 +13,7 @@ import {
   Eraser,
   Hand,
   Link2,
+  Spline,
   MessageCircle,
   MousePointer2,
   Paperclip,
@@ -32,7 +31,7 @@ import {
 } from 'lucide-react';
 import { getHealth } from '../http/health';
 import { getWorkspace } from '../http/workspaceAPI';
-import { getToken } from '../http/userAPI';
+import { getToken, refreshAuth } from '../http/userAPI';
 import {
   createElementOnDesk,
   getElementsByDesk,
@@ -42,6 +41,7 @@ import {
   getLinkPreview,
 } from '../http/elementsAPI';
 import { createElementComment, getElementComments } from '../http/commentsAPI';
+import { chatWithDesk, getAiStatus } from '../http/aiAPI';
 import UserMenu from '../components/UserMenu';
 import MembersMenu from '../components/MembersMenu';
 import styles from '../styles/WorkspacePage.module.css';
@@ -60,6 +60,15 @@ const QUICK_REACTIONS = ['😍', '😢', '😁', '🤣', '😌', '😎'];
 
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Stable callback wrapper: keeps function identity stable while always calling the latest implementation.
+function useEvent(handler) {
+  const handlerRef = useRef(handler);
+  useLayoutEffect(() => {
+    handlerRef.current = handler;
+  });
+  return useCallback((...args) => handlerRef.current?.(...args), []);
 }
 
 function renderHighlightedText(text, query, markClassName) {
@@ -89,11 +98,11 @@ function renderHighlightedText(text, query, markClassName) {
   return nodes.length ? nodes : s;
 }
 
-function IconBtn({ label, title, children, onClick, disabled, buttonRef }) {
+function IconBtn({ label, title, children, onClick, disabled, buttonRef, className }) {
   return (
     <button
       type="button"
-      className={styles.iconBtn}
+      className={`${styles.iconBtn} ${className || ''}`}
       ref={buttonRef}
       onClick={onClick}
       aria-label={label}
@@ -105,9 +114,214 @@ function IconBtn({ label, title, children, onClick, disabled, buttonRef }) {
   );
 }
 
+const NoteTextElement = React.memo(function NoteTextElement({
+  el,
+  isEditing,
+  commentsEnabled,
+  deletingElementId,
+  searchQuery,
+  isSearchHit,
+  activeTool,
+  connectorHoverElementId,
+  connectorFromElementId,
+  connectorToHoverElementId,
+  actions,
+}) {
+  const elementId = el?.id;
+  const content = el?.content;
+  const [draft, setDraft] = React.useState(String(content ?? ''));
+
+  React.useEffect(() => {
+    // When entering edit mode, initialize draft from current content.
+    if (!elementId) return;
+    if (isEditing) setDraft(String(content ?? ''));
+  }, [isEditing, elementId, content]);
+
+  if (!elementId) return null;
+
+  const showConnectorEndpoints =
+    isEditing ||
+    (activeTool === 'connector' && connectorHoverElementId === elementId) ||
+    connectorFromElementId === elementId ||
+    connectorToHoverElementId === elementId;
+
+  const innerClass =
+    el.type === 'note' ? `${styles.elementInner} ${styles.noteInner}` : `${styles.elementInner} ${styles.textInner}`;
+  const displayTextClass = el.type === 'note' ? `${styles.displayText} ${styles.notePad}` : styles.displayText;
+  const editorClass = el.type === 'note' ? `${styles.editor} ${styles.noteEditorPad}` : styles.editor;
+
+  const reactionBubbles = actions.layoutReactionBubbles(elementId, el.reactions);
+  const ex = Number(el.x ?? 0);
+  const ey = Number(el.y ?? 0);
+
+  return (
+    <div
+      data-element-id={elementId}
+      className={styles.element}
+      style={{
+        left: 0,
+        top: 0,
+        width: el.width ?? 240,
+        height: el.height ?? 160,
+        zIndex: el.zIndex ?? 0,
+        transform: `translate3d(${ex}px, ${ey}px, 0) rotate(${el.rotation ?? 0}deg)`,
+      }}
+      onPointerDown={(ev) => actions.onElementPointerDown(elementId, ev)}
+      onPointerUp={(ev) => actions.maybeEnterEditOnPointerUp(elementId, ev)}
+      onClick={(ev) => actions.onElementClick(elementId, ev)}
+      onContextMenu={(ev) => {
+        if (activeTool === 'pen' || activeTool === 'eraser') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        actions.openReactionPicker(elementId, ev.clientX, ev.clientY);
+      }}
+      onDoubleClick={() => {
+        if (activeTool === 'pen' || activeTool === 'eraser') return;
+        actions.beginEditing(elementId);
+      }}
+    >
+      {commentsEnabled ? (
+        <button
+          type="button"
+          className={styles.commentBtn}
+          onPointerDown={(ev) => ev.stopPropagation()}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            actions.openComments(elementId);
+          }}
+          aria-label="Comments"
+          title="Комментарии"
+        >
+          <MessageCircle size={16} />
+        </button>
+      ) : null}
+      <div className={`${innerClass} ${isSearchHit ? styles.elementSearchHit : ''}`}>
+        {isEditing ? (
+          <textarea
+            className={editorClass}
+            value={draft}
+            autoFocus
+            onPointerDown={(ev) => ev.stopPropagation()}
+            onBlur={(ev) => {
+              // Exit edit mode when focus leaves the element entirely (e.g. clicking toolbar).
+              const next = ev.relatedTarget;
+              if (next && next.closest?.(`[data-element-id="${elementId}"]`)) return;
+              actions.endEditing?.();
+            }}
+            onChange={(ev) => {
+              const next = ev.target.value;
+              setDraft(next);
+              // Keep the latest content in the mutable ref, so endEditing() persists the newest value,
+              // without rerendering the whole board on every keystroke.
+              actions.mutateElementRef(elementId, { content: next });
+              if (el.type === 'note') actions.queueNoteEdit(elementId, next);
+            }}
+            onKeyDown={async (ev) => {
+              if (ev.key === 'Escape') {
+                ev.preventDefault();
+                ev.stopPropagation();
+                await actions.endEditing();
+                return;
+              }
+              if (ev.key === 'Enter' && !ev.shiftKey) {
+                ev.preventDefault();
+                await actions.endEditing();
+              }
+            }}
+          />
+        ) : (
+          <div className={displayTextClass}>{renderHighlightedText(el.content ?? '', searchQuery, styles.searchMark)}</div>
+        )}
+      </div>
+
+      {showConnectorEndpoints ? (
+        <div className={styles.connectorEndpointsBox} aria-hidden="true">
+          <div
+            className={`${styles.connectorEndpoint} ${styles.epTop}`}
+            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'top', ev)}
+          />
+          <div
+            className={`${styles.connectorEndpoint} ${styles.epRight}`}
+            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'right', ev)}
+          />
+          <div
+            className={`${styles.connectorEndpoint} ${styles.epBottom}`}
+            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'bottom', ev)}
+          />
+          <div
+            className={`${styles.connectorEndpoint} ${styles.epLeft}`}
+            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'left', ev)}
+          />
+        </div>
+      ) : null}
+
+      {reactionBubbles.length ? (
+        <div className={styles.reactionsLayer} aria-label="Reactions">
+          {reactionBubbles.map((b) => (
+            <button
+              key={b.emoji}
+              type="button"
+              className={`${styles.reactionBubble} ${b.count === 1 ? styles.reactionSolo : ''}`}
+              data-side={b.side}
+              style={{
+                left: `${b.xPct}%`,
+                top: `${b.yPct}%`,
+              }}
+              onPointerDown={(ev) => ev.stopPropagation()}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                actions.toggleReaction(elementId, b.emoji);
+              }}
+              title={b.count > 1 ? `${b.emoji} · ${b.count}` : b.emoji}
+              aria-label={b.count > 1 ? `${b.emoji} ${b.count}` : b.emoji}
+            >
+              <span className={styles.reactionEmoji}>{b.emoji}</span>
+              {b.count > 1 ? <span className={styles.reactionCount}>{b.count}</span> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {isEditing ? (
+        <div className={styles.transformBox}>
+          <div className={styles.elementActions}>
+            <button
+              type="button"
+              className={styles.deleteElementBtn}
+              onPointerDown={(ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                actions.handleDeleteElement(el);
+              }}
+              disabled={deletingElementId === elementId}
+              aria-label="Delete element"
+              title="Delete element"
+            >
+              {deletingElementId === elementId ? (
+                <Loader2 size={16} className={styles.spinner} />
+              ) : (
+                <Trash2 size={16} />
+              )}
+            </button>
+          </div>
+          <div className={`${styles.resizeHandle} ${styles.hNW}`} onPointerDown={(ev) => actions.startResize(elementId, 'nw', ev)} />
+          <div className={`${styles.resizeHandle} ${styles.hN}`} onPointerDown={(ev) => actions.startResize(elementId, 'n', ev)} />
+          <div className={`${styles.resizeHandle} ${styles.hNE}`} onPointerDown={(ev) => actions.startResize(elementId, 'ne', ev)} />
+          <div className={`${styles.resizeHandle} ${styles.hE}`} onPointerDown={(ev) => actions.startResize(elementId, 'e', ev)} />
+          <div className={`${styles.resizeHandle} ${styles.hSE}`} onPointerDown={(ev) => actions.startResize(elementId, 'se', ev)} />
+          <div className={`${styles.resizeHandle} ${styles.hS}`} onPointerDown={(ev) => actions.startResize(elementId, 's', ev)} />
+          <div className={`${styles.resizeHandle} ${styles.hSW}`} onPointerDown={(ev) => actions.startResize(elementId, 'sw', ev)} />
+          <div className={`${styles.resizeHandle} ${styles.hW}`} onPointerDown={(ev) => actions.startResize(elementId, 'w', ev)} />
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 const TOOLS = [
   { id: 'select', label: 'Select', Icon: MousePointer2, hotspot: [2, 2], fallbackCursor: 'default' },
   { id: 'hand', label: 'Hand', Icon: Hand, hotspot: [12, 12], fallbackCursor: 'grab' },
+  { id: 'connector', label: 'Соединительные линии', Icon: Spline, hotspot: [4, 4], fallbackCursor: 'crosshair' },
   { id: 'note', label: 'Note', Icon: Square, hotspot: [12, 12], fallbackCursor: 'copy' },
   { id: 'text', label: 'Text', Icon: Type, hotspot: [8, 18], fallbackCursor: 'text' },
   { id: 'pen', label: 'Pen', Icon: PenLine, hotspot: [2, 20], fallbackCursor: 'crosshair' },
@@ -256,6 +470,9 @@ export default function WorkspacePage() {
   const [brushColor, setBrushColor] = useState(DEFAULT_BRUSH_COLOR);
   const [brushWidth, setBrushWidth] = useState(DEFAULT_BRUSH_WIDTH);
   const [liveStroke, setLiveStroke] = useState(null); // { points:[{x,y}], color, width }
+  const [connectorHoverElementId, setConnectorHoverElementId] = useState(null);
+  const [connectorDraft, setConnectorDraft] = useState(null); // { from:{elementId,side}, toHover:{elementId,side|null}, cursor:{x,y} }
+  const [selectedConnectorId, setSelectedConnectorId] = useState(null);
   const [reactionPicker, setReactionPicker] = useState(null); // { elementId, x, y }
   const [reactionCustomEmoji, setReactionCustomEmoji] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -269,16 +486,36 @@ export default function WorkspacePage() {
   const commentInputRef = useRef(null);
   const commentsListRef = useRef(null);
 
+  const deskIdNum = useMemo(() => {
+    const n = Number(workspace?.id ?? workspace?.deskId ?? id);
+    return Number.isFinite(n) ? n : null;
+  }, [workspace?.id, workspace?.deskId, id]);
+
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiStatus, setAiStatus] = useState(null);
+  const [aiMessages, setAiMessages] = useState([]); // [{ id, role: 'user'|'assistant', content, ts }]
+  const [aiDraft, setAiDraft] = useState('');
+  const [aiSending, setAiSending] = useState(false);
+  const [aiError, setAiError] = useState(null);
+  const aiInputRef = useRef(null);
+  const aiListRef = useRef(null);
+
   const selectStartRef = useRef(null);
   const panStartRef = useRef(null);
   const interactionRef = useRef(null);
+  const suppressNextElementClickRef = useRef(new Set());
   const fetchingPreviewsRef = useRef(new Set());
   const historyRef = useRef({ past: [], future: [] });
+  const createdElementIdsRef = useRef(new Set()); // elementIds created in this session (used for delete undo)
   const applyingHistoryRef = useRef(false);
   const editStartSnapRef = useRef(new Map()); // elementId -> snapshot
+  const endingEditRef = useRef(false);
+  const elementNodeCacheRef = useRef(new Map()); // elementId -> HTMLElement
   const handHoldRef = useRef({ active: false, previousTool: null });
   const liveStrokeRef = useRef(null);
   const eraseStateRef = useRef({ active: false, erasedIds: new Set(), lastTs: 0 });
+  const connectorDraftRef = useRef(null);
+  const connectorDraftRafRef = useRef(null);
   const reactionPickerRef = useRef(null);
   const searchBtnRef = useRef(null);
   const searchPopoverRef = useRef(null);
@@ -299,6 +536,70 @@ export default function WorkspacePage() {
   }, [activeTool]);
 
   useEffect(() => {
+    if (activeTool === 'connector') return () => {};
+    setConnectorHoverElementId(null);
+    return () => {};
+  }, [activeTool]);
+
+  useEffect(() => {
+    let mounted = true;
+    getAiStatus()
+      .then((s) => mounted && setAiStatus(s))
+      .catch(() => mounted && setAiStatus({ enabled: false, provider: null, model: null }));
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!aiPanelOpen) return () => {};
+    window.setTimeout(() => aiInputRef.current?.focus?.(), 0);
+  }, [aiPanelOpen]);
+
+  useEffect(() => {
+    if (!aiPanelOpen) return;
+    const node = aiListRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [aiPanelOpen, aiMessages]);
+
+  const sendAiMessage = async (raw) => {
+    const message = String(raw ?? aiDraft ?? '').trim();
+    if (!message || !deskIdNum || aiSending) return;
+
+    setAiError(null);
+    const userMsg = { id: `u-${Date.now()}-${Math.random().toString(16).slice(2)}`, role: 'user', content: message, ts: Date.now() };
+    const history = aiMessages
+      .filter((m) => m?.role === 'user' || m?.role === 'assistant')
+      .slice(-16)
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    setAiMessages((prev) => [...prev, userMsg]);
+    setAiDraft('');
+    setAiSending(true);
+
+    try {
+      const data = await chatWithDesk(deskIdNum, { message, history });
+      const reply = String(data?.reply ?? '').trim();
+      const assistantMsg = {
+        id: `a-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        role: 'assistant',
+        content: reply || '…',
+        ts: Date.now(),
+      };
+      setAiMessages((prev) => [...prev, assistantMsg]);
+      if (data?.provider || data?.model) {
+        setAiStatus((cur) => cur || { enabled: true, provider: data.provider || null, model: data.model || null });
+      }
+    } catch (e) {
+      const msg = e?.response?.data?.error || e?.message || 'AI request failed';
+      const hint = e?.response?.data?.hint || null;
+      setAiError(hint ? `${msg}\n${hint}` : msg);
+    } finally {
+      setAiSending(false);
+    }
+  };
+
+  useEffect(() => {
     if (!reactionPicker) return () => {};
     const onPointerDown = (ev) => {
       const node = reactionPickerRef.current;
@@ -315,11 +616,24 @@ export default function WorkspacePage() {
     };
   }, [reactionPicker]);
 
-  const manualSearchIndex = useMemo(() => buildManualBoardSearchIndex(elements), [elements]);
-  const manualSearchHits = useMemo(
-    () => runManualBoardSearch(manualSearchIndex, searchQuery, { limit: 60 }),
-    [manualSearchIndex, searchQuery]
+  // Perf: building the search index is O(n) over all elements and was happening even when search query was empty,
+  // which is disastrous during drag (elements change every rAF). Only build it when actually searching.
+  const hasSearchQuery = Boolean(String(searchQuery || '').trim());
+  const manualSearchIndex = useMemo(
+    () => (hasSearchQuery ? buildManualBoardSearchIndex(elements) : []),
+    [hasSearchQuery, elements]
   );
+  const elementsById = useMemo(() => {
+    const m = new Map();
+    for (const el of Array.isArray(elements) ? elements : []) {
+      if (el?.id != null) m.set(el.id, el);
+    }
+    return m;
+  }, [elements]);
+  const manualSearchHits = useMemo(() => {
+    if (!hasSearchQuery) return [];
+    return runManualBoardSearch(manualSearchIndex, searchQuery, { limit: 60 });
+  }, [hasSearchQuery, manualSearchIndex, searchQuery]);
 
   const manualSearchHitIds = useMemo(() => {
     const ids = new Set();
@@ -368,6 +682,110 @@ export default function WorkspacePage() {
     return { left, top, width, height };
   };
 
+  const getDeskPointFromClient = (clientX, clientY) => {
+    const el = canvasRef.current;
+    if (!el) return { x: 0, y: 0 };
+    const rect = el.getBoundingClientRect();
+    return { x: clientX - rect.left - viewOffset.x, y: clientY - rect.top - viewOffset.y };
+  };
+
+  const isConnectableElement = (el) => Boolean(el?.id) && Boolean(el?.type) && el.type !== 'connector';
+
+  const getAnchorPoint = (el, side) => {
+    // Outset ensures the arrowhead doesn't get hidden under the target element
+    // because connectors are rendered beneath elements (z-index).
+    const OUTSET = 10;
+    const x = Number(el?.x ?? 0);
+    const y = Number(el?.y ?? 0);
+    const w = Number(el?.width ?? 240);
+    const h = Number(el?.height ?? 160);
+    const s = String(side || 'right');
+    let p = { x: x + w, y: y + h / 2 };
+    let dir = { x: 1, y: 0 };
+    if (s === 'top') {
+      p = { x: x + w / 2, y };
+      dir = { x: 0, y: -1 };
+    } else if (s === 'bottom') {
+      p = { x: x + w / 2, y: y + h };
+      dir = { x: 0, y: 1 };
+    } else if (s === 'left') {
+      p = { x, y: y + h / 2 };
+      dir = { x: -1, y: 0 };
+    }
+
+    return { x: p.x + dir.x * OUTSET, y: p.y + dir.y * OUTSET, dir };
+  };
+
+  const pickHoverElementId = (deskP, threshold = 15) => {
+    const px = Number(deskP?.x ?? 0);
+    const py = Number(deskP?.y ?? 0);
+    const t = Math.max(0, Number(threshold ?? 0));
+    let bestId = null;
+    let bestD2 = Infinity;
+
+    const list = elementsRef.current || [];
+    for (const el of list) {
+      if (!isConnectableElement(el)) continue;
+      const x = Number(el.x ?? 0);
+      const y = Number(el.y ?? 0);
+      const w = Number(el.width ?? 0);
+      const h = Number(el.height ?? 0);
+      if (px < x - t || px > x + w + t || py < y - t || py > y + h + t) continue;
+
+      const dx = px < x ? x - px : px > x + w ? px - (x + w) : 0;
+      const dy = py < y ? y - py : py > y + h ? py - (y + h) : 0;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestId = el.id;
+      }
+    }
+    return bestId;
+  };
+
+  const pickSideAtPoint = (el, deskP, radius = 14) => {
+    if (!el?.id) return null;
+    const px = Number(deskP?.x ?? 0);
+    const py = Number(deskP?.y ?? 0);
+    const r = Math.max(0, Number(radius ?? 0));
+    const r2 = r * r;
+    const sides = ['top', 'right', 'bottom', 'left'];
+    let best = null;
+    let bestD2 = Infinity;
+    for (const side of sides) {
+      const a = getAnchorPoint(el, side);
+      const dx = px - a.x;
+      const dy = py - a.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= r2 && d2 < bestD2) {
+        bestD2 = d2;
+        best = side;
+      }
+    }
+    return best;
+  };
+
+  const computeConnectorPathFromAnchors = (fromAnchor, toAnchor, bend) => {
+    const p0 = { x: Number(fromAnchor?.x ?? 0), y: Number(fromAnchor?.y ?? 0) };
+    const p3 = { x: Number(toAnchor?.x ?? 0), y: Number(toAnchor?.y ?? 0) };
+    const d0 = fromAnchor?.dir || { x: 1, y: 0 };
+    const d3 = toAnchor?.dir || { x: -1, y: 0 };
+    const dx = p3.x - p0.x;
+    const dy = p3.y - p0.y;
+    const dist = Math.hypot(dx, dy);
+    const len = Math.max(40, Math.min(240, dist * 0.35));
+    const bx = Number(bend?.x ?? 0);
+    const by = Number(bend?.y ?? 0);
+    const mid = { x: (p0.x + p3.x) / 2, y: (p0.y + p3.y) / 2 };
+    const c1 = { x: p0.x + Number(d0.x ?? 0) * len + bx * 0.5, y: p0.y + Number(d0.y ?? 0) * len + by * 0.5 };
+    // NOTE: d3 is an "outward" direction at the target; control point should be placed outward too,
+    // so the curve approaches the element from outside (instead of bending under it).
+    const c2 = { x: p3.x + Number(d3.x ?? 0) * len + bx * 0.5, y: p3.y + Number(d3.y ?? 0) * len + by * 0.5 };
+    const handle = { x: mid.x + bx, y: mid.y + by };
+    const d = `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p3.x} ${p3.y}`;
+    return { d, mid, handle, p0, p3 };
+  };
+
   const stopInteractions = (e) => {
     if (e?.currentTarget && typeof e.pointerId === 'number') {
       try {
@@ -382,12 +800,12 @@ export default function WorkspacePage() {
     setIsPanning(false);
   };
 
-  const extractContent = (el) => {
+  const extractContent = useCallback((el) => {
     if (!el) return '';
     if (el.type === 'note') return el.note?.text ?? el.Note?.text ?? '';
     if (el.type === 'text') return el.text?.content ?? el.Text?.content ?? '';
     return '';
-  };
+  }, []);
 
   const isEditableTarget = (target) => {
     const el = target;
@@ -402,10 +820,14 @@ export default function WorkspacePage() {
     if (!el) return undefined;
     const doc = el.type === 'document' ? el.document ?? el.Document : null;
     const link = el.type === 'link' ? el.link ?? el.Link : null;
+    const drawing = el.type === 'drawing' ? el.drawing ?? el.Drawing : null;
+    const connector = el.type === 'connector' ? el.connector ?? el.Connector : null;
     if (el.type === 'note') return { text: el.content ?? '' };
     if (el.type === 'text') return { content: el.content ?? '' };
     if (el.type === 'document') return { title: doc?.title, url: doc?.url };
     if (el.type === 'link') return { title: link?.title, url: link?.url, previewImageUrl: link?.previewImageUrl };
+    if (el.type === 'drawing') return { data: drawing?.data };
+    if (el.type === 'connector') return { data: connector?.data };
     return undefined;
   };
 
@@ -453,7 +875,7 @@ export default function WorkspacePage() {
     updateHistoryMeta();
   };
 
-  const normalizeReactions = (reactions) => {
+  const normalizeReactions = useCallback((reactions) => {
     if (!reactions || typeof reactions !== 'object') return {};
     const out = {};
     for (const [emoji, users] of Object.entries(reactions)) {
@@ -468,65 +890,71 @@ export default function WorkspacePage() {
       if (uniq.length) out[e] = uniq;
     }
     return out;
-  };
+  }, []);
 
-  const hash32 = (str) => {
-    let h = 2166136261;
-    const s = String(str ?? '');
-    for (let i = 0; i < s.length; i += 1) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    return h >>> 0;
-  };
+  const reactionSlotsRef = useRef(new Map()); // elementId -> Map(emoji -> slotIndex)
 
-  const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+  // Fixed slots around the element (to match the desired "frame" layout):
+  // first 6: 3 top + 3 bottom, then sides.
+  const REACTION_SLOTS = [
+    { xPct: 18, yPct: 0, side: 'top' },
+    { xPct: 50, yPct: 0, side: 'top' },
+    { xPct: 82, yPct: 0, side: 'top' },
+    { xPct: 18, yPct: 100, side: 'bottom' },
+    { xPct: 50, yPct: 100, side: 'bottom' },
+    { xPct: 82, yPct: 100, side: 'bottom' },
+    { xPct: 0, yPct: 50, side: 'left' },
+    { xPct: 100, yPct: 50, side: 'right' },
+    { xPct: 0, yPct: 25, side: 'left' },
+    { xPct: 0, yPct: 75, side: 'left' },
+    { xPct: 100, yPct: 25, side: 'right' },
+    { xPct: 100, yPct: 75, side: 'right' },
+  ];
 
-  const layoutReactionBubbles = (elementId, width, height, reactions) => {
+  const layoutReactionBubbles = (elementId, reactions) => {
     const r = normalizeReactions(reactions);
-    const entries = Object.entries(r)
+    const base = Object.entries(r)
       .filter(([, users]) => Array.isArray(users) && users.length > 0)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    if (!entries.length) return [];
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([emoji, users]) => ({ emoji, count: users.length }));
 
-    const w = Number(width ?? 240) || 240;
-    const h = Number(height ?? 160) || 160;
-    const baseRadius = clamp(Math.max(w, h) / 2 + 18, 26, 140);
-    const minSep = clamp(32 / baseRadius, 0.32, Math.PI / 2.2);
+    if (!base.length) return base;
 
-    const usedAngles = [];
-    const out = [];
-    for (const [emoji, users] of entries) {
-      const seed = hash32(`${elementId}:${emoji}`);
-      let angle = ((seed % 3600) / 3600) * Math.PI * 2;
-      let tries = 0;
-      while (
-        usedAngles.some((a) => {
-          const d = Math.atan2(Math.sin(angle - a), Math.cos(angle - a));
-          return Math.abs(d) < minSep;
-        }) &&
-        tries < 30
-      ) {
-        angle += minSep * 1.15;
-        tries += 1;
-      }
-      usedAngles.push(angle);
+    const id = String(elementId ?? '');
+    if (!reactionSlotsRef.current.has(id)) reactionSlotsRef.current.set(id, new Map());
+    const slots = reactionSlotsRef.current.get(id);
 
-      const jitterR = ((seed >> 8) % 9) - 4; // [-4..4]
-      const jitterA = (((seed >> 16) % 9) - 4) * 0.02; // small
-      const rr = baseRadius + jitterR;
-      const aa = angle + jitterA;
-      out.push({
-        emoji,
-        count: users.length,
-        dx: Math.cos(aa) * rr,
-        dy: Math.sin(aa) * rr,
-      });
+    // Drop removed emojis so their slots become available again.
+    const current = new Set(base.map((b) => b.emoji));
+    for (const e of Array.from(slots.keys())) {
+      if (!current.has(e)) slots.delete(e);
     }
-    return out;
+
+    const used = new Set(slots.values());
+    const claimNextFreeSlot = () => {
+      for (let i = 0; i < REACTION_SLOTS.length; i += 1) {
+        if (!used.has(i)) return i;
+      }
+      return null;
+    };
+
+    // Assign new emojis to the next free fixed slot. Existing ones keep their slot => no jumping.
+    for (const b of base) {
+      if (slots.has(b.emoji)) continue;
+      const idx = claimNextFreeSlot();
+      if (idx == null) break;
+      slots.set(b.emoji, idx);
+      used.add(idx);
+    }
+
+    return base.map((b) => {
+      const slotIndex = slots.get(b.emoji);
+      const pos = slotIndex != null ? REACTION_SLOTS[slotIndex] : null;
+      return pos ? { ...b, ...pos, slotIndex } : { ...b, xPct: 50, yPct: 100, side: 'bottom' };
+    });
   };
 
-  const elementToVm = (el) => {
+  const elementToVm = useCallback((el) => {
     if (!el || typeof el !== 'object') return el;
     const vm = {
       ...el,
@@ -540,8 +968,9 @@ export default function WorkspacePage() {
     if (vm.document == null && vm.Document != null) vm.document = vm.Document;
     if (vm.link == null && vm.Link != null) vm.link = vm.Link;
     if (vm.drawing == null && vm.Drawing != null) vm.drawing = vm.Drawing;
+    if (vm.connector == null && vm.Connector != null) vm.connector = vm.Connector;
     return vm;
-  };
+  }, [extractContent, normalizeReactions]);
 
   const openReactionPicker = (elementId, x, y) => {
     if (!elementId) return;
@@ -605,8 +1034,206 @@ export default function WorkspacePage() {
     }
   };
 
+  const flushConnectorDraft = () => {
+    connectorDraftRafRef.current = null;
+    const cur = connectorDraftRef.current;
+    setConnectorDraft(cur ? { ...cur, from: { ...cur.from }, toHover: { ...cur.toHover }, cursor: { ...cur.cursor } } : null);
+  };
+
+  const setConnectorDraftNext = (next) => {
+    connectorDraftRef.current = next;
+    if (connectorDraftRafRef.current == null) {
+      connectorDraftRafRef.current = window.requestAnimationFrame(flushConnectorDraft);
+    }
+  };
+
+  const cancelConnectorDraft = () => {
+    connectorDraftRef.current = null;
+    setConnectorDraft(null);
+    setConnectorHoverElementId(null);
+  };
+
+  const createConnectorOnDesk = async ({ fromElementId, fromSide, toElementId, toSide, bend }) => {
+    const deskId = workspace?.id ?? workspace?.deskId ?? id;
+    if (!deskId || !fromElementId || !toElementId || !fromSide || !toSide) return;
+    if (Number(fromElementId) === Number(toElementId)) return;
+
+    setActionError(null);
+    try {
+      const payload = {
+        data: {
+          v: 1,
+          kind: 'connector',
+          from: { elementId: Number(fromElementId), side: String(fromSide) },
+          to: { elementId: Number(toElementId), side: String(toSide) },
+          bend: { x: Number(bend?.x ?? 0), y: Number(bend?.y ?? 0) },
+          style: { color: '#0f172a', width: 2, arrowEnd: true },
+        },
+      };
+
+      const created = await createElementOnDesk(deskId, {
+        type: 'connector',
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        zIndex: 0,
+        payload,
+      });
+      const vm = elementToVm(created);
+      if (vm?.id) createdElementIdsRef.current.add(vm.id);
+      setElements((prev) => [...prev, vm]);
+      setSelectedConnectorId(vm?.id ?? null);
+
+      if (!applyingHistoryRef.current) {
+        const snap = snapshotForHistory(vm);
+        if (deskId && snap) {
+          pushHistory({
+            kind: 'create-element',
+            deskId,
+            elementId: vm.id,
+            snapshot: snap,
+          });
+        }
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to create connector:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || 'Failed to create connector');
+      window.setTimeout(() => setActionError(null), 4500);
+    }
+  };
+
+  const startConnectorDrag = (fromElementId, fromSide, e) => {
+    if (!fromElementId || !fromSide) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    setSelectedConnectorId(null);
+
+    const pointerId = e.pointerId;
+    const startDeskP = getDeskPointFromClient(e.clientX, e.clientY);
+    const initial = {
+      from: { elementId: fromElementId, side: String(fromSide) },
+      toHover: { elementId: null, side: null },
+      cursor: startDeskP,
+    };
+    setConnectorDraftNext(initial);
+    setConnectorHoverElementId(fromElementId);
+
+    const cleanup = (onMove, onUp) => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+    };
+
+    const onMove = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      const deskP = getDeskPointFromClient(ev.clientX, ev.clientY);
+      const hoverId = pickHoverElementId(deskP, 15);
+      const hoverEl = hoverId ? (elementsRef.current || []).find((x) => x?.id === hoverId) : null;
+      const hoverSide = hoverEl ? pickSideAtPoint(hoverEl, deskP, 18) : null;
+      setConnectorDraftNext({
+        from: initial.from,
+        toHover: { elementId: hoverId, side: hoverSide },
+        cursor: deskP,
+      });
+      setConnectorHoverElementId(hoverId || null);
+    };
+
+    const onUp = async (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup(onMove, onUp);
+      const cur = connectorDraftRef.current;
+      cancelConnectorDraft();
+      if (!cur?.from?.elementId || !cur?.from?.side) return;
+      const toId = cur?.toHover?.elementId;
+      const toSide = cur?.toHover?.side;
+      if (!toId || !toSide) return;
+      await createConnectorOnDesk({
+        fromElementId: cur.from.elementId,
+        fromSide: cur.from.side,
+        toElementId: toId,
+        toSide,
+        bend: { x: 0, y: 0 },
+      });
+    };
+
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+  };
+
+  const startConnectorBendDrag = (connectorId, e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const idNum = connectorId;
+    const el = elementsRef.current?.find?.((x) => x?.id === idNum) || elements.find((x) => x?.id === idNum);
+    if (!el) return;
+
+    const before = snapshotForHistory(el);
+    const pointerId = e.pointerId;
+
+    const cleanup = (onMove, onUp) => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+    };
+
+    const onMove = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      const curEl = elementsRef.current?.find?.((x) => x?.id === idNum) || el;
+      const data = curEl?.connector?.data || curEl?.Connector?.data || {};
+      const from = data?.from || {};
+      const to = data?.to || {};
+      const list = elementsRef.current || [];
+      const fromEl = list.find((x) => x?.id === from.elementId);
+      const toEl = list.find((x) => x?.id === to.elementId);
+      if (!fromEl || !toEl) return;
+      const a0 = getAnchorPoint(fromEl, from.side);
+      const a1 = getAnchorPoint(toEl, to.side);
+      const { mid } = computeConnectorPathFromAnchors(a0, a1, data?.bend);
+      const deskP = getDeskPointFromClient(ev.clientX, ev.clientY);
+      const nextBend = { x: deskP.x - mid.x, y: deskP.y - mid.y };
+      const nextData = { ...data, bend: nextBend };
+      const child = curEl?.connector ?? curEl?.Connector ?? {};
+      const nextChild = { ...child, data: nextData };
+      updateLocalElement(idNum, { connector: nextChild, Connector: nextChild });
+    };
+
+    const onUp = async (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup(onMove, onUp);
+      const curEl = elementsRef.current?.find?.((x) => x?.id === idNum) || el;
+      const data = curEl?.connector?.data || curEl?.Connector?.data || {};
+      try {
+        const updated = await updateElement(idNum, { payload: { data } });
+        const vm = elementToVm(updated);
+        setElements((prev) => prev.map((x) => (x.id === vm.id ? { ...x, ...vm } : x)));
+
+        if (!applyingHistoryRef.current && before) {
+          const afterSnap = snapshotForHistory(vm);
+          if (afterSnap && !snapshotEquals(before, afterSnap)) {
+            pushHistory({
+              kind: 'update-element',
+              elementId: idNum,
+              before,
+              after: afterSnap,
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+  };
+
   const beginEditing = (elementId, explicitBeforeSnap) => {
     if (!elementId) return;
+    // Enforce a single active editor: switching elements should commit the previous one.
+    if (editingElementId && editingElementId !== elementId) {
+      endEditing();
+    }
     if (!editStartSnapRef.current.has(elementId)) {
       const before = explicitBeforeSnap || snapshotForHistory(elementsRef.current.find((x) => x.id === elementId));
       if (before) editStartSnapRef.current.set(elementId, before);
@@ -616,17 +1243,120 @@ export default function WorkspacePage() {
 
   const endEditing = async () => {
     if (!editingElementId) return;
-    const current = elementsRef.current.find((el) => el.id === editingElementId);
-    setEditingElementId(null);
-    if (current) {
-      try {
-        const before = editStartSnapRef.current.get(editingElementId) || null;
-        editStartSnapRef.current.delete(editingElementId);
+    if (endingEditRef.current) return;
+    endingEditRef.current = true;
+    const idToEnd = editingElementId;
+    const current = elementsRef.current.find((el) => el.id === idToEnd);
+    // Don't clobber a new editor that may have been opened while we were ending this one.
+    setEditingElementId((cur) => (cur === idToEnd ? null : cur));
+    try {
+      if (current) {
+        const before = editStartSnapRef.current.get(idToEnd) || null;
+        editStartSnapRef.current.delete(idToEnd);
+        // Optimistic: reflect the latest local changes immediately; server sync happens async.
+        setElements((prev) => prev.map((el) => (el.id === idToEnd ? { ...el, ...current } : el)));
         await persistElement(current, { historyBefore: before });
-      } catch {
-        // ignore
       }
+    } catch {
+      // ignore
+    } finally {
+      endingEditRef.current = false;
     }
+  };
+
+  const maybeStartElementDrag = (elementId, pointerDownEvent) => {
+    // For touch/pen pointer events, `button` can be -1; still allow dragging.
+    if (pointerDownEvent.pointerType === 'mouse' && pointerDownEvent.button !== 0) return;
+    if (interactionRef.current) return; // already dragging/resizing
+
+    const el = elementsRef.current.find((x) => x.id === elementId);
+    if (!el) return;
+
+    const before = snapshotForHistory(el);
+    const startX = pointerDownEvent.clientX;
+    const startY = pointerDownEvent.clientY;
+    const pointerId = pointerDownEvent.pointerId;
+
+    // Higher threshold avoids accidental drags on click (touchpad jitter -> click is treated as drag).
+    const threshold = 10; // px
+
+    const cleanup = (onMove, onUp) => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+    };
+
+    const beginDragNow = () => {
+      // Suppress the click that will fire after a drag, so it doesn't enter edit mode.
+      suppressNextElementClickRef.current.add(elementId);
+
+      interactionRef.current = { kind: 'drag', elementId, startX, startY, origin: { x: el.x, y: el.y } };
+
+      const onDragMove = (ev) => {
+        const cur = interactionRef.current;
+        if (!cur || cur.kind !== 'drag' || cur.elementId !== elementId) return;
+        const dx = ev.clientX - cur.startX;
+        const dy = ev.clientY - cur.startY;
+        const nextX = cur.origin.x + dx;
+        const nextY = cur.origin.y + dy;
+
+        // Perf: update DOM directly during drag to avoid rerendering the entire page at 60fps.
+        const root = canvasRef.current;
+        if (root) {
+          let node = elementNodeCacheRef.current.get(elementId);
+          if (!node || !node.isConnected) {
+            node = root.querySelector?.(`[data-element-id="${elementId}"]`) || null;
+            if (node) elementNodeCacheRef.current.set(elementId, node);
+          }
+          if (node) {
+            const rotation = Number((elementsRef.current.find((x) => x.id === elementId) || el)?.rotation ?? 0);
+            node.style.transform = `translate3d(${nextX}px, ${nextY}px, 0) rotate(${rotation}deg)`;
+          }
+        }
+
+        // Keep the latest coords in the ref so persistElement() commits correct data on drag end.
+        const refEl = elementsRef.current.find((x) => x.id === elementId);
+        if (refEl) {
+          refEl.x = nextX;
+          refEl.y = nextY;
+        }
+      };
+
+      const onDragUp = async () => {
+        window.removeEventListener('pointermove', onDragMove);
+        window.removeEventListener('pointerup', onDragUp);
+        interactionRef.current = null;
+        const latest = elementsRef.current.find((x) => x.id === elementId);
+        if (latest) {
+          try {
+            // Commit to React state once (end of drag) so other UI stays in sync without 60fps rerenders.
+            setElements((prev) => prev.map((x) => (x.id === elementId ? { ...x, x: latest.x, y: latest.y } : x)));
+            await persistElement(latest, { historyBefore: before });
+          } catch {
+            // ignore
+          }
+        }
+      };
+
+      window.addEventListener('pointermove', onDragMove);
+      window.addEventListener('pointerup', onDragUp, { once: true });
+    };
+
+    const onMove = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (dx * dx + dy * dy < threshold * threshold) return;
+      cleanup(onMove, onUp);
+      beginDragNow();
+    };
+
+    const onUp = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup(onMove, onUp);
+    };
+
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
   };
 
   const onElementPointerDown = (elementId, e) => {
@@ -634,9 +1364,19 @@ export default function WorkspacePage() {
     if (activeTool === 'hand') return;
     // Allow drawing tools to work over elements (don't stop bubbling to the canvas).
     if (activeTool === 'pen' || activeTool === 'eraser') return;
+    if (activeTool === 'connector') {
+      // Connector tool interacts only with endpoints; don't start drag/edit on body click.
+      e.stopPropagation();
+      return;
+    }
 
     // Prevent the canvas from calling preventDefault()/pointerCapture which breaks focus + dblclick.
     e.stopPropagation();
+    // Avoid text selection on the board: click is meant to select/edit, not highlight text.
+    // Do NOT prevent default if user interacts with an input/textarea/button inside the element.
+    if (!isEditableTarget(e.target) && !e.target?.closest?.('button')) {
+      e.preventDefault();
+    }
 
     // If the user clicks another element while editing, first commit the previous edit.
     if (editingElementId && editingElementId !== elementId) {
@@ -647,11 +1387,81 @@ export default function WorkspacePage() {
     if (e.detail === 2) {
       beginEditing(elementId);
     }
+
+    // Allow dragging elements by holding LMB anywhere on the element.
+    // Click-to-edit is handled in onClick and is suppressed after a drag.
+    maybeStartElementDrag(elementId, e);
+  };
+
+  const onElementClick = (elementId, ev) => {
+    // Avoid entering edit mode after a drag gesture.
+    if (suppressNextElementClickRef.current.has(elementId)) {
+      suppressNextElementClickRef.current.delete(elementId);
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+
+    if (activeTool === 'hand' || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'connector') return;
+    ev.stopPropagation();
+    if (editingElementId === elementId) return;
+    beginEditing(elementId);
+  };
+
+  // Avoid UI freezes: pointermove can fire hundreds of times/sec; batching keeps us to ~60fps.
+  const pendingLocalElementPatchesRef = useRef(new Map());
+  const localElementPatchRafRef = useRef(null);
+
+  const flushLocalElementPatches = () => {
+    localElementPatchRafRef.current = null;
+    const patches = pendingLocalElementPatchesRef.current;
+    if (!patches.size) return;
+
+    // Apply all pending patches in one state update.
+    setElements((prev) => {
+      let didChange = false;
+      const next = prev.map((el) => {
+        const patch = patches.get(el.id);
+        if (!patch) return el;
+        didChange = true;
+        return { ...el, ...patch };
+      });
+      return didChange ? next : prev;
+    });
+
+    patches.clear();
   };
 
   const updateLocalElement = (elementId, patch) => {
-    setElements((prev) => prev.map((el) => (el.id === elementId ? { ...el, ...patch } : el)));
+    if (!elementId || !patch) return;
+    const patches = pendingLocalElementPatchesRef.current;
+    const prev = patches.get(elementId);
+    patches.set(elementId, prev ? { ...prev, ...patch } : patch);
+    if (localElementPatchRafRef.current == null) {
+      localElementPatchRafRef.current = window.requestAnimationFrame(flushLocalElementPatches);
+    }
   };
+
+  useEffect(() => {
+    const pendingPatches = pendingLocalElementPatchesRef.current;
+    return () => {
+      if (localElementPatchRafRef.current != null) {
+        window.cancelAnimationFrame(localElementPatchRafRef.current);
+        localElementPatchRafRef.current = null;
+      }
+      pendingPatches.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (connectorDraftRafRef.current != null) {
+        window.cancelAnimationFrame(connectorDraftRafRef.current);
+        connectorDraftRafRef.current = null;
+      }
+      connectorDraftRef.current = null;
+    };
+  }, []);
 
   const queueNoteEdit = (elementId, text) => {
     const socket = socketRef.current;
@@ -687,14 +1497,42 @@ export default function WorkspacePage() {
     noteEditTimersRef.current.set(elementId, timer);
   };
 
-  const handleDeleteElement = async (el) => {
-    if (!el?.id) return;
-    setDeletingElementId(el.id);
+  const handleDeleteElement = async (elOrId) => {
+    const idToDeleteRaw = elOrId?.id ?? elOrId?.elementId ?? elOrId;
+    const idToDelete = Number(idToDeleteRaw);
+    if (!Number.isFinite(idToDelete)) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete element: invalid elementId', idToDeleteRaw);
+      setActionError('Element not found');
+      window.setTimeout(() => setActionError(null), 3000);
+      return;
+    }
+
+    // Prefer the latest in-memory element snapshot (may include unsaved local edits).
+    const latestEl =
+      elementsRef.current?.find?.((x) => Number(x?.id) === idToDelete) ||
+      elements.find?.((x) => Number(x?.id) === idToDelete) ||
+      null;
+    setDeletingElementId(idToDelete);
     setActionError(null);
     try {
-      await deleteElement(el.id);
-      setEditingElementId((cur) => (cur === el.id ? null : cur));
-      setElements((prev) => prev.filter((x) => x.id !== el.id));
+      // Optimistic: remove immediately, server sync in background.
+      setEditingElementId((cur) => (cur === idToDelete ? null : cur));
+      setCommentsPanel((cur) => (cur?.elementId === idToDelete ? null : cur));
+      setElements((prev) => prev.filter((x) => x.id !== idToDelete));
+      await deleteElement(idToDelete);
+      if (!applyingHistoryRef.current) {
+        const deskId = workspace?.id ?? workspace?.deskId ?? id;
+        const snap = snapshotForHistory(latestEl || elOrId);
+        if (deskId && snap) {
+          pushHistory({
+            kind: 'delete-element',
+            deskId,
+            elementId: idToDelete,
+            snapshot: snap,
+          });
+        }
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to delete element:', err?.response?.data || err);
@@ -778,7 +1616,19 @@ export default function WorkspacePage() {
         payload: { title: uploaded?.title || file.name, url: uploaded?.url },
       });
       const vm = elementToVm(created);
+      if (vm?.id) createdElementIdsRef.current.add(vm.id);
       setElements((prev) => [...prev, vm]);
+      if (!applyingHistoryRef.current) {
+        const snap = snapshotForHistory(vm);
+        if (deskId && snap) {
+          pushHistory({
+            kind: 'create-element',
+            deskId,
+            elementId: vm.id,
+            snapshot: snap,
+          });
+        }
+      }
       beginEditing(vm.id, snapshotForHistory(vm));
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -831,7 +1681,19 @@ export default function WorkspacePage() {
         payload,
       });
       const vm = elementToVm(created);
+      if (vm?.id) createdElementIdsRef.current.add(vm.id);
       setElements((prev) => [...prev, vm]);
+      if (!applyingHistoryRef.current) {
+        const snap = snapshotForHistory(vm);
+        if (deskId && snap) {
+          pushHistory({
+            kind: 'create-element',
+            deskId,
+            elementId: vm.id,
+            snapshot: snap,
+          });
+        }
+      }
       beginEditing(vm.id, snapshotForHistory(vm));
       setLinkDraftUrl('');
     } catch (err) {
@@ -842,43 +1704,6 @@ export default function WorkspacePage() {
     } finally {
       setCreatingLink(false);
     }
-  };
-
-  const startDrag = (elementId, e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const el = elements.find((x) => x.id === elementId);
-    if (!el) return;
-    const before = snapshotForHistory(el);
-
-    const startX = e.clientX;
-    const startY = e.clientY;
-    interactionRef.current = { kind: 'drag', elementId, startX, startY, origin: { x: el.x, y: el.y } };
-
-    const onMove = (ev) => {
-      const cur = interactionRef.current;
-      if (!cur || cur.kind !== 'drag' || cur.elementId !== elementId) return;
-      const dx = ev.clientX - cur.startX;
-      const dy = ev.clientY - cur.startY;
-      updateLocalElement(elementId, { x: cur.origin.x + dx, y: cur.origin.y + dy });
-    };
-
-    const onUp = async () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      interactionRef.current = null;
-      const latest = elementsRef.current.find((x) => x.id === elementId);
-      if (latest) {
-        try {
-          await persistElement(latest, { historyBefore: before });
-        } catch {
-          // ignore
-        }
-      }
-    };
-
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp, { once: true });
   };
 
   const startResize = (elementId, handle, e) => {
@@ -979,6 +1804,59 @@ export default function WorkspacePage() {
     }
   };
 
+  const restoreDeletedElement = async (entry) => {
+    const snap = entry?.snapshot;
+    const deskId = entry?.deskId ?? (workspace?.id ?? workspace?.deskId ?? id);
+    if (!deskId || !snap?.type) return;
+    applyingHistoryRef.current = true;
+    setActionError(null);
+    try {
+      const created = await createElementOnDesk(deskId, {
+        type: snap.type,
+        x: snap.x,
+        y: snap.y,
+        width: snap.width,
+        height: snap.height,
+        rotation: snap.rotation ?? 0,
+        zIndex: snap.zIndex ?? 0,
+        payload: snap.payload,
+      });
+      const vm = elementToVm(created);
+      if (vm?.id) {
+        // Backend generates new ids; keep the history entry pointing at the restored element for redo.
+        entry.elementId = vm.id;
+        entry.snapshot = { ...snap, elementId: vm.id };
+        setElements((prev) => (prev.some((x) => x.id === vm.id) ? prev : [...prev, vm]));
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to restore deleted element:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || 'Failed to restore deleted element');
+      window.setTimeout(() => setActionError(null), 4500);
+    } finally {
+      applyingHistoryRef.current = false;
+    }
+  };
+
+  const deleteElementFromHistory = async (entry, opts = {}) => {
+    const elementId = entry?.elementId;
+    if (!elementId) return;
+    applyingHistoryRef.current = true;
+    setActionError(null);
+    try {
+      await deleteElement(elementId);
+      setEditingElementId((cur) => (cur === elementId ? null : cur));
+      setElements((prev) => prev.filter((x) => x.id !== elementId));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete element from history:', err?.response?.data || err);
+      setActionError(err?.response?.data?.error || err?.message || opts.errorMessage || 'Failed to apply history delete');
+      window.setTimeout(() => setActionError(null), 4500);
+    } finally {
+      applyingHistoryRef.current = false;
+    }
+  };
+
   const undo = async () => {
     const store = historyRef.current;
     const entry = store.past.pop();
@@ -987,6 +1865,14 @@ export default function WorkspacePage() {
     updateHistoryMeta();
     if (entry.kind === 'update-element') {
       await applySnapshot(entry.before);
+      return;
+    }
+    if (entry.kind === 'delete-element') {
+      await restoreDeletedElement(entry);
+      return;
+    }
+    if (entry.kind === 'create-element') {
+      await deleteElementFromHistory(entry, { errorMessage: 'Failed to undo create' });
     }
   };
 
@@ -998,8 +1884,19 @@ export default function WorkspacePage() {
     updateHistoryMeta();
     if (entry.kind === 'update-element') {
       await applySnapshot(entry.after);
+      return;
+    }
+    if (entry.kind === 'delete-element') {
+      await deleteElementFromHistory(entry, { errorMessage: 'Failed to redo delete' });
+      return;
+    }
+    if (entry.kind === 'create-element') {
+      await restoreDeletedElement(entry);
     }
   };
+
+  const undoEv = useEvent(undo);
+  const redoEv = useEvent(redo);
 
   const onCanvasPointerDown = (e) => {
     // For touch/pen pointer events, `button` can be -1; we still want creation to work.
@@ -1023,6 +1920,15 @@ export default function WorkspacePage() {
         endEditing();
         return;
       }
+    }
+
+    // Click on empty canvas deselects connector line selection.
+    if (selectedConnectorId) setSelectedConnectorId(null);
+
+    if (activeTool === 'connector') {
+      // Connector tool starts only from element endpoints.
+      setSelectedConnectorId(null);
+      return;
     }
 
     if (activeTool === 'pen') {
@@ -1066,7 +1972,19 @@ export default function WorkspacePage() {
             payload: type === 'note' ? { text: '' } : { content: '' },
           });
           const vm = elementToVm(created);
+          if (vm?.id) createdElementIdsRef.current.add(vm.id);
           setElements((prev) => [...prev, vm]);
+          if (!applyingHistoryRef.current) {
+            const snap = snapshotForHistory(vm);
+            if (deskId && snap) {
+              pushHistory({
+                kind: 'create-element',
+                deskId,
+                elementId: vm.id,
+                snapshot: snap,
+              });
+            }
+          }
           beginEditing(vm.id, snapshotForHistory(vm));
         } catch (err) {
           // eslint-disable-next-line no-console
@@ -1157,11 +2075,31 @@ export default function WorkspacePage() {
         eraseStateRef.current.erasedIds.add(el.id);
         // Optimistic remove; socket broadcast will reconcile for others.
         setElements((prev) => prev.filter((xEl) => xEl.id !== el.id));
+        if (!applyingHistoryRef.current) {
+          const deskId = workspace?.id ?? workspace?.deskId ?? id;
+          const snap = snapshotForHistory(el);
+          if (deskId && snap) {
+            pushHistory({
+              kind: 'delete-element',
+              deskId,
+              elementId: el.id,
+              snapshot: snap,
+            });
+          }
+        }
         // Fire-and-forget delete.
         deleteElement(el.id).catch(() => {
           // ignore
         });
       }
+      return;
+    }
+
+    if (activeTool === 'connector' && !connectorDraftRef.current) {
+      const p = getCanvasPoint(e);
+      const deskP = { x: p.x - viewOffset.x, y: p.y - viewOffset.y };
+      const hoverId = pickHoverElementId(deskP, 15);
+      setConnectorHoverElementId(hoverId);
       return;
     }
 
@@ -1231,7 +2169,21 @@ export default function WorkspacePage() {
         },
       });
       const vm = elementToVm(created);
-      if (vm?.id) setElements((prev) => (prev.some((e) => e.id === vm.id) ? prev : [...prev, vm]));
+      if (vm?.id) {
+        createdElementIdsRef.current.add(vm.id);
+        setElements((prev) => (prev.some((e) => e.id === vm.id) ? prev : [...prev, vm]));
+        if (!applyingHistoryRef.current) {
+          const snap = snapshotForHistory(vm);
+          if (deskId && snap) {
+            pushHistory({
+              kind: 'create-element',
+              deskId,
+              elementId: vm.id,
+              snapshot: snap,
+            });
+          }
+        }
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to create drawing stroke:', err?.response?.data || err);
@@ -1310,7 +2262,7 @@ export default function WorkspacePage() {
     return () => {
       mounted = false;
     };
-  }, [workspace?.id, workspace?.deskId, id]);
+  }, [workspace?.id, workspace?.deskId, id, elementToVm]);
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -1333,6 +2285,24 @@ export default function WorkspacePage() {
       }
 
       if (e.key === 'Escape') {
+        if (connectorDraftRef.current) {
+          e.preventDefault();
+          connectorDraftRef.current = null;
+          setConnectorDraft(null);
+          setConnectorHoverElementId(null);
+          return;
+        }
+        if (selectedConnectorId) {
+          e.preventDefault();
+          setSelectedConnectorId(null);
+          return;
+        }
+        if (activeTool === 'connector') {
+          e.preventDefault();
+          setConnectorHoverElementId(null);
+          setActiveTool('select');
+          return;
+        }
         if (activeTool === 'pen' || activeTool === 'eraser') {
           e.preventDefault();
           liveStrokeRef.current = null;
@@ -1344,14 +2314,26 @@ export default function WorkspacePage() {
         }
       }
 
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedConnectorId) {
+        e.preventDefault();
+        const idToDelete = selectedConnectorId;
+        setSelectedConnectorId(null);
+        deleteElement(idToDelete)
+          .then(() => setElements((prev) => prev.filter((x) => x.id !== idToDelete)))
+          .catch(() => {
+            // ignore
+          });
+        return;
+      }
+
       if (matchShortcut(e, shortcuts['history.undo'])) {
         e.preventDefault();
-        undo();
+        undoEv();
         return;
       }
       if (matchShortcut(e, shortcuts['history.redo'])) {
         e.preventDefault();
-        redo();
+        redoEv();
         return;
       }
       if (matchShortcut(e, shortcuts['tool.text'])) {
@@ -1385,7 +2367,7 @@ export default function WorkspacePage() {
       window.removeEventListener('keydown', onKeyDown, { capture: true });
       window.removeEventListener('keyup', onKeyUp, { capture: true });
     };
-  }, [shortcuts, activeTool]);
+  }, [shortcuts, activeTool, selectedConnectorId, undoEv, redoEv]);
 
   const focusElement = (elementId) => {
     const el = elementsRef.current?.find?.((x) => x?.id === elementId) || elements.find((x) => x?.id === elementId);
@@ -1416,6 +2398,7 @@ export default function WorkspacePage() {
       // Allow fallback to polling if websocket is blocked.
     });
     socketRef.current = socket;
+    let didAuthRetry = false;
 
     socket.on('connect', () => {
       socket.emit('desk:join', { deskId }, (ack = {}) => {
@@ -1427,7 +2410,22 @@ export default function WorkspacePage() {
     });
 
     socket.on('connect_error', (err) => {
-      setActionError(`Realtime connection failed: ${err?.message || 'unknown error'}`);
+      const msg = String(err?.message || 'unknown error');
+      if (!didAuthRetry && msg.toLowerCase().includes('not authorized')) {
+        didAuthRetry = true;
+        refreshAuth()
+          .then(() => {
+            const nextToken = getToken();
+            if (nextToken) socket.auth = { token: nextToken };
+            socket.connect();
+          })
+          .catch(() => {
+            setActionError('Realtime auth failed. Please sign in again.');
+            window.setTimeout(() => setActionError(null), 4500);
+          });
+        return;
+      }
+      setActionError(`Realtime connection failed: ${msg}`);
       window.setTimeout(() => setActionError(null), 4500);
     });
 
@@ -1441,10 +2439,14 @@ export default function WorkspacePage() {
       if (Number(msg.deskId) !== Number(deskId)) return;
       const elementId = Number(msg.elementId);
       if (!elementId) return;
-      if (msg.version != null) noteVersionsRef.current.set(elementId, msg.version);
-      setElements((prev) =>
-        prev.map((el) => (el.id === elementId ? { ...el, content: String(msg.text ?? '') } : el))
-      );
+      // Guard against out-of-order websocket delivery: never apply an older version over a newer local state.
+      if (msg.version != null) {
+        const incomingV = Number(msg.version);
+        const curV = noteVersionsRef.current.get(elementId);
+        if (curV != null && Number.isFinite(incomingV) && incomingV <= curV) return;
+        noteVersionsRef.current.set(elementId, incomingV);
+      }
+      setElements((prev) => prev.map((el) => (el.id === elementId ? { ...el, content: String(msg.text ?? '') } : el)));
     });
 
     socket.on('element:created', (raw) => {
@@ -1494,18 +2496,19 @@ export default function WorkspacePage() {
     });
 
     return () => {
+      const noteEditTimers = noteEditTimersRef.current;
       try {
         socket.emit('desk:leave', { deskId });
       } catch {
         // ignore
       }
-      for (const t of noteEditTimersRef.current.values()) window.clearTimeout(t);
-      noteEditTimersRef.current.clear();
+      for (const t of noteEditTimers.values()) window.clearTimeout(t);
+      noteEditTimers.clear();
       socket.disconnect();
       socketRef.current = null;
       setPresentUserIds([]);
     };
-  }, [workspace?.id, workspace?.deskId, id, commentsEnabled]);
+  }, [workspace?.id, workspace?.deskId, id, commentsEnabled, elementToVm]);
 
   useEffect(() => {
     if (!commentsPanel) return () => {};
@@ -1543,6 +2546,85 @@ export default function WorkspacePage() {
     }
   };
 
+  const mutateElementRef = useCallback((elementId, patch) => {
+    if (!elementId || !patch) return;
+    const list = elementsRef.current || [];
+    const el = list.find((x) => x?.id === elementId);
+    if (!el) return;
+    Object.assign(el, patch);
+  }, []);
+
+  const maybeEnterEditOnPointerUp = useCallback(
+    (elementId, ev) => {
+      if (!elementId) return;
+      if (activeTool === 'hand' || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'connector') return;
+      if (ev?.pointerType === 'mouse' && ev?.button !== 0) return;
+      // If this pointer sequence turned into a drag, do not enter edit mode.
+      if (suppressNextElementClickRef.current.has(elementId)) return;
+      // Don't steal clicks from buttons/inputs inside the card (comments/reactions/etc).
+      if (isEditableTarget(ev?.target)) return;
+      if (ev?.target?.closest?.('button')) return;
+      if (editingElementId === elementId) return;
+      ev?.preventDefault?.();
+      beginEditing(elementId);
+    },
+    [activeTool, editingElementId, beginEditing]
+  );
+
+  // Stable action wrappers for memoized element components (avoid rerendering all cards on each drag frame).
+  const onElementPointerDownEv = useEvent(onElementPointerDown);
+  const onElementClickEv = useEvent(onElementClick);
+  const beginEditingEv = useEvent(beginEditing);
+  const endEditingEv = useEvent(endEditing);
+  const updateLocalElementEv = useEvent(updateLocalElement);
+  const queueNoteEditEv = useEvent(queueNoteEdit);
+  const startResizeEv = useEvent(startResize);
+  const startConnectorDragEv = useEvent(startConnectorDrag);
+  const openReactionPickerEv = useEvent(openReactionPicker);
+  const toggleReactionEv = useEvent(toggleReaction);
+  const openCommentsEv = useEvent(openComments);
+  const handleDeleteElementEv = useEvent(handleDeleteElement);
+  const layoutReactionBubblesEv = useEvent(layoutReactionBubbles);
+  const mutateElementRefEv = useEvent(mutateElementRef);
+  const maybeEnterEditOnPointerUpEv = useEvent(maybeEnterEditOnPointerUp);
+
+  const noteTextActions = useMemo(
+    () => ({
+      onElementPointerDown: onElementPointerDownEv,
+      onElementClick: onElementClickEv,
+      beginEditing: beginEditingEv,
+      endEditing: endEditingEv,
+      updateLocalElement: updateLocalElementEv,
+      queueNoteEdit: queueNoteEditEv,
+      startResize: startResizeEv,
+      startConnectorDrag: startConnectorDragEv,
+      openReactionPicker: openReactionPickerEv,
+      toggleReaction: toggleReactionEv,
+      openComments: openCommentsEv,
+      handleDeleteElement: handleDeleteElementEv,
+      layoutReactionBubbles: layoutReactionBubblesEv,
+      mutateElementRef: mutateElementRefEv,
+      maybeEnterEditOnPointerUp: maybeEnterEditOnPointerUpEv,
+    }),
+    [
+      beginEditingEv,
+      endEditingEv,
+      handleDeleteElementEv,
+      layoutReactionBubblesEv,
+      mutateElementRefEv,
+      maybeEnterEditOnPointerUpEv,
+      onElementClickEv,
+      onElementPointerDownEv,
+      openCommentsEv,
+      openReactionPickerEv,
+      queueNoteEditEv,
+      startConnectorDragEv,
+      startResizeEv,
+      toggleReactionEv,
+      updateLocalElementEv,
+    ]
+  );
+
   const submitComment = async () => {
     if (!commentsEnabled) return;
     const elementId = commentsPanel?.elementId;
@@ -1564,20 +2646,36 @@ export default function WorkspacePage() {
     }
   };
 
+  const docTextPreviewKey = useMemo(() => {
+    // Only care about document URLs + extensions that support text preview.
+    // Positions change during drag shouldn't re-trigger the preview fetch effect.
+    const parts = [];
+    for (const el of Array.isArray(elements) ? elements : []) {
+      if (el?.type !== 'document') continue;
+      const doc = el.document ?? el.Document;
+      const title = doc?.title || 'Document';
+      const url = doc?.url;
+      const ext = getExt(title) || getExt(url);
+      if (url && TEXT_PREVIEW_EXTS.has(ext)) parts.push(`${ext}:${url}`);
+    }
+    parts.sort();
+    return parts.join('|');
+  }, [elements]);
+
   useEffect(() => {
     // Best-effort previews for text-like formats. For everything else we show an icon/thumbnail/pdf embed.
     let cancelled = false;
 
-    const docs = elements
-      .filter((el) => el?.type === 'document')
-      .map((el) => {
-        const doc = el.document ?? el.Document;
-        const title = doc?.title || 'Document';
-        const url = doc?.url;
-        const ext = getExt(title) || getExt(url);
-        return { url, title, ext };
+    const docs = String(docTextPreviewKey || '')
+      .split('|')
+      .map((part) => {
+        const idx = part.indexOf(':');
+        if (idx <= 0) return null;
+        const ext = part.slice(0, idx);
+        const url = part.slice(idx + 1);
+        return { url, ext };
       })
-      .filter((d) => d.url && TEXT_PREVIEW_EXTS.has(d.ext));
+      .filter(Boolean);
 
     const need = docs.filter((d) => docTextPreview[d.url] == null && !fetchingPreviewsRef.current.has(d.url));
     if (!need.length) return () => {};
@@ -1603,7 +2701,7 @@ export default function WorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [elements, docTextPreview]);
+  }, [docTextPreviewKey, docTextPreview]);
 
   if (loading) {
     return (
@@ -1648,24 +2746,6 @@ export default function WorkspacePage() {
 
         <div className={styles.center}>
           <div className={styles.toolbar}>
-            <div className={styles.historyGroup} aria-label="History">
-              <IconBtn
-                label="Undo"
-                title={`Undo (${formatShortcut(shortcuts['history.undo'] || DEFAULT_SHORTCUTS['history.undo'])})`}
-                onClick={undo}
-                disabled={!historyMeta.canUndo}
-              >
-                <Undo2 size={18} />
-              </IconBtn>
-              <IconBtn
-                label="Redo"
-                title={`Redo (${formatShortcut(shortcuts['history.redo'] || DEFAULT_SHORTCUTS['history.redo'])})`}
-                onClick={redo}
-                disabled={!historyMeta.canRedo}
-              >
-                <Redo2 size={18} />
-              </IconBtn>
-            </div>
             <div className={styles.searchWrap}>
               <IconBtn
                 label="Поиск"
@@ -1778,6 +2858,18 @@ export default function WorkspacePage() {
           <button type="button" className={styles.shareBtn}>
             Share
           </button>
+          <IconBtn
+            label="AI Chat"
+            title="Чат с ИИ"
+            onClick={() => {
+              setAiPanelOpen((v) => !v);
+              setCommentsPanel(null);
+              setActionError(null);
+            }}
+            className={aiPanelOpen ? styles.iconBtnActive : ''}
+          >
+            <MessageCircle size={18} />
+          </IconBtn>
           <IconBtn label="Notifications">
             <Bell size={18} />
           </IconBtn>
@@ -1787,103 +2879,128 @@ export default function WorkspacePage() {
 
       <div className={styles.body}>
         <aside className={styles.leftRail} aria-label="Tools">
-          {TOOLS.map(({ id: toolId, label, Icon }) => {
-            const isActive = toolId !== 'attach' && activeTool === toolId;
-            const btn = (
-              <button
-                key={toolId}
-                type="button"
-                className={`${styles.tool} ${isActive ? styles.toolActive : ''}`}
-                aria-label={label}
-                aria-pressed={isActive}
-                onClick={() => {
-                  if (toolId === 'attach') {
-                    openAttachDialog();
-                    return;
-                  }
-                  setActionError(null);
-                  setActiveTool(toolId);
-                }}
-              >
-                {toolId === 'attach' && uploading ? (
-                  <Loader2 size={18} className={styles.spinner} />
-                ) : (
-                  <Icon size={18} />
-                )}
-              </button>
-            );
+          <div className={styles.toolsPanel}>
+            {TOOLS.map(({ id: toolId, label, Icon }) => {
+              const isActive = toolId !== 'attach' && activeTool === toolId;
+              const btn = (
+                <button
+                  key={toolId}
+                  type="button"
+                  className={`${styles.tool} ${isActive ? styles.toolActive : ''}`}
+                  aria-label={label}
+                  aria-pressed={isActive}
+                  onClick={() => {
+                    if (toolId === 'attach') {
+                      openAttachDialog();
+                      return;
+                    }
+                    setActionError(null);
+                    setActiveTool(toolId);
+                  }}
+                >
+                  {toolId === 'attach' && uploading ? (
+                    <Loader2 size={18} className={styles.spinner} />
+                  ) : (
+                    <Icon size={18} />
+                  )}
+                </button>
+              );
 
-            if (toolId !== 'link' && toolId !== 'pen') return btn;
+              if (toolId !== 'link' && toolId !== 'pen') return btn;
 
-            return (
-              <div key={toolId} className={styles.toolWrap}>
-                {btn}
-                {activeTool === 'link' && toolId === 'link' ? (
-                  <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
-                    <div className={styles.toolPopoverRow}>
-                      <input
-                        ref={linkInputRef}
-                        className={styles.linkInput}
-                        placeholder="Paste URL and press Enter"
-                        value={linkDraftUrl}
-                        disabled={creatingLink}
-                        onChange={(ev) => setLinkDraftUrl(ev.target.value)}
-                        onKeyDown={(ev) => {
-                          if (ev.key === 'Escape') {
-                            ev.preventDefault();
-                            setLinkDraftUrl('');
-                            setActiveTool('select');
-                            return;
-                          }
-                          if (ev.key === 'Enter' && !ev.shiftKey) {
-                            ev.preventDefault();
-                            submitLink();
-                          }
-                        }}
-                      />
-                      {creatingLink ? <Loader2 size={16} className={styles.spinner} /> : null}
-                    </div>
-                    <div className={styles.toolPopoverHint}>Enter — add to board · Esc — close</div>
-                  </div>
-                ) : null}
-
-                {activeTool === 'pen' && toolId === 'pen' ? (
-                  <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
-                    <div className={styles.toolPopoverRow}>
-                      <div className={styles.swatches} aria-label="Brush color">
-                        {BRUSH_COLORS.map((c) => (
-                          <button
-                            key={c}
-                            type="button"
-                            className={`${styles.swatch} ${brushColor === c ? styles.swatchActive : ''}`}
-                            style={{ background: c }}
-                            onClick={() => setBrushColor(c)}
-                            aria-label={`Color ${c}`}
-                            aria-pressed={brushColor === c}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                    <div className={styles.toolPopoverRow}>
-                      <div className={styles.widthRow}>
+              return (
+                <div key={toolId} className={styles.toolWrap}>
+                  {btn}
+                  {activeTool === 'link' && toolId === 'link' ? (
+                    <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
+                      <div className={styles.toolPopoverRow}>
                         <input
-                          className={styles.widthSlider}
-                          type="range"
-                          min={1}
-                          max={24}
-                          value={brushWidth}
-                          onChange={(ev) => setBrushWidth(Number(ev.target.value))}
-                          aria-label="Brush width"
+                          ref={linkInputRef}
+                          className={styles.linkInput}
+                          placeholder="Paste URL and press Enter"
+                          value={linkDraftUrl}
+                          disabled={creatingLink}
+                          onChange={(ev) => setLinkDraftUrl(ev.target.value)}
+                          onKeyDown={(ev) => {
+                            if (ev.key === 'Escape') {
+                              ev.preventDefault();
+                              setLinkDraftUrl('');
+                              setActiveTool('select');
+                              return;
+                            }
+                            if (ev.key === 'Enter' && !ev.shiftKey) {
+                              ev.preventDefault();
+                              submitLink();
+                            }
+                          }}
                         />
-                        <div className={styles.widthLabel}>{brushWidth}px</div>
+                        {creatingLink ? <Loader2 size={16} className={styles.spinner} /> : null}
                       </div>
+                      <div className={styles.toolPopoverHint}>Enter — add to board · Esc — close</div>
                     </div>
-                    <div className={styles.toolPopoverHint}>Drag — draw · Esc — switch tool</div>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
+                  ) : null}
+
+                  {activeTool === 'pen' && toolId === 'pen' ? (
+                    <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
+                      <div className={styles.toolPopoverRow}>
+                        <div className={styles.swatches} aria-label="Brush color">
+                          {BRUSH_COLORS.map((c) => (
+                            <button
+                              key={c}
+                              type="button"
+                              className={`${styles.swatch} ${brushColor === c ? styles.swatchActive : ''}`}
+                              style={{ background: c }}
+                              onClick={() => setBrushColor(c)}
+                              aria-label={`Color ${c}`}
+                              aria-pressed={brushColor === c}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <div className={styles.toolPopoverRow}>
+                        <div className={styles.widthRow}>
+                          <input
+                            className={styles.widthSlider}
+                            type="range"
+                            min={1}
+                            max={24}
+                            value={brushWidth}
+                            onChange={(ev) => setBrushWidth(Number(ev.target.value))}
+                            aria-label="Brush width"
+                          />
+                          <div className={styles.widthLabel}>{brushWidth}px</div>
+                        </div>
+                      </div>
+                      <div className={styles.toolPopoverHint}>Drag — draw · Esc — switch tool</div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className={styles.historyPanel} aria-label="History">
+            <button
+              type="button"
+              className={styles.historyBtn}
+              aria-label="Undo"
+              title={`Undo (${formatShortcut(shortcuts['history.undo'] || DEFAULT_SHORTCUTS['history.undo'])})`}
+              onClick={undo}
+              disabled={!historyMeta.canUndo}
+            >
+              <Undo2 size={18} />
+            </button>
+            <button
+              type="button"
+              className={styles.historyBtn}
+              aria-label="Redo"
+              title={`Redo (${formatShortcut(shortcuts['history.redo'] || DEFAULT_SHORTCUTS['history.redo'])})`}
+              onClick={redo}
+              disabled={!historyMeta.canRedo}
+            >
+              <Redo2 size={18} />
+            </button>
+          </div>
         </aside>
         <input
           ref={fileInputRef}
@@ -1914,25 +3031,142 @@ export default function WorkspacePage() {
           <div className={styles.grid} />
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}
           <div className={styles.boardContent}>
+            <svg className={styles.connectorsLayer} aria-hidden="true">
+              <defs>
+                <marker
+                  id="connector-arrow"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+                </marker>
+              </defs>
+
+              {elements
+                .filter((el) => el?.type === 'connector')
+                .map((el) => {
+                  const data = el?.connector?.data || el?.Connector?.data || {};
+                  const from = data?.from || {};
+                  const to = data?.to || {};
+                  const fromEl = elementsById.get(from.elementId);
+                  const toEl = elementsById.get(to.elementId);
+                  if (!fromEl || !toEl) return null;
+                  const a0 = getAnchorPoint(fromEl, from.side);
+                  const a1 = getAnchorPoint(toEl, to.side);
+                  const bend = data?.bend || { x: 0, y: 0 };
+                  const { d, handle } = computeConnectorPathFromAnchors(a0, a1, bend);
+                  const color = String(data?.style?.color || 'rgba(15,23,42,0.75)');
+                  const w = Math.max(1, Number(data?.style?.width ?? 2));
+                  const selected = selectedConnectorId === el.id;
+                  const arrow = data?.style?.arrowEnd !== false;
+
+                  return (
+                    <g key={el.id} className={selected ? styles.connectorSelected : ''}>
+                      <path
+                        d={d}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={selected ? Math.max(2, w + 0.75) : w}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{ color }}
+                        markerEnd={arrow ? 'url(#connector-arrow)' : undefined}
+                      />
+                      <path
+                        d={d}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth={Math.max(10, w + 10)}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        onPointerDown={(ev) => {
+                          ev.stopPropagation();
+                          ev.preventDefault();
+                          setEditingElementId(null);
+                          setSelectedConnectorId(el.id);
+                        }}
+                      />
+                      {selected ? (
+                        <circle
+                          cx={handle.x}
+                          cy={handle.y}
+                          r={7}
+                          className={styles.connectorBendHandle}
+                          onPointerDown={(ev) => startConnectorBendDrag(el.id, ev)}
+                        />
+                      ) : null}
+                    </g>
+                  );
+                })}
+
+              {connectorDraft?.from?.elementId ? (
+                (() => {
+                  const fromEl = elementsById.get(connectorDraft.from.elementId);
+                  if (!fromEl) return null;
+                  const a0 = getAnchorPoint(fromEl, connectorDraft.from.side);
+
+                  let a1 = null;
+                  if (connectorDraft?.toHover?.elementId && connectorDraft?.toHover?.side) {
+                    const toEl = elementsById.get(connectorDraft.toHover.elementId);
+                    if (toEl) a1 = getAnchorPoint(toEl, connectorDraft.toHover.side);
+                  }
+                  if (!a1) {
+                    const p3 = connectorDraft.cursor || { x: a0.x + 1, y: a0.y + 1 };
+                    const dx = Number(p3.x) - a0.x;
+                    const dy = Number(p3.y) - a0.y;
+                    const ax = Math.abs(dx);
+                    const ay = Math.abs(dy);
+                    // For a free endpoint (cursor), we want the end-control point to sit "behind" the cursor,
+                    // so the curve doesn't overshoot past it. Since the path function treats `dir` as "outward",
+                    // we invert the vector here.
+                    const dir =
+                      ax >= ay ? { x: dx >= 0 ? -1 : 1, y: 0 } : { x: 0, y: dy >= 0 ? -1 : 1 };
+                    a1 = { x: Number(p3.x), y: Number(p3.y), dir };
+                  }
+
+                  const { d } = computeConnectorPathFromAnchors(a0, a1, { x: 0, y: 0 });
+                  return (
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke="rgba(15,23,42,0.55)"
+                      strokeWidth={2}
+                      strokeDasharray="6 6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      markerEnd="url(#connector-arrow)"
+                    />
+                  );
+                })()
+              ) : null}
+            </svg>
+
             {elements.map((el) => {
+              if (el?.type === 'connector') return null;
               if (el?.type === 'drawing') {
                 const data = el.drawing?.data || el.Drawing?.data || {};
                 const pts = Array.isArray(data?.points) ? data.points : [];
                 const strokeColor = String(data?.color || '#0f172a');
                 const strokeW = Number(data?.width ?? 4);
                 const path = pointsToSvgPath(pts);
+                  const dx = Number(el.x ?? 0);
+                  const dy = Number(el.y ?? 0);
                 return (
                   <div
                     key={el.id}
                     data-element-id={el.id}
                     className={`${styles.element} ${styles.drawingElement}`}
                     style={{
-                      left: el.x ?? 0,
-                      top: el.y ?? 0,
+                        left: 0,
+                        top: 0,
                       width: el.width ?? 10,
                       height: el.height ?? 10,
                       zIndex: el.zIndex ?? 0,
-                      transform: `rotate(${el.rotation ?? 0}deg)`,
+                        transform: `translate3d(${dx}px, ${dy}px, 0) rotate(${el.rotation ?? 0}deg)`,
                     }}
                     onPointerDown={(ev) => onElementPointerDown(el.id, ev)}
                   >
@@ -1956,9 +3190,33 @@ export default function WorkspacePage() {
                 );
               }
 
+              if (el?.type === 'note' || el?.type === 'text') {
+                const isEditing = editingElementId === el.id;
+                return (
+                  <NoteTextElement
+                    key={el.id}
+                    el={el}
+                    isEditing={isEditing}
+                    commentsEnabled={commentsEnabled}
+                    deletingElementId={deletingElementId}
+                    searchQuery={searchQuery}
+                    isSearchHit={hasSearchQuery && manualSearchHitIds.has(el.id)}
+                    activeTool={activeTool}
+                    connectorHoverElementId={connectorHoverElementId}
+                    connectorFromElementId={connectorDraft?.from?.elementId ?? null}
+                    connectorToHoverElementId={connectorDraft?.toHover?.elementId ?? null}
+                    actions={noteTextActions}
+                  />
+                );
+              }
+
               const isEditing = editingElementId === el.id;
               const isDocument = el.type === 'document';
               const isLink = el.type === 'link';
+              const showConnectorEndpoints =
+                isEditing ||
+                (activeTool === 'connector' && connectorHoverElementId === el.id) ||
+                (connectorDraft?.from?.elementId === el.id || connectorDraft?.toHover?.elementId === el.id);
               const innerClass =
                 isDocument || isLink
                   ? `${styles.elementInner} ${styles.documentInner} ${isLink ? styles.linkInner : ''}`
@@ -1980,12 +3238,9 @@ export default function WorkspacePage() {
               const linkPreview = link?.previewImageUrl || '';
               const linkHost = safeHostname(linkUrl);
 
-              const reactionBubbles = layoutReactionBubbles(
-                el.id,
-                el.width ?? 240,
-                el.height ?? 160,
-                el.reactions
-              );
+              const reactionBubbles = layoutReactionBubbles(el.id, el.reactions);
+                const ex = Number(el.x ?? 0);
+                const ey = Number(el.y ?? 0);
 
               return (
                 <div
@@ -1993,14 +3248,15 @@ export default function WorkspacePage() {
                   data-element-id={el.id}
                   className={styles.element}
                   style={{
-                    left: el.x ?? 0,
-                    top: el.y ?? 0,
+                      left: 0,
+                      top: 0,
                     width: el.width ?? 240,
                     height: el.height ?? 160,
                     zIndex: el.zIndex ?? 0,
-                    transform: `rotate(${el.rotation ?? 0}deg)`,
+                      transform: `translate3d(${ex}px, ${ey}px, 0) rotate(${el.rotation ?? 0}deg)`,
                   }}
                   onPointerDown={(ev) => onElementPointerDown(el.id, ev)}
+                  onClick={(ev) => onElementClick(el.id, ev)}
                   onContextMenu={(ev) => {
                     if (activeTool === 'pen' || activeTool === 'eraser') return;
                     ev.preventDefault();
@@ -2262,10 +3518,22 @@ export default function WorkspacePage() {
                           if (el.type === 'note') queueNoteEdit(el.id, next);
                         }}
                         onKeyDown={async (ev) => {
+                          if (ev.key === 'Escape') {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            await endEditing();
+                            return;
+                          }
                           if (ev.key === 'Enter' && !ev.shiftKey) {
                             ev.preventDefault();
                             await endEditing();
                           }
+                        }}
+                        onBlur={(ev) => {
+                          // Exit edit mode when focus leaves the element entirely (e.g. clicking toolbar).
+                          const next = ev.relatedTarget;
+                          if (next && next.closest?.(`[data-element-id="${el.id}"]`)) return;
+                          if (editingElementId === el.id) endEditing();
                         }}
                       />
                     ) : (
@@ -2275,17 +3543,38 @@ export default function WorkspacePage() {
                     )}
                   </div>
 
+                  {showConnectorEndpoints ? (
+                    <div className={styles.connectorEndpointsBox} aria-hidden="true">
+                      <div
+                        className={`${styles.connectorEndpoint} ${styles.epTop}`}
+                        onPointerDown={(ev) => startConnectorDrag(el.id, 'top', ev)}
+                      />
+                      <div
+                        className={`${styles.connectorEndpoint} ${styles.epRight}`}
+                        onPointerDown={(ev) => startConnectorDrag(el.id, 'right', ev)}
+                      />
+                      <div
+                        className={`${styles.connectorEndpoint} ${styles.epBottom}`}
+                        onPointerDown={(ev) => startConnectorDrag(el.id, 'bottom', ev)}
+                      />
+                      <div
+                        className={`${styles.connectorEndpoint} ${styles.epLeft}`}
+                        onPointerDown={(ev) => startConnectorDrag(el.id, 'left', ev)}
+                      />
+                    </div>
+                  ) : null}
+
                   {reactionBubbles.length ? (
                     <div className={styles.reactionsLayer} aria-label="Reactions">
                       {reactionBubbles.map((b) => (
                         <button
                           key={b.emoji}
                           type="button"
-                          className={styles.reactionBubble}
+                          className={`${styles.reactionBubble} ${b.count === 1 ? styles.reactionSolo : ''}`}
+                          data-side={b.side}
                           style={{
-                            left: '50%',
-                            top: '50%',
-                            transform: `translate(-50%, -50%) translate(${b.dx}px, ${b.dy}px)`,
+                            left: `${b.xPct}%`,
+                            top: `${b.yPct}%`,
                           }}
                           onPointerDown={(ev) => ev.stopPropagation()}
                           onClick={(ev) => {
@@ -2308,8 +3597,8 @@ export default function WorkspacePage() {
                         <button
                           type="button"
                           className={styles.deleteElementBtn}
-                          onPointerDown={(ev) => ev.stopPropagation()}
-                          onClick={(ev) => {
+                          onPointerDown={(ev) => {
+                            ev.preventDefault();
                             ev.stopPropagation();
                             handleDeleteElement(el);
                           }}
@@ -2324,7 +3613,6 @@ export default function WorkspacePage() {
                           )}
                         </button>
                       </div>
-                      <div className={styles.dragHandle} onPointerDown={(ev) => startDrag(el.id, ev)} />
                       <div
                         className={`${styles.resizeHandle} ${styles.hNW}`}
                         onPointerDown={(ev) => startResize(el.id, 'nw', ev)}
@@ -2497,6 +3785,106 @@ export default function WorkspacePage() {
             >
               Отправить
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {aiPanelOpen ? (
+        <div
+          className={styles.aiPanel}
+          role="dialog"
+          aria-label="AI chat"
+          onPointerDown={(ev) => ev.stopPropagation()}
+        >
+          <div className={styles.aiPanelHeader}>
+            <div className={styles.aiPanelTitle}>AI чат</div>
+            <button
+              type="button"
+              className={styles.aiPanelClose}
+              onClick={() => setAiPanelOpen(false)}
+              aria-label="Close AI chat"
+              title="Закрыть"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className={styles.aiPanelMeta}>
+            {aiStatus?.enabled
+              ? `provider: ${aiStatus?.provider || 'unknown'}${aiStatus?.model ? ` · model: ${aiStatus.model}` : ''}`
+              : 'AI выключен (нужен AI_PROVIDER=ollama на сервере)'}
+          </div>
+
+          <div ref={aiListRef} className={styles.aiMessages} aria-label="AI messages">
+            {aiMessages.length ? (
+              aiMessages.map((m) => (
+                <div
+                  key={m.id}
+                  className={`${styles.aiMsgRow} ${m.role === 'user' ? styles.aiMsgRowUser : styles.aiMsgRowAssistant}`}
+                >
+                  <div className={`${styles.aiBubble} ${m.role === 'user' ? styles.aiBubbleUser : styles.aiBubbleAssistant}`}>
+                    {String(m.content ?? '')}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className={styles.aiEmpty}>
+                Напишите вопрос — ИИ увидит текстовый слепок элементов доски и сможет объяснить/суммаризировать.
+              </div>
+            )}
+          </div>
+
+          <div className={styles.aiComposer}>
+            {aiError ? <div className={styles.aiError}>{aiError}</div> : null}
+            <div className={styles.aiQuickRow}>
+              <button
+                type="button"
+                className={styles.aiQuickBtn}
+                onClick={() => sendAiMessage('Сделай краткую суммаризацию контента доски и выдели ключевые темы.')}
+                disabled={aiSending || !deskIdNum}
+              >
+                Суммаризация
+              </button>
+              <button
+                type="button"
+                className={styles.aiQuickBtn}
+                onClick={() => {
+                  setAiMessages([]);
+                  setAiError(null);
+                }}
+                disabled={aiSending}
+              >
+                Очистить
+              </button>
+            </div>
+            <div className={styles.aiSendRow}>
+              <textarea
+                ref={aiInputRef}
+                className={styles.aiInput}
+                value={aiDraft}
+                placeholder="Спросить ИИ…"
+                onChange={(ev) => setAiDraft(ev.target.value)}
+                onKeyDown={(ev) => {
+                  if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    setAiPanelOpen(false);
+                    return;
+                  }
+                  if (ev.key === 'Enter' && !ev.shiftKey) {
+                    ev.preventDefault();
+                    sendAiMessage();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className={styles.aiSendBtn}
+                onClick={() => sendAiMessage()}
+                disabled={aiSending || !String(aiDraft || '').trim() || !deskIdNum}
+              >
+                {aiSending ? <Loader2 size={16} className={styles.spinner} /> : 'Отправить'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

@@ -25,6 +25,8 @@ const ALLOWED_EXTENSIONS = new Set([
   '.webp',
 ]);
 
+const ALLOWED_AVATAR_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+
 function fixMojibakeName(name) {
   const s = String(name || '');
   // Typical symptom: UTF-8 bytes mis-decoded as latin1 -> shows up as "Ð", "Ñ", etc.
@@ -86,9 +88,49 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+// Separate, stricter uploader for profile avatars (images only, smaller size cap).
+const avatarStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    try {
+      const userId = req.user?.id;
+      const uploadsRoot = path.join(__dirname, '..', 'uploads');
+      const dest = path.join(uploadsRoot, String(userId || 'anon'), 'profile');
+      fs.mkdirSync(dest, { recursive: true });
+      cb(null, dest);
+    } catch (e) {
+      cb(e);
+    }
+  },
+  filename(req, file, cb) {
+    const fixedOriginal = fixMojibakeName(file.originalname || '');
+    const ext = path.extname(fixedOriginal || '').toLowerCase();
+    const token = crypto.randomBytes(8).toString('hex');
+    const ts = Date.now();
+    const base = safeName(path.basename(fixedOriginal || 'avatar', ext));
+    cb(null, `${ts}-${token}-${base}${ext || ''}`);
+  },
+});
+
+function avatarFileFilter(req, file, cb) {
+  const fixedOriginal = fixMojibakeName(file.originalname || '');
+  const ext = path.extname(fixedOriginal || '').toLowerCase();
+  if (!ALLOWED_AVATAR_EXTENSIONS.has(ext)) {
+    return cb(new Error(`Unsupported avatar type: ${ext || 'unknown'}`));
+  }
+  return cb(null, true);
+}
+
+const uploadAvatar = multer({
+  storage: avatarStorage,
+  fileFilter: avatarFileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
 module.exports = {
   upload,
   ALLOWED_EXTENSIONS,
+  uploadAvatar,
+  ALLOWED_AVATAR_EXTENSIONS,
 };
 
 

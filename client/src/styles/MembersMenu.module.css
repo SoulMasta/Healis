@@ -209,4 +209,29 @@
   }
 }
 
+@media (max-width: 640px) {
+  .menu {
+    width: min(92vw, 320px);
+  }
+
+  /* Touch targets */
+  .button {
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+  }
+
+  .closeBtn {
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+  }
+
+  .badge {
+    min-width: 20px;
+    height: 20px;
+    font-size: 12px;
+  }
+}
+
 

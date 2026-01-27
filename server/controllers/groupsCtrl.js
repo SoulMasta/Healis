@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const sequelize = require('../db');
-const { Group, GroupMember, User, Desk } = require('../models/models');
+const { Group, GroupMember, User, Desk, Project } = require('../models/models');
+const crypto = require('crypto');
 
 function requireAuth(req, res) {
   const userId = req.user?.id;
@@ -46,6 +47,14 @@ function canManageGroup(role) {
   return role === 'OWNER' || role === 'ADMIN';
 }
 
+function makeInviteCode(len = 10) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(len);
+  let out = '';
+  for (let i = 0; i < len; i += 1) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
 class GroupsController {
   async create(req, res) {
     const t = await sequelize.transaction();
@@ -62,14 +71,35 @@ class GroupsController {
         return res.status(400).json({ error: 'name is required' });
       }
 
-      const group = await Group.create(
-        {
-          name,
-          description,
-          userId,
-        },
-        { transaction: t }
-      );
+      // Generate a shareable inviteCode so others can join the group from Groups tab.
+      let group = null;
+      let tries = 0;
+      while (!group && tries < 8) {
+        tries += 1;
+        const inviteCode = makeInviteCode(10);
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          group = await Group.create(
+            {
+              name,
+              description,
+              userId,
+              inviteCode,
+            },
+            { transaction: t }
+          );
+        } catch (e) {
+          // Retry on inviteCode collision (very rare).
+          const msg = String(e?.message || '');
+          if (msg.toLowerCase().includes('invitecode') && (msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('duplicate'))) {
+            continue;
+          }
+          throw e;
+        }
+      }
+      if (!group) {
+        throw new Error('Failed to generate unique invite code');
+      }
 
       await GroupMember.create(
         {
@@ -134,6 +164,35 @@ class GroupsController {
 
       return res.json(
         invites
+          .filter((m) => m.group)
+          .map((m) => ({
+            id: m.id,
+            groupId: m.groupId,
+            userId: m.userId,
+            status: m.status,
+            role: m.role,
+            group: m.group ? m.group.toJSON() : null,
+          }))
+      );
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // List join requests created by current user (REQUESTED status).
+  async getMyJoinRequests(req, res) {
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) return;
+
+      const rows = await GroupMember.findAll({
+        where: { userId, status: 'REQUESTED' },
+        include: [{ model: Group }],
+        order: [['id', 'DESC']],
+      });
+
+      return res.json(
+        rows
           .filter((m) => m.group)
           .map((m) => ({
             id: m.id,
@@ -228,8 +287,9 @@ class GroupsController {
       const role = await getMyGroupRole(groupId, userId);
       if (!role) return res.status(404).json({ error: 'Group not found' });
 
+      const where = canManageGroup(role) ? { groupId } : { groupId, status: 'ACTIVE' };
       const members = await GroupMember.findAll({
-        where: { groupId },
+        where,
         include: [{ model: User, attributes: ['id', 'email'] }],
         order: [['role', 'ASC'], ['id', 'ASC']],
       });
@@ -244,6 +304,93 @@ class GroupsController {
           user: m.user ? { id: m.user.id, email: m.user.email } : null,
         }))
       );
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // Owner/Admin: list join requests (REQUESTED) for a group.
+  async getJoinRequests(req, res) {
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) return;
+
+      const groupId = Number(req.params.id);
+      if (!groupId) return res.status(400).json({ error: 'Invalid group id' });
+
+      const myRole = await getMyGroupRole(groupId, userId);
+      if (!myRole) return res.status(404).json({ error: 'Group not found' });
+      if (!canManageGroup(myRole)) return res.status(403).json({ error: 'Forbidden' });
+
+      const requests = await GroupMember.findAll({
+        where: { groupId, status: 'REQUESTED' },
+        include: [{ model: User, attributes: ['id', 'email'] }],
+        order: [['id', 'DESC']],
+      });
+
+      return res.json(
+        requests.map((m) => ({
+          id: m.id,
+          groupId: m.groupId,
+          userId: m.userId,
+          role: m.role,
+          status: m.status,
+          user: m.user ? { id: m.user.id, email: m.user.email } : null,
+        }))
+      );
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // Owner/Admin: approve a join request => member becomes ACTIVE.
+  async approveJoinRequest(req, res) {
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) return;
+
+      const groupId = Number(req.params.id);
+      const targetUserId = Number(req.params.userId);
+      if (!groupId || !targetUserId) return res.status(400).json({ error: 'Invalid id' });
+
+      const myRole = await getMyGroupRole(groupId, userId);
+      if (!myRole) return res.status(404).json({ error: 'Group not found' });
+      if (!canManageGroup(myRole)) return res.status(403).json({ error: 'Forbidden' });
+
+      const membership = await GroupMember.findOne({ where: { groupId, userId: targetUserId } });
+      if (!membership || membership.status !== 'REQUESTED') {
+        return res.status(404).json({ error: 'Join request not found' });
+      }
+
+      membership.status = 'ACTIVE';
+      await membership.save();
+      return res.json(membership);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // Owner/Admin: deny a join request => request removed.
+  async denyJoinRequest(req, res) {
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) return;
+
+      const groupId = Number(req.params.id);
+      const targetUserId = Number(req.params.userId);
+      if (!groupId || !targetUserId) return res.status(400).json({ error: 'Invalid id' });
+
+      const myRole = await getMyGroupRole(groupId, userId);
+      if (!myRole) return res.status(404).json({ error: 'Group not found' });
+      if (!canManageGroup(myRole)) return res.status(403).json({ error: 'Forbidden' });
+
+      const membership = await GroupMember.findOne({ where: { groupId, userId: targetUserId } });
+      if (!membership || membership.status !== 'REQUESTED') {
+        return res.status(404).json({ error: 'Join request not found' });
+      }
+
+      await membership.destroy();
+      return res.json({ message: 'Join request denied' });
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -373,6 +520,7 @@ class GroupsController {
 
       const desks = await Desk.findAll({
         where: { groupId },
+        include: [{ model: Project }],
         order: [['deskId', 'DESC']],
       });
 
@@ -485,6 +633,112 @@ class GroupsController {
       return res.json({ message: 'Member removed' });
     } catch (error) {
       return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // Join group by inviteCode (shareable identifier).
+  async joinByCode(req, res) {
+    const t = await sequelize.transaction();
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) {
+        await t.rollback();
+        return;
+      }
+
+      const codeRaw = req.body?.code ?? req.body?.inviteCode ?? '';
+      const code = String(codeRaw || '').trim().toUpperCase();
+      if (!code) {
+        await t.rollback();
+        return res.status(400).json({ error: 'code is required' });
+      }
+
+      const group = await Group.findOne({ where: { inviteCode: code }, transaction: t });
+      if (!group) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Group not found' });
+      }
+
+      const groupId = group.groupId;
+      const existing = await GroupMember.findOne({ where: { groupId, userId }, transaction: t });
+
+      if (existing) {
+        if (existing.status === 'INVITED') {
+          await t.rollback();
+          return res.status(409).json({ error: 'You already have an invite to this group. Accept it from Invitations.' });
+        }
+        await t.commit();
+        return res.json({ group: group.toJSON(), membership: existing.toJSON() });
+      }
+
+      const membership = await GroupMember.create(
+        { groupId, userId, role: 'MEMBER', status: 'REQUESTED' },
+        { transaction: t }
+      );
+
+      await t.commit();
+      return res.status(201).json({ group: group.toJSON(), membership: membership.toJSON() });
+    } catch (error) {
+      await t.rollback();
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  async regenerateInviteCode(req, res) {
+    const t = await sequelize.transaction();
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) {
+        await t.rollback();
+        return;
+      }
+
+      const groupId = Number(req.params.id);
+      if (!groupId) {
+        await t.rollback();
+        return res.status(400).json({ error: 'Invalid group id' });
+      }
+
+      const myRole = await getMyGroupRole(groupId, userId);
+      if (!myRole) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Group not found' });
+      }
+      if (!canManageGroup(myRole)) {
+        await t.rollback();
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const group = await Group.findByPk(groupId, { transaction: t });
+      if (!group) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Group not found' });
+      }
+
+      let tries = 0;
+      while (tries < 10) {
+        tries += 1;
+        const code = makeInviteCode(10);
+        try {
+          group.inviteCode = code;
+          // eslint-disable-next-line no-await-in-loop
+          await group.save({ transaction: t });
+          await t.commit();
+          return res.json({ inviteCode: group.inviteCode });
+        } catch (e) {
+          const msg = String(e?.message || '');
+          if (msg.toLowerCase().includes('invitecode') && (msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('duplicate'))) {
+            continue;
+          }
+          throw e;
+        }
+      }
+
+      await t.rollback();
+      return res.status(500).json({ error: 'Failed to generate invite code' });
+    } catch (e) {
+      await t.rollback();
+      return res.status(500).json({ error: e.message });
     }
   }
 }

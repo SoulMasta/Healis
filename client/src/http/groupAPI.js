@@ -23,6 +23,11 @@ export async function getMyGroupInvites() {
   return res.data;
 }
 
+export async function getMyGroupJoinRequests() {
+  const res = await axios.get(`${API_BASE}/requests`);
+  return res.data;
+}
+
 export async function createGroup({ name, description }) {
   const res = await axios.post(`${API_BASE}`, { name, description });
   return res.data;
@@ -40,6 +45,21 @@ export async function deleteGroup(groupId) {
 
 export async function getGroupMembers(groupId) {
   const res = await axios.get(`${API_BASE}/${groupId}/members`);
+  return res.data;
+}
+
+export async function getGroupJoinRequests(groupId) {
+  const res = await axios.get(`${API_BASE}/${groupId}/requests`);
+  return res.data;
+}
+
+export async function approveGroupJoinRequest(groupId, userId) {
+  const res = await axios.post(`${API_BASE}/${groupId}/requests/${userId}/approve`);
+  return res.data;
+}
+
+export async function denyGroupJoinRequest(groupId, userId) {
+  const res = await axios.post(`${API_BASE}/${groupId}/requests/${userId}/deny`);
   return res.data;
 }
 
@@ -80,6 +100,16 @@ export async function getGroupDesks(groupId) {
 export async function createGroupDesk(groupId, { name, description, type }) {
   const res = await axios.post(`${API_BASE}/${groupId}/desks`, { name, description, type });
   return normalizeWorkspace(res.data);
+}
+
+export async function joinGroupByCode(code) {
+  const res = await axios.post(`${API_BASE}/join`, { code });
+  return res.data;
+}
+
+export async function regenerateGroupInviteCode(groupId) {
+  const res = await axios.post(`${API_BASE}/${groupId}/inviteCode/regenerate`);
+  return res.data; // { inviteCode }
 }
 
 

@@ -25,6 +25,26 @@ export async function getWorkspace(id) {
   return normalizeWorkspace(res.data);
 }
 
+export async function getRecentWorkspaces() {
+  const res = await axios.get(`${API_BASE}/desk/recent`);
+  return normalizeWorkspaceList(res.data);
+}
+
+export async function getFavoriteWorkspaces() {
+  const res = await axios.get(`${API_BASE}/desk/favorites`);
+  return normalizeWorkspaceList(res.data);
+}
+
+export async function toggleFavoriteWorkspace(id) {
+  const res = await axios.post(`${API_BASE}/desk/${id}/favorite`);
+  return res.data; // { favorite: boolean }
+}
+
+export async function duplicateWorkspace(id) {
+  const res = await axios.post(`${API_BASE}/desk/${id}/duplicate`);
+  return normalizeWorkspace(res.data);
+}
+
 export async function createWorkspace({ name, description, userId, type }) {
   // Backend derives userId from JWT; do not send userId from client.
   const res = await axios.post(`${API_BASE}/desk`, { name, description, type });

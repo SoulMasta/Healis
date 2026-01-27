@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, LogOut, UserRound, Users, ChevronDown } from 'lucide-react';
-import { getToken, logout as apiLogout } from '../http/userAPI';
+import { getToken, serverLogout } from '../http/userAPI';
 import styles from '../styles/UserMenu.module.css';
 
 function safeParseJwt(token) {
@@ -27,14 +27,21 @@ export default function UserMenu({ variant = 'default' }) {
 
   const user = useMemo(() => (token ? safeParseJwt(token) : null), [token]);
   const email = user?.email || '';
+  const username = user?.username ? `@${user.username}` : '';
+  const avatarUrl = user?.avatarUrl || '';
   const initial = (email || 'U').trim().charAt(0).toUpperCase() || 'U';
 
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key === 'token') setToken(e.newValue);
     };
+    const onToken = () => setToken(getToken());
     window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    window.addEventListener('healis:token', onToken);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('healis:token', onToken);
+    };
   }, []);
 
   useEffect(() => {
@@ -59,8 +66,8 @@ export default function UserMenu({ variant = 'default' }) {
     navigate('/auth');
   };
 
-  const doLogout = () => {
-    apiLogout();
+  const doLogout = async () => {
+    await serverLogout();
     setToken(null);
     setOpen(false);
     navigate('/home');
@@ -94,7 +101,7 @@ export default function UserMenu({ variant = 'default' }) {
         aria-expanded={open}
       >
         <span className={styles.avatar} aria-hidden="true">
-          {initial}
+          {avatarUrl ? <img className={styles.avatarImg} src={avatarUrl} alt="" /> : initial}
         </span>
         <ChevronDown size={16} className={styles.chev} aria-hidden="true" />
       </button>
@@ -103,11 +110,11 @@ export default function UserMenu({ variant = 'default' }) {
         <div className={styles.menu} role="menu">
           <div className={styles.menuHeader}>
             <div className={styles.menuAvatar} aria-hidden="true">
-              {initial}
+              {avatarUrl ? <img className={styles.menuAvatarImg} src={avatarUrl} alt="" /> : initial}
             </div>
             <div className={styles.menuMeta}>
               <div className={styles.menuTitle}>Account</div>
-              <div className={styles.menuSub}>{email || 'Signed in'}</div>
+              <div className={styles.menuSub}>{username || email || 'Signed in'}</div>
             </div>
           </div>
 

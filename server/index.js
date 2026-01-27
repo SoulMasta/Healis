@@ -1,10 +1,12 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const sequelize = require('./db');
-const models = require('./models/models');
+require('./models/models');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
+const cookieParser = require('cookie-parser');
 const { initRealtime } = require('./realtime');
 
 
@@ -12,14 +14,40 @@ const homeRoutes = require('./routes/home');
 const workspaceRoutes = require('./routes/workspaceRouter');
 const userRoutes = require('./routes/userRouter');
 const groupRoutes = require('./routes/groupRouter');
+const projectRoutes = require('./routes/projectRouter');
 const calendarRoutes = require('./routes/calendarRouter');
+const notificationsRoutes = require('./routes/notificationsRouter');
+const aiRoutes = require('./routes/aiRouter');
 const { startCalendarNotificationWorker } = require('./services/calendarNotificationWorker');
 
 const PORT = Number(process.env.PORT) || 5000;
 const app = express();
 
-app.use(cors());
+function makeInviteCode(len = 10) {
+  // Exclude ambiguous chars (0/O, 1/I, etc).
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(len);
+  let out = '';
+  for (let i = 0; i < len; i += 1) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
+// If deployed behind a proxy (Railway/Render/Nginx), this enables correct req.ip / secure cookies.
+app.set('trust proxy', 1);
+
+const allowedOrigins = String(process.env.CLIENT_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: allowedOrigins.length ? allowedOrigins : true,
+    credentials: true,
+  })
+);
 app.use(express.json());
+app.use(cookieParser());
 
 // Health check proves frontend<->backend connectivity.
 app.get('/api/health', async (req, res) => {
@@ -56,7 +84,10 @@ app.use('/home', homeRoutes);
 app.use('/workspace', workspaceRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/groups', groupRoutes);
+app.use('/api/projects', projectRoutes);
 app.use('/api/calendar', calendarRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Serve uploaded files (documents, images, etc.)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -96,6 +127,94 @@ async function start() {
       await sequelize.query(
         'ALTER TABLE "elements" ADD COLUMN IF NOT EXISTS "reactions" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
       );
+    } catch {
+      // ignore
+    }
+
+    // Schema back-compat: user profile columns (so profile works even without DB_SYNC_ALTER).
+    try {
+      // Auth provider columns (Google sign-in)
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "authProvider" VARCHAR(32) NOT NULL DEFAULT \'local\';');
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "googleSub" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "emailVerified" BOOLEAN NOT NULL DEFAULT FALSE;');
+      await sequelize.query('CREATE UNIQUE INDEX IF NOT EXISTS "users_googleSub_key" ON "users" ("googleSub");');
+
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "username" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "nickname" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "studyGroup" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "course" INTEGER;');
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "faculty" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatarUrl" TEXT;');
+      await sequelize.query('CREATE UNIQUE INDEX IF NOT EXISTS "users_username_key" ON "users" ("username");');
+    } catch {
+      // ignore
+    }
+
+    // Schema back-compat: group invite codes (join by code).
+    // We don't require DB_SYNC_ALTER for this; keep it safe for existing DBs.
+    try {
+      await sequelize.query('ALTER TABLE "groups" ADD COLUMN IF NOT EXISTS "inviteCode" VARCHAR(32);');
+      // Unique index allows multiple NULLs in Postgres; non-null values must be unique.
+      await sequelize.query('CREATE UNIQUE INDEX IF NOT EXISTS "groups_inviteCode_key" ON "groups" ("inviteCode");');
+
+      // Backfill legacy rows missing inviteCode.
+      const [rows] = await sequelize.query(
+        'SELECT "groupId" FROM "groups" WHERE "inviteCode" IS NULL OR "inviteCode" = \'\';'
+      );
+      const ids = Array.isArray(rows) ? rows.map((r) => Number(r.groupId)).filter((x) => Number.isFinite(x)) : [];
+      for (const groupId of ids) {
+        let tries = 0;
+        // Try a few times to avoid rare collisions.
+        while (tries < 8) {
+          tries += 1;
+          const code = makeInviteCode(10);
+          try {
+            await sequelize.query(
+              'UPDATE "groups" SET "inviteCode" = :code WHERE "groupId" = :groupId AND ("inviteCode" IS NULL OR "inviteCode" = \'\');',
+              { replacements: { code, groupId } }
+            );
+            break;
+          } catch (e) {
+            // Unique violation -> retry.
+            const msg = String(e?.message || '');
+            if (msg.toLowerCase().includes('duplicate') || msg.toLowerCase().includes('unique')) continue;
+            break;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Schema back-compat: projects + desk.projectId.
+    // Keep it safe even when DB_SYNC_ALTER is off.
+    try {
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "projects" (' +
+          '"projectId" SERIAL PRIMARY KEY,' +
+          '"name" VARCHAR(255) NOT NULL,' +
+          '"userId" INTEGER NOT NULL,' +
+          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
+          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "projects_userId_createdAt_key" ON "projects" ("userId","createdAt");');
+      await sequelize.query('ALTER TABLE "desks" ADD COLUMN IF NOT EXISTS "projectId" INTEGER;');
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "desks_projectId_key" ON "desks" ("projectId");');
+    } catch {
+      // ignore
+    }
+
+    // Schema back-compat: group membership roles/status (needed for invites + join requests).
+    // Keep it safe for existing DBs even if DB_SYNC_ALTER is off.
+    try {
+      await sequelize.query('ALTER TABLE "group_members" ADD COLUMN IF NOT EXISTS "role" VARCHAR(16) NOT NULL DEFAULT \'MEMBER\';');
+      await sequelize.query('ALTER TABLE "group_members" ADD COLUMN IF NOT EXISTS "status" VARCHAR(16) NOT NULL DEFAULT \'ACTIVE\';');
+      await sequelize.query(
+        'CREATE UNIQUE INDEX IF NOT EXISTS "group_members_groupId_userId_key" ON "group_members" ("groupId", "userId");'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "group_members_groupId_status_key" ON "group_members" ("groupId", "status");');
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "group_members_userId_status_key" ON "group_members" ("userId", "status");');
     } catch {
       // ignore
     }

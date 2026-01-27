@@ -1,83 +1,445 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { User } = require('../models/models');
+const path = require('path');
+const { OAuth2Client } = require('google-auth-library');
+const { User, RefreshToken } = require('../models/models');
+const { randomToken, hashToken } = require('../utils/authTokens');
 
-const generateJwt = (id, email, role) => {
-    return jwt.sign(
-        { id, email, role },
-        process.env.SECRET_KEY,
-        { expiresIn: '24h' }
-    );
-};
+const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
+const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30);
+const BCRYPT_ROUNDS = Math.min(Math.max(Number(process.env.BCRYPT_ROUNDS || 10), 8), 14);
+const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeUsername(value) {
+  let s = String(value || '').trim();
+  if (s.startsWith('@')) s = s.slice(1);
+  s = s.toLowerCase();
+  // Keep it URL / mention friendly and predictable.
+  s = s.replace(/[^a-z0-9_]/g, '_').replace(/_{2,}/g, '_').replace(/^_+|_+$/g, '');
+  if (s.length > 32) s = s.slice(0, 32);
+  return s;
+}
+
+function isValidUsername(username) {
+  return /^[a-z0-9_]{3,32}$/.test(String(username || ''));
+}
+
+async function ensureUniqueUsername(base) {
+  const root = normalizeUsername(base) || 'user';
+  for (let i = 0; i < 100; i += 1) {
+    const suffix = i === 0 ? '' : `_${Math.floor(Math.random() * 10_000)}`;
+    const candidate = normalizeUsername(`${root}${suffix}`);
+    if (!isValidUsername(candidate)) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const exists = await User.findOne({ where: { username: candidate } });
+    if (!exists) return candidate;
+  }
+  // Worst-case fallback
+  return `user_${randomToken(6).toLowerCase()}`.replace(/[^a-z0-9_]/g, '').slice(0, 32);
+}
+
+function isValidEmail(email) {
+  // Simple sanity check; you can swap to a stricter validator later.
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function normalizeNickname(value) {
+  const s = String(value || '').trim();
+  return s ? s.slice(0, 80) : '';
+}
+
+function normalizeStudyGroup(value) {
+  const s = String(value || '').trim();
+  return s ? s.slice(0, 80) : null;
+}
+
+function normalizeFaculty(value) {
+  const s = String(value || '').trim();
+  return s ? s.slice(0, 120) : null;
+}
+
+function normalizeCourse(value) {
+  const raw = value;
+  const course = raw === '' || raw === null || raw === undefined ? null : Number(raw);
+  if (course === null) return null;
+  if (!Number.isFinite(course) || course % 1 !== 0 || course < 1 || course > 10) return 'INVALID';
+  return course;
+}
+
+function cookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: 'lax',
+    // Restrict cookie to auth routes.
+    path: '/api/user',
+    maxAge: REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
+  };
+}
+
+function serializeProfile(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    username: user.username || null,
+    nickname: user.nickname || null,
+    studyGroup: user.studyGroup || null,
+    course: typeof user.course === 'number' ? user.course : user.course || null,
+    faculty: user.faculty || null,
+    avatarUrl: user.avatarUrl || null,
+  };
+}
+
+function generateAccessToken(user) {
+  return jwt.sign(
+    { id: user.id, email: user.email, role: user.role, username: user.username || null, avatarUrl: user.avatarUrl || null },
+    process.env.SECRET_KEY,
+    { expiresIn: ACCESS_TOKEN_TTL }
+  );
+}
+
+async function issueRefreshToken({ userId, req, transaction }) {
+  const raw = randomToken(32);
+  const tokenHash = hashToken(raw);
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+
+  await RefreshToken.create(
+    {
+      userId,
+      tokenHash,
+      expiresAt,
+      userAgent: String(req.headers['user-agent'] || '').slice(0, 1000) || null,
+      ip: String(req.ip || '').slice(0, 100) || null,
+    },
+    transaction ? { transaction } : undefined
+  );
+
+  return { raw, tokenHash, expiresAt };
+}
 
 class UserController {
-    async registration(req, res) {
-        try {
-            const { email, password } = req.body;
+  async getProfile(req, res) {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-            if (!email || !password) {
-                return res.status(400).json({ message: 'Email and password are required' });
-            }
+      const user = await User.findByPk(userId);
+      if (!user) return res.status(404).json({ error: 'User not found' });
 
-            // Check if user with this email already exists
-            const candidate = await User.findOne({ where: { email } });
-            if (candidate) {
-                return res.status(400).json({ message: 'User with this email already exists' });
-            }
-
-            // Hash password
-            const hashPassword = await bcrypt.hash(password, 5);
-
-            // Create user
-            const user = await User.create({ email, password: hashPassword });
-
-            // Generate JWT token
-            const token = generateJwt(user.id, user.email, user.role);
-
-            return res.status(201).json({ token });
-        } catch (error) {
-            return res.status(500).json({ message: error.message });
-        }
+      return res.json({ profile: serializeProfile(user) });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
     }
+  }
 
-    async login(req, res) {
-        try {
-            const { email, password } = req.body;
+  async updateProfile(req, res) {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-            if (!email || !password) {
-                return res.status(400).json({ message: 'Email and password are required' });
-            }
+      const user = await User.findByPk(userId);
+      if (!user) return res.status(404).json({ error: 'User not found' });
 
-            // Find user by email
-            const user = await User.findOne({ where: { email } });
-            if (!user) {
-                return res.status(404).json({ message: 'User not found' });
-            }
+      const next = {};
 
-            // Compare passwords
-            const comparePassword = await bcrypt.compare(password, user.password);
-            if (!comparePassword) {
-                return res.status(400).json({ message: 'Invalid password' });
-            }
-
-            // Generate JWT token
-            const token = generateJwt(user.id, user.email, user.role);
-
-            return res.json({ token });
-        } catch (error) {
-            return res.status(500).json({ message: error.message });
+      if (req.body?.username !== undefined) {
+        const normalized = normalizeUsername(req.body.username);
+        if (!normalized) return res.status(400).json({ error: 'Username is required' });
+        if (!isValidUsername(normalized)) {
+          return res.status(400).json({ error: 'Username must be 3-32 chars: a-z, 0-9, _' });
         }
-    }
-
-    async check(req, res) {
-        try {
-            // Generate new token based on user data from middleware
-            const token = generateJwt(req.user.id, req.user.email, req.user.role);
-            return res.json({ token });
-        } catch (error) {
-            return res.status(500).json({ message: error.message });
+        const exists = await User.findOne({ where: { username: normalized } });
+        if (exists && exists.id !== user.id) {
+          return res.status(400).json({ error: 'This username is already taken' });
         }
+        next.username = normalized;
+      }
+
+      if (req.body?.nickname !== undefined) {
+        const nickname = String(req.body.nickname || '').trim();
+        next.nickname = nickname ? nickname.slice(0, 80) : null;
+      }
+
+      if (req.body?.studyGroup !== undefined) {
+        const studyGroup = String(req.body.studyGroup || '').trim();
+        next.studyGroup = studyGroup ? studyGroup.slice(0, 80) : null;
+      }
+
+      if (req.body?.faculty !== undefined) {
+        const faculty = String(req.body.faculty || '').trim();
+        next.faculty = faculty ? faculty.slice(0, 120) : null;
+      }
+
+      if (req.body?.course !== undefined) {
+        const raw = req.body.course;
+        const course = raw === '' || raw === null ? null : Number(raw);
+        if (course === null) {
+          next.course = null;
+        } else if (!Number.isFinite(course) || course % 1 !== 0 || course < 1 || course > 10) {
+          return res.status(400).json({ error: 'Course must be an integer from 1 to 10' });
+        } else {
+          next.course = course;
+        }
+      }
+
+      await user.update(next);
+
+      const token = generateAccessToken(user);
+      return res.json({ profile: serializeProfile(user), token });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
     }
+  }
+
+  async uploadAvatar(req, res) {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: 'Not authorized' });
+
+      const user = await User.findByPk(userId);
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      const file = req.file;
+      if (!file) return res.status(400).json({ error: 'No file provided' });
+
+      const filename = path.basename(file.filename);
+      const url = `/uploads/${userId}/profile/${encodeURIComponent(filename)}`;
+
+      await user.update({ avatarUrl: url });
+      const token = generateAccessToken(user);
+      return res.status(201).json({ profile: serializeProfile(user), token });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  async registration(req, res) {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const password = String(req.body?.password || '');
+      const username = normalizeUsername(req.body?.username);
+      const nickname = normalizeNickname(req.body?.nickname);
+      const studyGroup = normalizeStudyGroup(req.body?.studyGroup);
+      const faculty = normalizeFaculty(req.body?.faculty);
+      const course = normalizeCourse(req.body?.course);
+
+      if (!username) return res.status(400).json({ error: 'Username is required' });
+      if (!nickname) return res.status(400).json({ error: 'Nickname is required' });
+      if (!email) return res.status(400).json({ error: 'Email is required' });
+      if (!password) return res.status(400).json({ error: 'Password is required' });
+
+      if (!isValidUsername(username)) {
+        return res.status(400).json({ error: 'Username must be 3-32 chars: a-z, 0-9, _' });
+      }
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ error: 'Invalid email' });
+      }
+      if (password.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      }
+      if (course === 'INVALID') {
+        return res.status(400).json({ error: 'Course must be an integer from 1 to 10' });
+      }
+
+      const candidate = await User.findOne({ where: { email } });
+      if (candidate) {
+        return res.status(400).json({ error: 'User with this email already exists' });
+      }
+
+      const usernameTaken = await User.findOne({ where: { username } });
+      if (usernameTaken) {
+        return res.status(400).json({ error: 'This username is already taken' });
+      }
+
+      const hashPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+      const user = await User.create({
+        email,
+        password: hashPassword,
+        username,
+        nickname,
+        studyGroup,
+        faculty,
+        course: course === null ? null : course,
+        authProvider: 'local',
+      });
+
+      const token = generateAccessToken(user);
+      const refresh = await issueRefreshToken({ userId: user.id, req });
+      res.cookie('refreshToken', refresh.raw, cookieOptions());
+
+      return res.status(201).json({ token });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  async googleAuth(req, res) {
+    try {
+      if (!googleClient) {
+        return res.status(500).json({ error: 'Google auth is not configured' });
+      }
+
+      const idToken = String(req.body?.credential || req.body?.idToken || '').trim();
+      if (!idToken) return res.status(400).json({ error: 'Missing Google credential' });
+
+      const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
+      const payload = ticket.getPayload() || {};
+
+      const googleSub = String(payload.sub || '').trim();
+      const email = normalizeEmail(payload.email);
+      const emailVerified = Boolean(payload.email_verified);
+      const name = String(payload.name || payload.given_name || '').trim();
+      const picture = String(payload.picture || '').trim();
+
+      if (!googleSub) return res.status(400).json({ error: 'Invalid Google token (sub missing)' });
+      if (!email) return res.status(400).json({ error: 'Invalid Google token (email missing)' });
+      if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email from Google' });
+      if (!emailVerified) {
+        // Keep it strict: only verified emails can be used to create/link accounts.
+        return res.status(400).json({ error: 'Google email is not verified' });
+      }
+
+      // 1) Prefer linking by googleSub (stable), then by email (existing local account).
+      let user = await User.findOne({ where: { googleSub } });
+      if (!user) user = await User.findOne({ where: { email } });
+
+      if (!user) {
+        const baseUsername = String(email.split('@')[0] || name || 'user').slice(0, 64);
+        const username = await ensureUniqueUsername(baseUsername);
+        const nickname = normalizeNickname(name) || username;
+        const randomPassword = await bcrypt.hash(randomToken(24), BCRYPT_ROUNDS);
+
+        user = await User.create({
+          email,
+          password: randomPassword,
+          username,
+          nickname,
+          avatarUrl: picture || null,
+          authProvider: 'google',
+          googleSub,
+          emailVerified: true,
+        });
+      } else {
+        // Link/refresh provider data (best-effort).
+        const next = {};
+        if (!user.googleSub) next.googleSub = googleSub;
+        if (!user.authProvider) next.authProvider = 'google';
+        if (!user.emailVerified) next.emailVerified = true;
+        if ((!user.nickname || !String(user.nickname).trim()) && name) next.nickname = normalizeNickname(name);
+        if ((!user.avatarUrl || !String(user.avatarUrl).trim()) && picture) next.avatarUrl = picture;
+        if (Object.keys(next).length) await user.update(next);
+      }
+
+      const token = generateAccessToken(user);
+      const refresh = await issueRefreshToken({ userId: user.id, req });
+      res.cookie('refreshToken', refresh.raw, cookieOptions());
+
+      return res.json({ token, profile: serializeProfile(user) });
+    } catch (error) {
+      // Avoid leaking details about token verification in prod logs/response.
+      const msg = String(error?.message || 'Google auth failed');
+      if (msg.toLowerCase().includes('wrong number of segments') || msg.toLowerCase().includes('jwt')) {
+        return res.status(400).json({ error: 'Invalid Google credential' });
+      }
+      return res.status(400).json({ error: 'Google auth failed' });
+    }
+  }
+
+  async login(req, res) {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const password = String(req.body?.password || '');
+
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password are required' });
+      }
+
+      const user = await User.findOne({ where: { email } });
+      // Don't reveal if the email exists.
+      if (!user) {
+        return res.status(400).json({ error: 'Invalid email or password' });
+      }
+
+      const ok = await bcrypt.compare(password, user.password);
+      if (!ok) {
+        return res.status(400).json({ error: 'Invalid email or password' });
+      }
+
+      const token = generateAccessToken(user);
+      const refresh = await issueRefreshToken({ userId: user.id, req });
+      res.cookie('refreshToken', refresh.raw, cookieOptions());
+
+      return res.json({ token });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // Refresh access token using httpOnly cookie refreshToken (rotates refresh token).
+  async refresh(req, res) {
+    try {
+      const raw = req.cookies?.refreshToken;
+      if (!raw) return res.status(401).json({ error: 'Not authorized' });
+
+      const tokenHash = hashToken(raw);
+      const token = await RefreshToken.findOne({ where: { tokenHash } });
+      if (!token) return res.status(401).json({ error: 'Not authorized' });
+      if (token.revokedAt) return res.status(401).json({ error: 'Not authorized' });
+      if (token.expiresAt && new Date(token.expiresAt).getTime() <= Date.now()) {
+        return res.status(401).json({ error: 'Not authorized' });
+      }
+
+      const user = await User.findByPk(token.userId);
+      if (!user) return res.status(401).json({ error: 'Not authorized' });
+
+      // Rotate refresh token (best-effort; keeps only one active cookie token per client session).
+      const nextRefresh = await issueRefreshToken({ userId: user.id, req });
+      await token.update({ revokedAt: new Date(), replacedByTokenHash: nextRefresh.tokenHash });
+      res.cookie('refreshToken', nextRefresh.raw, cookieOptions());
+
+      const access = generateAccessToken(user);
+      return res.json({ token: access });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  async logout(req, res) {
+    try {
+      const raw = req.cookies?.refreshToken;
+      if (raw) {
+        const tokenHash = hashToken(raw);
+        const token = await RefreshToken.findOne({ where: { tokenHash } });
+        if (token && !token.revokedAt) {
+          await token.update({ revokedAt: new Date() });
+        }
+      }
+      res.clearCookie('refreshToken', { path: '/api/user' });
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // Legacy: issue a new access token from current access token.
+  async check(req, res) {
+    try {
+      const user = await User.findByPk(req.user.id);
+      if (!user) return res.status(401).json({ error: 'Not authorized' });
+      const token = generateAccessToken(user);
+      return res.json({ token });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
 }
 
 module.exports = new UserController();

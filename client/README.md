@@ -57,6 +57,17 @@ This section has moved here: [https://facebook.github.io/create-react-app/docs/a
 
 This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
 
+## PWA (mobile) in this repo
+
+PWA is enabled for **production builds** via `src/service-worker.js` + `src/serviceWorkerRegistration.js`.
+
+- **Dev mode (`npm start`)**: service worker is not expected to cache/offline (by design).
+- **Prod check**:
+  - run `npm run build`
+  - serve build as static (any static server), then open in mobile Chrome/Safari
+  - check installability: DevTools → Application → Manifest / Service Workers
+  - check offline: DevTools → Network → Offline (reload)
+
 ### Advanced Configuration
 
 This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)

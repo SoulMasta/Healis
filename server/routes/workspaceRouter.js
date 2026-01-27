@@ -18,6 +18,10 @@ router.get('/navigate', navigate('workspace'));
 // API routes for workspace (desk) CRUD operations
 router.post('/desk', authMiddleware, workspacesCtrl.create);
 router.get('/desk', authMiddleware, workspacesCtrl.getAll);
+router.get('/desk/recent', authMiddleware, workspacesCtrl.getRecent);
+router.get('/desk/favorites', authMiddleware, workspacesCtrl.listFavorites);
+router.post('/desk/:id/favorite', authMiddleware, workspacesCtrl.toggleFavorite);
+router.post('/desk/:id/duplicate', authMiddleware, workspacesCtrl.duplicate);
 router.get('/desk/:id', authMiddleware, workspacesCtrl.getOne);
 router.put('/desk/:id', authMiddleware, workspacesCtrl.update);
 router.delete('/desk/:id', authMiddleware, workspacesCtrl.delete);

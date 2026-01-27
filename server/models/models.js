@@ -6,13 +6,65 @@ const User = sequelize.define('user', {
   email: { type: DataTypes.STRING, unique: true, allowNull: false },
   password: { type: DataTypes.STRING, allowNull: false },
   role: { type: DataTypes.STRING, defaultValue: 'USER', allowNull: false },
+  // Auth provider metadata (for Google sign-in / account linking).
+  authProvider: { type: DataTypes.STRING, allowNull: false, defaultValue: 'local' }, // 'local' | 'google'
+  googleSub: { type: DataTypes.STRING, unique: true, allowNull: true },
+  emailVerified: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  // Public profile fields
+  // username is stored WITHOUT '@' (display as `@${username}` in UI).
+  username: { type: DataTypes.STRING, unique: true, allowNull: true },
+  nickname: { type: DataTypes.STRING, allowNull: true },
+  // Student info (avoid collision with app Groups model)
+  studyGroup: { type: DataTypes.STRING, allowNull: true },
+  course: { type: DataTypes.INTEGER, allowNull: true },
+  faculty: { type: DataTypes.STRING, allowNull: true },
+  avatarUrl: { type: DataTypes.TEXT, allowNull: true },
 });
+
+// Long-lived refresh tokens (stored as hashes; raw tokens never stored in DB).
+const RefreshToken = sequelize.define(
+  'refresh_token',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+    tokenHash: { type: DataTypes.STRING, allowNull: false, unique: true },
+    expiresAt: { type: DataTypes.DATE, allowNull: false },
+    revokedAt: { type: DataTypes.DATE, allowNull: true },
+    replacedByTokenHash: { type: DataTypes.STRING, allowNull: true },
+    userAgent: { type: DataTypes.TEXT, allowNull: true },
+    ip: { type: DataTypes.STRING, allowNull: true },
+  },
+  {
+    indexes: [{ fields: ['userId'] }, { fields: ['expiresAt'] }],
+  }
+);
+
+// User notifications (persistent inbox + realtime push).
+const Notification = sequelize.define(
+  'notification',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+    type: { type: DataTypes.STRING, allowNull: false }, // e.g. 'CALENDAR_EVENT'
+    title: { type: DataTypes.STRING, allowNull: true },
+    body: { type: DataTypes.TEXT, allowNull: true },
+    payload: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+    // Optional uniqueness key to prevent duplicates (e.g. calendar threshold notifications).
+    dedupeKey: { type: DataTypes.STRING, allowNull: true, unique: true },
+    readAt: { type: DataTypes.DATE, allowNull: true },
+  },
+  {
+    indexes: [{ fields: ['userId', 'createdAt'] }, { fields: ['userId', 'readAt'] }],
+  }
+);
 
 const Group = sequelize.define('group', {
   groupId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   name: { type: DataTypes.STRING, unique: true, allowNull: false },
   description: { type: DataTypes.STRING, allowNull: true },
   userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+  // Public join identifier (shareable). Can be NULL for legacy rows; server will backfill.
+  inviteCode: { type: DataTypes.STRING, unique: true, allowNull: true },
 });
 
 // Users <-> Groups membership (roles inside a group)
@@ -32,11 +84,27 @@ const GroupMember = sequelize.define(
       type: DataTypes.STRING,
       allowNull: false,
       defaultValue: 'ACTIVE',
-      validate: { isIn: [['ACTIVE', 'INVITED']] },
+      // ACTIVE: full member
+      // INVITED: invited by owner/admin, must accept
+      // REQUESTED: user requested to join by inviteCode, must be approved by owner/admin
+      validate: { isIn: [['ACTIVE', 'INVITED', 'REQUESTED']] },
     },
   },
   {
     indexes: [{ unique: true, fields: ['groupId', 'userId'] }],
+  }
+);
+
+// User projects (sidebar -> Проекты). Minimal MVP: name + owner.
+const Project = sequelize.define(
+  'project',
+  {
+    projectId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    name: { type: DataTypes.STRING, allowNull: false },
+    userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+  },
+  {
+    indexes: [{ fields: ['userId', 'createdAt'] }],
   }
 );
 
@@ -47,14 +115,50 @@ const Desk = sequelize.define('desk', {
   type: { type: DataTypes.STRING, allowNull: true },
   userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
   groupId: { type: DataTypes.INTEGER, allowNull: true, references: { model: Group, key: 'groupId' } },
+  projectId: { type: DataTypes.INTEGER, allowNull: true, references: { model: Project, key: 'projectId' } },
 });
+
+// Per-user "recently opened" desks (supports HomePage -> Последние доски).
+const DeskRecent = sequelize.define(
+  'desk_recent',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+    deskId: { type: DataTypes.INTEGER, allowNull: false, references: { model: Desk, key: 'deskId' } },
+    lastOpenedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  },
+  {
+    indexes: [
+      { unique: true, fields: ['userId', 'deskId'] },
+      { fields: ['userId', 'lastOpenedAt'] },
+      { fields: ['deskId'] },
+    ],
+  }
+);
+
+// User favorites for any desk they can read (HomePage -> Избранные доски).
+const DeskFavorite = sequelize.define(
+  'desk_favorite',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+    deskId: { type: DataTypes.INTEGER, allowNull: false, references: { model: Desk, key: 'deskId' } },
+  },
+  {
+    indexes: [
+      { unique: true, fields: ['userId', 'deskId'] },
+      { fields: ['userId', 'createdAt'] },
+      { fields: ['deskId'] },
+    ],
+  }
+);
 
 const Element = sequelize.define('element', {
   elementId: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   type: {
     type: DataTypes.STRING,
     allowNull: false,
-    validate: { isIn: [['note', 'text', 'document', 'link', 'drawing']] },
+    validate: { isIn: [['note', 'text', 'document', 'link', 'drawing', 'connector']] },
   },
   x: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   y: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
@@ -147,6 +251,18 @@ const Drawing = sequelize.define('drawing', {
     references: { model: Element, key: 'elementId' },
   },
   // Store vector strokes or serialized canvas JSON.
+  data: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+});
+
+// Logical connector line between 2 elements.
+// Stored as an Element with a small JSON payload describing anchors and optional bend/shape params.
+const Connector = sequelize.define('connector', {
+  elementId: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+    references: { model: Element, key: 'elementId' },
+  },
   data: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
 });
 
@@ -317,8 +433,32 @@ const CalendarNotificationLog = sequelize.define(
 
 
 // --- Relationships ---
+User.hasMany(Project, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Project.belongsTo(User, { foreignKey: 'userId' });
+
 User.hasMany(Desk, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Desk.belongsTo(User, { foreignKey: 'userId' });
+
+Project.hasMany(Desk, { foreignKey: 'projectId', onDelete: 'SET NULL', onUpdate: 'CASCADE' });
+Desk.belongsTo(Project, { foreignKey: 'projectId' });
+
+User.hasMany(DeskRecent, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+DeskRecent.belongsTo(User, { foreignKey: 'userId' });
+
+Desk.hasMany(DeskRecent, { foreignKey: 'deskId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+DeskRecent.belongsTo(Desk, { foreignKey: 'deskId' });
+
+User.hasMany(DeskFavorite, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+DeskFavorite.belongsTo(User, { foreignKey: 'userId' });
+
+Desk.hasMany(DeskFavorite, { foreignKey: 'deskId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+DeskFavorite.belongsTo(Desk, { foreignKey: 'deskId' });
+
+User.hasMany(RefreshToken, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+RefreshToken.belongsTo(User, { foreignKey: 'userId' });
+
+User.hasMany(Notification, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Notification.belongsTo(User, { foreignKey: 'userId' });
 
 User.hasMany(Group, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Group.belongsTo(User, { foreignKey: 'userId' });
@@ -358,6 +498,9 @@ Link.belongsTo(Element, { foreignKey: 'elementId' });
 
 Element.hasOne(Drawing, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Drawing.belongsTo(Element, { foreignKey: 'elementId' });
+
+Element.hasOne(Connector, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Connector.belongsTo(Element, { foreignKey: 'elementId' });
 
 Desk.hasMany(Comment, { foreignKey: 'deskId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Comment.belongsTo(Desk, { foreignKey: 'deskId' });
@@ -403,7 +546,12 @@ CalendarNotificationLog.belongsTo(User, { foreignKey: 'userId' });
 
 module.exports = {
   User,
+  RefreshToken,
+  Notification,
+  Project,
   Desk,
+  DeskRecent,
+  DeskFavorite,
   Group,
   GroupMember,
   Element,
@@ -413,6 +561,7 @@ module.exports = {
   Document,
   Link,
   Drawing,
+  Connector,
   Comment,
   CalendarEvent,
   CalendarGroupPeriod,

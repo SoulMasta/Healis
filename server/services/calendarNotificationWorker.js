@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const { CalendarEventInvite, CalendarEvent, CalendarNotificationLog, Group } = require('../models/models');
 const { emitToUser } = require('../realtime/bus');
+const { createNotificationForUser } = require('./notificationService');
 
 const THRESHOLDS = [
   { kind: 'D7', ms: 7 * 24 * 60 * 60 * 1000 },
@@ -9,55 +10,60 @@ const THRESHOLDS = [
 ];
 
 async function tick({ intervalMs }) {
-  const now = Date.now();
-  const nowDate = new Date(now);
-  const lookaheadMs = THRESHOLDS.reduce((m, t) => Math.max(m, t.ms), 0) + intervalMs + 5_000;
-  const maxDate = new Date(now + lookaheadMs);
+  const nowMs = Date.now();
+  const now = new Date(nowMs);
 
-  // Only confirmed events in the future and within the lookahead window.
-  const invites = await CalendarEventInvite.findAll({
-    where: { status: 'CONFIRMED' },
-    include: [
-      {
-        model: CalendarEvent,
-        required: true,
-        where: { startsAt: { [Op.gt]: nowDate, [Op.lte]: maxDate } },
-        include: [{ model: Group, attributes: ['groupId', 'name'] }],
-      },
-    ],
-    order: [[CalendarEvent, 'startsAt', 'ASC']],
-  });
+  // Instead of scanning *all* upcoming invites each minute, query only a narrow window
+  // around each threshold (e.g. exactly 24h before start, +/- interval jitter).
+  for (const th of THRESHOLDS) {
+    const from = new Date(nowMs + th.ms - intervalMs - 5_000);
+    const to = new Date(nowMs + th.ms + 5_000);
 
-  for (const row of invites) {
-    const invite = row?.toJSON ? row.toJSON() : row;
-    const ev = invite?.calendar_event || invite?.CalendarEvent;
-    if (!ev?.startsAt) continue;
+    const invites = await CalendarEventInvite.findAll({
+      where: { status: 'CONFIRMED' },
+      include: [
+        {
+          model: CalendarEvent,
+          required: true,
+          where: { startsAt: { [Op.gt]: now, [Op.gte]: from, [Op.lte]: to } },
+          include: [{ model: Group, attributes: ['groupId', 'name'] }],
+        },
+      ],
+      order: [[CalendarEvent, 'startsAt', 'ASC']],
+    });
 
-    const eventStartsAt = new Date(ev.startsAt).getTime();
-    const delta = eventStartsAt - now;
-    if (!(delta > 0)) continue;
+    for (const row of invites) {
+      const invite = row?.toJSON ? row.toJSON() : row;
+      const ev = invite?.calendar_event || invite?.CalendarEvent;
+      if (!ev?.startsAt) continue;
 
-    for (const th of THRESHOLDS) {
-      // Fire once when we cross the exact threshold (within the scheduler window).
-      if (delta <= th.ms && delta > th.ms - intervalMs) {
-        try {
-          await CalendarNotificationLog.create({
-            eventId: ev.eventId,
-            userId: invite.userId,
-            kind: th.kind,
-            sentAt: new Date(),
-          });
-        } catch (e) {
-          // Unique constraint => already sent, ignore.
-          if (e?.name === 'SequelizeUniqueConstraintError') continue;
-          // eslint-disable-next-line no-console
-          console.error('calendar notification log create failed:', e?.message || e);
-          continue;
-        }
-
-        emitToUser(invite.userId, 'calendar:notification', {
-          kind: th.kind,
+      try {
+        await CalendarNotificationLog.create({
+          eventId: ev.eventId,
           userId: invite.userId,
+          kind: th.kind,
+          sentAt: new Date(),
+        });
+      } catch (e) {
+        // Unique constraint => already sent, ignore.
+        if (e?.name === 'SequelizeUniqueConstraintError') continue;
+        // eslint-disable-next-line no-console
+        console.error('calendar notification log create failed:', e?.message || e);
+        continue;
+      }
+
+      // Persist to notification inbox (so users see it even if offline).
+      const group = ev.group ? { groupId: ev.group.groupId, name: ev.group.name } : undefined;
+      const when =
+        th.kind === 'D7' ? 'in 7 days' : th.kind === 'D3' ? 'in 3 days' : th.kind === 'H24' ? 'in 24 hours' : th.kind;
+      await createNotificationForUser({
+        userId: invite.userId,
+        type: 'CALENDAR_EVENT',
+        title: `Upcoming event (${when})`,
+        body: String(ev.title || 'Event'),
+        dedupeKey: `cal:${ev.eventId}:${invite.userId}:${th.kind}`,
+        payload: {
+          kind: th.kind,
           event: {
             eventId: ev.eventId,
             groupId: ev.groupId,
@@ -66,10 +72,25 @@ async function tick({ intervalMs }) {
             subject: ev.subject,
             startsAt: ev.startsAt,
             allDay: ev.allDay,
-            group: ev.group ? { groupId: ev.group.groupId, name: ev.group.name } : undefined,
+            group,
           },
-        });
-      }
+        },
+      });
+
+      emitToUser(invite.userId, 'calendar:notification', {
+        kind: th.kind,
+        userId: invite.userId,
+        event: {
+          eventId: ev.eventId,
+          groupId: ev.groupId,
+          type: ev.type,
+          title: ev.title,
+          subject: ev.subject,
+          startsAt: ev.startsAt,
+          allDay: ev.allDay,
+          group: ev.group ? { groupId: ev.group.groupId, name: ev.group.name } : undefined,
+        },
+      });
     }
   }
 }

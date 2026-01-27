@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64" role="img" aria-label="Healis maskable">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b6cff" />
+      <stop offset="1" stop-color="#6d28d9" />
+    </linearGradient>
+  </defs>
+  <!-- Maskable icons should have extra safe padding; we draw a full-bleed background -->
+  <rect x="0" y="0" width="64" height="64" rx="16" fill="url(#g)" />
+  <path d="M23 45V19h6v10h10V19h6v26h-6V35H29v10h-6z" fill="#fff" fill-rule="evenodd" />
+</svg>
+

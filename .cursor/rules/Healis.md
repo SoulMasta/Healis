@@ -21,6 +21,16 @@ alwaysApply: true
     6#
     The app will also work with notifications for students about upcoming tests, exams, retakes, and updates in the LC. This can be viewed in the calendar tab. First, we need to implement the function of adding events to the calendar and sending notifications.
     
+Пример работы с llama3.2 3b: 
+import ollama from 'ollama'
+
+const response = await ollama.chat({
+  model: 'llama3.2:3b',
+  messages: [{role: 'user', content: 'Hello!'}],
+})
+console.log(response.message.content)
+
+Если фреймворк работает, то Ollama работает по адресу http://localhost:11434
 
 
 
