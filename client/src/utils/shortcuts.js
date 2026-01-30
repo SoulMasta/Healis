@@ -2,32 +2,39 @@ const STORAGE_KEY = 'healis.shortcuts.v1';
 
 export const SHORTCUT_ACTIONS = [
   {
+    id: 'tool.select',
+    label: 'Инструмент: выделение',
+    description: 'Переключиться на курсор/выделение',
+    kind: 'press',
+  },
+  {
     id: 'tool.text',
-    label: 'Text tool',
-    description: 'Switch to text tool',
+    label: 'Инструмент: текст',
+    description: 'Переключиться на текстовый инструмент',
     kind: 'press',
   },
   {
     id: 'tool.handHold',
-    label: 'Hand tool (hold)',
-    description: 'Hold to pan the board (releases back to previous tool)',
+    label: 'Инструмент: рука (удерживать)',
+    description: 'Удерживать для перемещения доски (после отпускания возвращает предыдущий инструмент)',
     kind: 'hold',
   },
   {
     id: 'history.undo',
-    label: 'Undo',
-    description: 'Undo last change on the board',
+    label: 'Отменить',
+    description: 'Отменить последнее действие на доске',
     kind: 'press',
   },
   {
     id: 'history.redo',
-    label: 'Redo',
-    description: 'Redo last undone change on the board',
+    label: 'Повторить',
+    description: 'Повторить отменённое действие на доске',
     kind: 'press',
   },
 ];
 
 export const DEFAULT_SHORTCUTS = {
+  'tool.select': { code: 'KeyV', ctrl: false, shift: false, alt: false, meta: false },
   'tool.text': { code: 'KeyT', ctrl: false, shift: false, alt: false, meta: false },
   'tool.handHold': { code: 'Space', ctrl: false, shift: false, alt: false, meta: false },
   'history.undo': { code: 'KeyZ', ctrl: true, shift: false, alt: false, meta: false },

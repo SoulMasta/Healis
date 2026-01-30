@@ -18,7 +18,7 @@ function safeParseJwt(token) {
   }
 }
 
-export default function UserMenu({ variant = 'default' }) {
+export default function UserMenu({ variant = 'default', iconClickMode = 'menu' }) {
   const navigate = useNavigate();
   const rootRef = useRef(null);
 
@@ -78,15 +78,23 @@ export default function UserMenu({ variant = 'default' }) {
     navigate('/settings');
   };
 
+  const isCompact = variant === 'compact';
+  const isIcon = variant === 'icon';
+  const isBare = variant === 'bare';
+
   if (!token) {
     return (
       <button
         type="button"
-        className={variant === 'compact' ? styles.signInBtnCompact : styles.signInBtn}
+        className={
+          isBare ? styles.signInBtnBare : isIcon ? styles.signInBtnIcon : isCompact ? styles.signInBtnCompact : styles.signInBtn
+        }
         onClick={goAuth}
+        aria-label={isIcon || isBare ? 'Войти' : undefined}
+        title={isIcon || isBare ? 'Войти' : undefined}
       >
         <LogIn size={18} />
-        <span>Sign in</span>
+        {isIcon || isBare ? null : <span>Войти</span>}
       </button>
     );
   }
@@ -95,15 +103,25 @@ export default function UserMenu({ variant = 'default' }) {
     <div className={styles.root} ref={rootRef}>
       <button
         type="button"
-        className={variant === 'compact' ? styles.avatarBtnCompact : styles.avatarBtn}
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
+        className={
+          isBare ? styles.avatarBtnBare : isIcon ? styles.avatarBtnIcon : isCompact ? styles.avatarBtnCompact : styles.avatarBtn
+        }
+        onClick={() => {
+          if (isIcon && iconClickMode === 'settings') {
+            goAccount();
+            return;
+          }
+          setOpen((v) => !v);
+        }}
+        aria-haspopup={isIcon && iconClickMode === 'settings' ? undefined : 'menu'}
+        aria-expanded={isIcon && iconClickMode === 'settings' ? undefined : open}
+        aria-label={isIcon || isBare ? 'Профиль' : undefined}
+        title={isIcon || isBare ? 'Профиль' : undefined}
       >
         <span className={styles.avatar} aria-hidden="true">
           {avatarUrl ? <img className={styles.avatarImg} src={avatarUrl} alt="" /> : initial}
         </span>
-        <ChevronDown size={16} className={styles.chev} aria-hidden="true" />
+        {isIcon || isBare ? null : <ChevronDown size={16} className={styles.chev} aria-hidden="true" />}
       </button>
 
       {open ? (
@@ -113,24 +131,24 @@ export default function UserMenu({ variant = 'default' }) {
               {avatarUrl ? <img className={styles.menuAvatarImg} src={avatarUrl} alt="" /> : initial}
             </div>
             <div className={styles.menuMeta}>
-              <div className={styles.menuTitle}>Account</div>
-              <div className={styles.menuSub}>{username || email || 'Signed in'}</div>
+              <div className={styles.menuTitle}>Аккаунт</div>
+              <div className={styles.menuSub}>{username || email || 'Вы вошли'}</div>
             </div>
           </div>
 
           <div className={styles.menuList}>
             <button type="button" className={styles.menuItem} onClick={goAccount} role="menuitem">
               <UserRound size={18} />
-              <span>Account</span>
+              <span>Настройки</span>
             </button>
             <button type="button" className={styles.menuItem} onClick={goAuth} role="menuitem">
               <Users size={18} />
-              <span>Switch account</span>
+              <span>Сменить аккаунт</span>
             </button>
             <div className={styles.divider} />
             <button type="button" className={styles.menuItemDanger} onClick={doLogout} role="menuitem">
               <LogOut size={18} />
-              <span>Logout</span>
+              <span>Выйти</span>
             </button>
           </div>
         </div>

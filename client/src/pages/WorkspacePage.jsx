@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import {
+  ArrowUp,
   ArrowLeft,
   Bell,
   File,
@@ -12,11 +13,15 @@ import {
   FileText,
   Eraser,
   Hand,
+  Home,
   Link2,
+  MoreVertical,
+  Share2,
   Spline,
   MessageCircle,
   MousePointer2,
   Paperclip,
+  Plus,
   PenLine,
   Search,
   Square,
@@ -44,6 +49,7 @@ import { createElementComment, getElementComments } from '../http/commentsAPI';
 import { chatWithDesk, getAiStatus } from '../http/aiAPI';
 import UserMenu from '../components/UserMenu';
 import MembersMenu from '../components/MembersMenu';
+import { useBreakpoints } from '../hooks/useBreakpoints';
 import styles from '../styles/WorkspacePage.module.css';
 import note2Img from '../static/note2.png';
 import { DEFAULT_SHORTCUTS, formatShortcut, loadShortcuts, matchShortcut } from '../utils/shortcuts';
@@ -57,6 +63,45 @@ const DEFAULT_BRUSH_COLOR = '#0f172a';
 const DEFAULT_BRUSH_WIDTH = 4;
 
 const QUICK_REACTIONS = ['😍', '😢', '😁', '🤣', '😌', '😎'];
+
+const AI_PROMPT_SUGGESTIONS = [
+  {
+    label: 'Суммаризация',
+    prompt: 'Сделай краткую суммаризацию контента доски и выдели ключевые темы.',
+  },
+  {
+    label: 'Задачи',
+    prompt: 'Предложи actionable список задач по содержимому доски. Коротко, по пунктам.',
+  },
+  {
+    label: 'План',
+    prompt: 'Составь пошаговый план действий на основе содержимого доски.',
+  },
+  {
+    label: 'Идеи',
+    prompt: 'Предложи 5 идей/улучшений по содержимому доски.',
+  },
+];
+
+const VIEW_SCALE_MIN = 0.2;
+const VIEW_SCALE_MAX = 3;
+// Baseline board scale. We intentionally render boards slightly smaller to increase field of view.
+// UI "100%" corresponds to this baseline.
+const VIEW_SCALE_BASE = 0.88;
+
+function clampNumber(v, min, max) {
+  return Math.min(max, Math.max(min, v));
+}
+
+function clampViewScale(s) {
+  return clampNumber(Number(s) || 1, VIEW_SCALE_MIN, VIEW_SCALE_MAX);
+}
+
+function formatViewScalePct(s) {
+  const eff = clampViewScale(s);
+  const pct = (eff / VIEW_SCALE_BASE) * 100;
+  return `${Math.round(pct)}%`;
+}
 
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -98,6 +143,79 @@ function renderHighlightedText(text, query, markClassName) {
   return nodes.length ? nodes : s;
 }
 
+function normalizeElementId(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : raw;
+}
+
+function idKey(raw) {
+  return raw == null ? null : String(raw);
+}
+
+function sameId(a, b) {
+  const ka = idKey(a);
+  const kb = idKey(b);
+  return ka != null && kb != null && ka === kb;
+}
+
+function upsertById(list, item) {
+  if (!Array.isArray(list)) return Array.isArray(item) ? item : [];
+  if (!item || item.id == null) return list;
+  const idx = list.findIndex((x) => sameId(x?.id, item.id));
+  if (idx < 0) return [...list, item];
+  const next = list.slice();
+  next[idx] = { ...next[idx], ...item };
+  return next;
+}
+
+function dedupeMergeById(list) {
+  if (!Array.isArray(list) || list.length <= 1) return list;
+  const indexById = new Map();
+  const out = [];
+  let changed = false;
+  for (const el of list) {
+    const k = idKey(el?.id);
+    if (!k) {
+      out.push(el);
+      continue;
+    }
+    const idx = indexById.get(k);
+    if (idx == null) {
+      indexById.set(k, out.length);
+      out.push(el);
+      continue;
+    }
+    changed = true;
+    out[idx] = { ...out[idx], ...el };
+  }
+  return changed ? out : list;
+}
+
+let __fitMeasurerEl = null;
+function getFitMeasurerEl() {
+  if (typeof document === 'undefined') return null;
+  if (__fitMeasurerEl && document.body?.contains(__fitMeasurerEl)) return __fitMeasurerEl;
+  const m = document.createElement('div');
+  m.setAttribute('data-fit-measurer', 'true');
+  Object.assign(m.style, {
+    position: 'fixed',
+    left: '-99999px',
+    top: '-99999px',
+    visibility: 'hidden',
+    pointerEvents: 'none',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    overflowWrap: 'break-word',
+    padding: '0',
+    margin: '0',
+    border: '0',
+    boxSizing: 'border-box',
+  });
+  document.body.appendChild(m);
+  __fitMeasurerEl = m;
+  return m;
+}
+
 function IconBtn({ label, title, children, onClick, disabled, buttonRef, className }) {
   return (
     <button
@@ -116,7 +234,10 @@ function IconBtn({ label, title, children, onClick, disabled, buttonRef, classNa
 
 const NoteTextElement = React.memo(function NoteTextElement({
   el,
+  isSelected,
   isEditing,
+  dragX,
+  dragY,
   commentsEnabled,
   deletingElementId,
   searchQuery,
@@ -125,11 +246,17 @@ const NoteTextElement = React.memo(function NoteTextElement({
   connectorHoverElementId,
   connectorFromElementId,
   connectorToHoverElementId,
+  registerNode,
   actions,
 }) {
   const elementId = el?.id;
   const content = el?.content;
   const [draft, setDraft] = React.useState(String(content ?? ''));
+  const textElRef = React.useRef(null);
+  const [fitStyle, setFitStyle] = React.useState(() => ({
+    fontSizePx: 14,
+    padY: 18,
+  }));
 
   React.useEffect(() => {
     // When entering edit mode, initialize draft from current content.
@@ -137,10 +264,72 @@ const NoteTextElement = React.memo(function NoteTextElement({
     if (isEditing) setDraft(String(content ?? ''));
   }, [isEditing, elementId, content]);
 
+  React.useLayoutEffect(() => {
+    const node = textElRef.current;
+    const measurer = getFitMeasurerEl();
+    if (!node || !measurer) return;
+
+    const boxW = Math.max(0, Math.floor(node.clientWidth || 0));
+    const boxH = Math.max(0, Math.floor(node.clientHeight || 0));
+    if (boxW <= 0 || boxH <= 0) return;
+
+    const cs = window.getComputedStyle(node);
+    // Preserve typography; keep wrapping/line-height consistent with our inline style.
+    const lineHeight = 1.15;
+    measurer.style.fontFamily = cs.fontFamily;
+    measurer.style.fontWeight = cs.fontWeight;
+    measurer.style.letterSpacing = cs.letterSpacing;
+    measurer.style.lineHeight = String(lineHeight);
+    measurer.style.whiteSpace = 'pre-wrap';
+    measurer.style.wordBreak = 'break-word';
+    measurer.style.overflowWrap = 'break-word';
+    measurer.style.width = `${boxW}px`;
+
+    const rawText = String(isEditing ? draft : (el?.content ?? ''));
+    // Use a non-empty string to keep a stable "empty" caret baseline.
+    const measureText = rawText.trim().length ? rawText : 'A';
+    measurer.textContent = measureText;
+
+    const minFont = 10;
+    const maxFont = Math.min(72, Math.max(18, Math.floor(boxH * 0.6)));
+    // Keep some horizontal breathing room; vertical padding will be computed dynamically below.
+    const padX = el?.type === 'note' ? 22 : 18;
+    const minPadY = 8;
+    const availW = Math.max(0, boxW - padX * 2);
+    const availH = Math.max(0, boxH - minPadY * 2);
+    if (availW <= 0 || availH <= 0) return;
+
+    measurer.style.width = `${availW}px`;
+
+    const fits = () => measurer.scrollHeight <= availH + 0.5 && measurer.scrollWidth <= availW + 0.5;
+
+    let lo = minFont;
+    let hi = maxFont;
+    // Binary search the largest fitting font size.
+    for (let i = 0; i < 10; i += 1) {
+      const mid = Math.floor((lo + hi + 1) / 2);
+      measurer.style.fontSize = `${mid}px`;
+      if (fits()) lo = mid;
+      else hi = mid - 1;
+      if (hi <= lo) break;
+    }
+    const fontSizePx = Math.max(minFont, Math.min(maxFont, lo));
+
+    // Compute vertical centering padding using the chosen font size.
+    measurer.style.fontSize = `${fontSizePx}px`;
+    const textH = Math.max(0, Math.ceil(measurer.scrollHeight || 0));
+    const padY = Math.max(minPadY, Math.floor((boxH - textH) / 2));
+
+    setFitStyle((prev) => {
+      if (prev.fontSizePx === fontSizePx && prev.padY === padY) return prev;
+      return { fontSizePx, padY };
+    });
+  }, [draft, isEditing, el?.content, el?.width, el?.height, el?.type]);
+
   if (!elementId) return null;
 
   const showConnectorEndpoints =
-    isEditing ||
+    isSelected ||
     (activeTool === 'connector' && connectorHoverElementId === elementId) ||
     connectorFromElementId === elementId ||
     connectorToHoverElementId === elementId;
@@ -149,15 +338,27 @@ const NoteTextElement = React.memo(function NoteTextElement({
     el.type === 'note' ? `${styles.elementInner} ${styles.noteInner}` : `${styles.elementInner} ${styles.textInner}`;
   const displayTextClass = el.type === 'note' ? `${styles.displayText} ${styles.notePad}` : styles.displayText;
   const editorClass = el.type === 'note' ? `${styles.editor} ${styles.noteEditorPad}` : styles.editor;
+  const padX = el.type === 'note' ? 22 : 18;
+  const fitInlineStyle = {
+    fontSize: `${fitStyle.fontSizePx}px`,
+    lineHeight: 1.15,
+    paddingTop: `${fitStyle.padY}px`,
+    paddingBottom: `${fitStyle.padY}px`,
+    paddingLeft: `${padX}px`,
+    paddingRight: `${padX}px`,
+    textAlign: 'center',
+  };
 
   const reactionBubbles = actions.layoutReactionBubbles(elementId, el.reactions);
-  const ex = Number(el.x ?? 0);
-  const ey = Number(el.y ?? 0);
+  // If a render happens mid-drag (e.g. due to external state updates), keep the dragged element stable.
+  const ex = Number(dragX != null ? dragX : (el.x ?? 0));
+  const ey = Number(dragY != null ? dragY : (el.y ?? 0));
 
   return (
     <div
       data-element-id={elementId}
       className={styles.element}
+      ref={(node) => registerNode?.(elementId, node)}
       style={{
         left: 0,
         top: 0,
@@ -200,6 +401,8 @@ const NoteTextElement = React.memo(function NoteTextElement({
           <textarea
             className={editorClass}
             value={draft}
+            ref={textElRef}
+            style={fitInlineStyle}
             autoFocus
             onPointerDown={(ev) => ev.stopPropagation()}
             onBlur={(ev) => {
@@ -230,7 +433,9 @@ const NoteTextElement = React.memo(function NoteTextElement({
             }}
           />
         ) : (
-          <div className={displayTextClass}>{renderHighlightedText(el.content ?? '', searchQuery, styles.searchMark)}</div>
+          <div ref={textElRef} className={displayTextClass} style={fitInlineStyle}>
+            {renderHighlightedText(el.content ?? '', searchQuery, styles.searchMark)}
+          </div>
         )}
       </div>
 
@@ -282,7 +487,7 @@ const NoteTextElement = React.memo(function NoteTextElement({
         </div>
       ) : null}
 
-      {isEditing ? (
+      {isSelected ? (
         <div className={styles.transformBox}>
           <div className={styles.elementActions}>
             <button
@@ -293,11 +498,11 @@ const NoteTextElement = React.memo(function NoteTextElement({
                 ev.stopPropagation();
                 actions.handleDeleteElement(el);
               }}
-              disabled={deletingElementId === elementId}
+              disabled={sameId(deletingElementId, elementId)}
               aria-label="Delete element"
               title="Delete element"
             >
-              {deletingElementId === elementId ? (
+              {sameId(deletingElementId, elementId) ? (
                 <Loader2 size={16} className={styles.spinner} />
               ) : (
                 <Trash2 size={16} />
@@ -305,16 +510,158 @@ const NoteTextElement = React.memo(function NoteTextElement({
             </button>
           </div>
           <div className={`${styles.resizeHandle} ${styles.hNW}`} onPointerDown={(ev) => actions.startResize(elementId, 'nw', ev)} />
-          <div className={`${styles.resizeHandle} ${styles.hN}`} onPointerDown={(ev) => actions.startResize(elementId, 'n', ev)} />
+          {el.type !== 'note' ? (
+            <div className={`${styles.resizeHandle} ${styles.hN}`} onPointerDown={(ev) => actions.startResize(elementId, 'n', ev)} />
+          ) : null}
           <div className={`${styles.resizeHandle} ${styles.hNE}`} onPointerDown={(ev) => actions.startResize(elementId, 'ne', ev)} />
-          <div className={`${styles.resizeHandle} ${styles.hE}`} onPointerDown={(ev) => actions.startResize(elementId, 'e', ev)} />
+          {el.type !== 'note' ? (
+            <div className={`${styles.resizeHandle} ${styles.hE}`} onPointerDown={(ev) => actions.startResize(elementId, 'e', ev)} />
+          ) : null}
           <div className={`${styles.resizeHandle} ${styles.hSE}`} onPointerDown={(ev) => actions.startResize(elementId, 'se', ev)} />
-          <div className={`${styles.resizeHandle} ${styles.hS}`} onPointerDown={(ev) => actions.startResize(elementId, 's', ev)} />
+          {el.type !== 'note' ? (
+            <div className={`${styles.resizeHandle} ${styles.hS}`} onPointerDown={(ev) => actions.startResize(elementId, 's', ev)} />
+          ) : null}
           <div className={`${styles.resizeHandle} ${styles.hSW}`} onPointerDown={(ev) => actions.startResize(elementId, 'sw', ev)} />
-          <div className={`${styles.resizeHandle} ${styles.hW}`} onPointerDown={(ev) => actions.startResize(elementId, 'w', ev)} />
+          {el.type !== 'note' ? (
+            <div className={`${styles.resizeHandle} ${styles.hW}`} onPointerDown={(ev) => actions.startResize(elementId, 'w', ev)} />
+          ) : null}
         </div>
       ) : null}
     </div>
+  );
+});
+
+const ConnectorsLayer = React.memo(function ConnectorsLayer({
+  connectors,
+  connectorDraft,
+  selectedConnectorId,
+  onSelectConnector,
+  startConnectorBendDrag,
+  computeConnectorPathFromAnchors,
+  getAnchorPoint,
+  active,
+}) {
+  // During drag, elements may move via compositor transforms; keep connectors attached by re-rendering at ~60fps.
+  const [, forceTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!active) return () => {};
+    let raf = null;
+    const loop = () => {
+      forceTick((t) => (t + 1) % 1_000_000);
+      raf = window.requestAnimationFrame(loop);
+    };
+    raf = window.requestAnimationFrame(loop);
+    return () => {
+      if (raf != null) window.cancelAnimationFrame(raf);
+    };
+  }, [active]);
+
+  return (
+    <svg className={styles.connectorsLayer} aria-hidden="true">
+      <defs>
+        <marker
+          id="connector-arrow"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto-start-reverse"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+        </marker>
+      </defs>
+
+      {(Array.isArray(connectors) ? connectors : []).map((el) => {
+        const data = el?.connector?.data || el?.Connector?.data || {};
+        const from = data?.from || {};
+        const to = data?.to || {};
+        if (!from?.elementId || !to?.elementId) return null;
+
+        const a0 = getAnchorPoint?.(from.elementId, from.side);
+        const a1 = getAnchorPoint?.(to.elementId, to.side);
+        if (!a0 || !a1) return null;
+
+        const bend = data?.bend || { x: 0, y: 0 };
+        const { d, handle } = computeConnectorPathFromAnchors(a0, a1, bend);
+        const color = String(data?.style?.color || 'rgba(15,23,42,0.75)');
+        const w = Math.max(1, Number(data?.style?.width ?? 2));
+        const selected = sameId(selectedConnectorId, el.id);
+        const arrow = data?.style?.arrowEnd !== false;
+
+        return (
+          <g key={el.id} className={selected ? styles.connectorSelected : ''}>
+            <path
+              d={d}
+              fill="none"
+              stroke={color}
+              strokeWidth={selected ? Math.max(2, w + 0.75) : w}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ color }}
+              markerEnd={arrow ? 'url(#connector-arrow)' : undefined}
+            />
+            <path
+              d={d}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={Math.max(10, w + 10)}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              onPointerDown={(ev) => {
+                ev.stopPropagation();
+                ev.preventDefault();
+                onSelectConnector?.(el.id);
+              }}
+            />
+            {selected ? (
+              <circle
+                cx={handle.x}
+                cy={handle.y}
+                r={7}
+                className={styles.connectorBendHandle}
+                onPointerDown={(ev) => startConnectorBendDrag?.(el.id, ev)}
+              />
+            ) : null}
+          </g>
+        );
+      })}
+
+      {connectorDraft?.from?.elementId ? (
+        (() => {
+          const a0 = getAnchorPoint?.(connectorDraft.from.elementId, connectorDraft.from.side);
+          if (!a0) return null;
+
+          let a1 = null;
+          if (connectorDraft?.toHover?.elementId && connectorDraft?.toHover?.side) {
+            a1 = getAnchorPoint?.(connectorDraft.toHover.elementId, connectorDraft.toHover.side);
+          }
+          if (!a1) {
+            const p3 = connectorDraft.cursor || { x: a0.x + 1, y: a0.y + 1 };
+            const dx = Number(p3.x) - a0.x;
+            const dy = Number(p3.y) - a0.y;
+            const ax = Math.abs(dx);
+            const ay = Math.abs(dy);
+            const dir = ax >= ay ? { x: dx >= 0 ? -1 : 1, y: 0 } : { x: 0, y: dy >= 0 ? -1 : 1 };
+            a1 = { x: Number(p3.x), y: Number(p3.y), dir };
+          }
+
+          const { d } = computeConnectorPathFromAnchors(a0, a1, { x: 0, y: 0 });
+          return (
+            <path
+              d={d}
+              fill="none"
+              stroke="rgba(15,23,42,0.55)"
+              strokeWidth={2}
+              strokeDasharray="6 6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              markerEnd="url(#connector-arrow)"
+            />
+          );
+        })()
+      ) : null}
+    </svg>
   );
 });
 
@@ -381,6 +728,42 @@ function getExt(nameOrUrl) {
   return (m?.[1] || '').toLowerCase();
 }
 
+function isPhotoExt(ext) {
+  const e = String(ext || '').toLowerCase();
+  return e === 'png' || e === 'jpg' || e === 'jpeg';
+}
+
+function readImageSizeFromFile(file) {
+  return new Promise((resolve, reject) => {
+    try {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+        resolve({
+          width: Number(img.naturalWidth || img.width || 0),
+          height: Number(img.naturalHeight || img.height || 0),
+        });
+      };
+      img.onerror = () => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+        reject(new Error('Failed to read image'));
+      };
+      img.src = url;
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 function normalizeUrlClient(input) {
   const raw = String(input || '').trim();
   if (!raw) return '';
@@ -442,9 +825,11 @@ async function fetchFileBlob(url) {
 export default function WorkspacePage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { isMobile } = useBreakpoints();
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const linkInputRef = useRef(null);
+  const zoomPctRef = useRef(null);
   const socketRef = useRef(null);
   const noteVersionsRef = useRef(new Map()); // elementId -> version
   const noteEditTimersRef = useRef(new Map()); // elementId -> timeoutId
@@ -457,12 +842,13 @@ export default function WorkspacePage() {
   const [creatingLink, setCreatingLink] = useState(false);
   const [linkDraftUrl, setLinkDraftUrl] = useState('');
   const [activeTool, setActiveTool] = useState(TOOLS[0].id);
-  const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
+  const [, setViewOffset] = useState({ x: 0, y: 0 });
   const [selectionRect, setSelectionRect] = useState(null);
   const [isPanning, setIsPanning] = useState(false);
   const [elements, setElements] = useState([]);
+  const [selectedElementIds, setSelectedElementIds] = useState(() => new Set()); // Set<string(idKey)>
   const [editingElementId, setEditingElementId] = useState(null);
-  const [deletingElementId, setDeletingElementId] = useState(null);
+  const [deletingElementId, setDeletingElementId] = useState(null); // stored as string key
   const [docTextPreview, setDocTextPreview] = useState({});
   const [presentUserIds, setPresentUserIds] = useState([]);
   const [shortcuts, setShortcuts] = useState(() => loadShortcuts());
@@ -473,10 +859,30 @@ export default function WorkspacePage() {
   const [connectorHoverElementId, setConnectorHoverElementId] = useState(null);
   const [connectorDraft, setConnectorDraft] = useState(null); // { from:{elementId,side}, toHover:{elementId,side|null}, cursor:{x,y} }
   const [selectedConnectorId, setSelectedConnectorId] = useState(null);
+  const [connectorsFollowDuringDrag, setConnectorsFollowDuringDrag] = useState(false);
   const [reactionPicker, setReactionPicker] = useState(null); // { elementId, x, y }
   const [reactionCustomEmoji, setReactionCustomEmoji] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
+  const [mobileSheetDragY, setMobileSheetDragY] = useState(0);
+  const [mobileSheetDragging, setMobileSheetDragging] = useState(false);
+  const [aiSheetDragY, setAiSheetDragY] = useState(0);
+  const [aiSheetDragging, setAiSheetDragging] = useState(false);
+
+  // Safety net: reconcile duplicates only when list size changes (avoid per-frame work during drag).
+  useEffect(() => {
+    setElements((prev) => {
+      const seen = new Set();
+      for (const el of prev) {
+        const k = idKey(el?.id);
+        if (!k) continue;
+        if (seen.has(k)) return dedupeMergeById(prev);
+        seen.add(k);
+      }
+      return prev;
+    });
+  }, [elements.length]);
 
   const commentsEnabled = Boolean(workspace?.groupId);
   const [commentsPanel, setCommentsPanel] = useState(null); // { elementId }
@@ -486,6 +892,7 @@ export default function WorkspacePage() {
   const commentInputRef = useRef(null);
   const commentsListRef = useRef(null);
 
+  const deskIdKey = useMemo(() => idKey(workspace?.id ?? workspace?.deskId ?? id), [workspace?.id, workspace?.deskId, id]);
   const deskIdNum = useMemo(() => {
     const n = Number(workspace?.id ?? workspace?.deskId ?? id);
     return Number.isFinite(n) ? n : null;
@@ -501,8 +908,17 @@ export default function WorkspacePage() {
   const aiListRef = useRef(null);
 
   const selectStartRef = useRef(null);
+  const selectRafRef = useRef(null);
+  const selectPendingEndRef = useRef(null);
   const panStartRef = useRef(null);
   const interactionRef = useRef(null);
+  const viewOffsetRef = useRef({ x: 0, y: 0 });
+  const viewScaleRef = useRef(VIEW_SCALE_BASE);
+  const viewApplyRafRef = useRef(null);
+  const viewPendingRef = useRef(null); // { offset:{x,y}, scale:number }
+  const viewSaveTimerRef = useRef(null);
+  const persistViewDebouncedRef = useRef(null);
+  const didRestoreViewRef = useRef(false);
   const suppressNextElementClickRef = useRef(new Set());
   const fetchingPreviewsRef = useRef(new Set());
   const historyRef = useRef({ past: [], future: [] });
@@ -510,7 +926,12 @@ export default function WorkspacePage() {
   const applyingHistoryRef = useRef(false);
   const editStartSnapRef = useRef(new Map()); // elementId -> snapshot
   const endingEditRef = useRef(false);
-  const elementNodeCacheRef = useRef(new Map()); // elementId -> HTMLElement
+  const editingElementIdRef = useRef(null);
+  const elementNodeCacheRef = useRef(new Map()); // idKey(elementId) -> HTMLElement
+  // Perf: during element drag we update the dragged node's transform imperatively (rAF),
+  // and commit to React state once on pointerup. This avoids re-rendering the entire board each frame.
+  const dragVisualPendingRef = useRef(null); // { elementKey, x, y, rotation }
+  const dragVisualRafRef = useRef(null);
   const handHoldRef = useRef({ active: false, previousTool: null });
   const liveStrokeRef = useRef(null);
   const eraseStateRef = useRef({ active: false, erasedIds: new Set(), lastTs: 0 });
@@ -520,6 +941,34 @@ export default function WorkspacePage() {
   const searchBtnRef = useRef(null);
   const searchPopoverRef = useRef(null);
   const searchInputRef = useRef(null);
+  const mobileSearchBarRef = useRef(null);
+  const mobileSheetRef = useRef(null);
+  const mobileSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
+  const aiSheetRef = useRef(null);
+  const aiSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
+  const mobilePinchRef = useRef({
+    active: false,
+    pointers: new Map(), // pointerId -> { x, y }
+    startDist: 0,
+    startScale: 1,
+    startOffset: { x: 0, y: 0 },
+    deskMid: { x: 0, y: 0 },
+  });
+
+  useEffect(() => {
+    if (!isMobile) setMobileToolsOpen(false);
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    // Keep the mobile UI focused: tools sheet and search shouldn't overlap.
+    if (mobileToolsOpen) setSearchOpen(false);
+  }, [isMobile, mobileToolsOpen]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    if (searchOpen) setMobileToolsOpen(false);
+  }, [isMobile, searchOpen]);
 
   const activeToolDef = TOOLS.find((t) => t.id === activeTool) || TOOLS[0];
   const canvasCursor = iconToCursorValue(
@@ -528,6 +977,187 @@ export default function WorkspacePage() {
     activeToolDef.fallbackCursor
   );
   const effectiveCursor = activeTool === 'hand' && isPanning ? 'grabbing' : canvasCursor;
+
+  useEffect(() => {
+    editingElementIdRef.current = editingElementId;
+  }, [editingElementId]);
+
+  const viewStorageKey = useMemo(() => {
+    if (!deskIdKey) return null;
+    return `healis.boardView.v2:${deskIdKey}`;
+  }, [deskIdKey]);
+
+  const applyViewVarsNow = useCallback((next) => {
+    const node = canvasRef.current;
+    if (!node) return;
+    const off = next?.offset || viewOffsetRef.current;
+    const s = clampViewScale(next?.scale != null ? next.scale : viewScaleRef.current);
+
+    // Keep refs authoritative.
+    viewOffsetRef.current = { x: Number(off?.x || 0), y: Number(off?.y || 0) };
+    viewScaleRef.current = s;
+
+    node.style.setProperty('--grid-offset-x', `${viewOffsetRef.current.x}px`);
+    node.style.setProperty('--grid-offset-y', `${viewOffsetRef.current.y}px`);
+    node.style.setProperty('--view-offset-x', `${viewOffsetRef.current.x}px`);
+    node.style.setProperty('--view-offset-y', `${viewOffsetRef.current.y}px`);
+    node.style.setProperty('--view-scale', String(s));
+
+    if (zoomPctRef.current) zoomPctRef.current.textContent = formatViewScalePct(s);
+  }, []);
+
+  const scheduleApplyViewVars = useCallback(
+    (next) => {
+      // Update refs immediately so subsequent events (wheel/move) use latest values,
+      // but batch DOM writes to rAF for smoothness.
+      const off = next?.offset || viewOffsetRef.current;
+      const s = clampViewScale(next?.scale != null ? next.scale : viewScaleRef.current);
+      viewOffsetRef.current = { x: Number(off?.x || 0), y: Number(off?.y || 0) };
+      viewScaleRef.current = s;
+
+      // Persist view (debounced). This covers panning too, not only wheel/zoom buttons.
+      try {
+        persistViewDebouncedRef.current?.({ offset: viewOffsetRef.current, scale: s });
+      } catch {
+        // ignore
+      }
+
+      viewPendingRef.current = { offset: viewOffsetRef.current, scale: s };
+      if (viewApplyRafRef.current != null) return;
+      viewApplyRafRef.current = window.requestAnimationFrame(() => {
+        viewApplyRafRef.current = null;
+        const pending = viewPendingRef.current;
+        viewPendingRef.current = null;
+        applyViewVarsNow(pending);
+      });
+    },
+    [applyViewVarsNow]
+  );
+
+  const persistViewDebounced = useCallback(
+    (next, opts = {}) => {
+      if (!viewStorageKey) return;
+      const immediate = Boolean(opts.immediate);
+      if (viewSaveTimerRef.current) {
+        window.clearTimeout(viewSaveTimerRef.current);
+        viewSaveTimerRef.current = null;
+      }
+
+      const run = () => {
+        const off = next?.offset || viewOffsetRef.current;
+        const scale = clampViewScale(next?.scale != null ? next.scale : viewScaleRef.current);
+        const storedScale = Number(((scale || VIEW_SCALE_BASE) / VIEW_SCALE_BASE).toFixed(4));
+        try {
+          window.localStorage.setItem(
+            viewStorageKey,
+            JSON.stringify({
+              v: 2,
+              offset: { x: Number(off?.x ?? 0), y: Number(off?.y ?? 0) },
+              // Store scale relative to the baseline so UI "100%" is stable across boards.
+              scale: storedScale,
+            })
+          );
+        } catch {
+          // ignore (storage disabled/quota)
+        }
+      };
+
+      if (immediate) {
+        run();
+        return;
+      }
+      viewSaveTimerRef.current = window.setTimeout(() => {
+        viewSaveTimerRef.current = null;
+        run();
+      }, 160);
+    },
+    [viewStorageKey]
+  );
+
+  useEffect(() => {
+    persistViewDebouncedRef.current = persistViewDebounced;
+  }, [persistViewDebounced]);
+
+  useLayoutEffect(() => {
+    // Initialize CSS vars without causing heavy React re-renders.
+    applyViewVarsNow({ offset: viewOffsetRef.current, scale: viewScaleRef.current });
+    return () => {
+      if (viewApplyRafRef.current != null) {
+        window.cancelAnimationFrame(viewApplyRafRef.current);
+        viewApplyRafRef.current = null;
+      }
+      viewPendingRef.current = null;
+      if (viewSaveTimerRef.current) {
+        window.clearTimeout(viewSaveTimerRef.current);
+        viewSaveTimerRef.current = null;
+      }
+      // Best-effort: persist the latest view on unmount.
+      try {
+        persistViewDebouncedRef.current?.(
+          { offset: viewOffsetRef.current, scale: viewScaleRef.current },
+          { immediate: true }
+        );
+      } catch {
+        // ignore
+      }
+    };
+  }, [applyViewVarsNow]);
+
+  useLayoutEffect(() => {
+    if (didRestoreViewRef.current) return;
+    if (!viewStorageKey) return;
+    if (loading) return;
+    const node = canvasRef.current;
+    if (!node) return;
+
+    let saved = null;
+    try {
+      const legacyKeys = [];
+      // Backward compatibility with older experiments/versions.
+      legacyKeys.push(viewStorageKey);
+      if (deskIdKey) legacyKeys.push(`healis.boardView.v1:${deskIdKey}`);
+      if (deskIdNum != null) legacyKeys.push(`healis.boardView.v1:${deskIdNum}`);
+
+      let raw = null;
+      for (const k of legacyKeys) {
+        raw = window.localStorage.getItem(k);
+        if (raw) break;
+      }
+      saved = raw ? JSON.parse(raw) : null;
+    } catch {
+      saved = null;
+    }
+    if (!saved) return;
+
+    const apply = (offset, scale) => {
+      const nextOffset = { x: Number(offset?.x ?? 0), y: Number(offset?.y ?? 0) };
+      // Stored scale is relative to VIEW_SCALE_BASE (UI "100%").
+      const nextScale = clampViewScale((scale ?? 1) * VIEW_SCALE_BASE);
+      scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
+      setViewOffset(nextOffset);
+    };
+
+    // v2: offset + scale (preferred)
+    if (saved.v === 2 && saved.offset) {
+      didRestoreViewRef.current = true;
+      apply(saved.offset, saved.scale);
+      return;
+    }
+
+    // v1 (legacy): center + scale
+    if (saved.v === 1 && saved.center) {
+      const rect = node.getBoundingClientRect();
+      const p = { x: rect.width / 2, y: rect.height / 2 };
+      const storedScale = Number(saved?.scale ?? 1);
+      const scale = clampViewScale(storedScale * VIEW_SCALE_BASE);
+      const center = saved?.center || null;
+      if (!center || !Number.isFinite(Number(center.x)) || !Number.isFinite(Number(center.y))) return;
+      const nextOffset = { x: p.x - Number(center.x) * scale, y: p.y - Number(center.y) * scale };
+      didRestoreViewRef.current = true;
+      scheduleApplyViewVars({ offset: nextOffset, scale });
+      setViewOffset(nextOffset);
+    }
+  }, [viewStorageKey, scheduleApplyViewVars, loading, deskIdKey, deskIdNum]);
 
   useEffect(() => {
     if (activeTool !== 'link') return;
@@ -623,13 +1253,6 @@ export default function WorkspacePage() {
     () => (hasSearchQuery ? buildManualBoardSearchIndex(elements) : []),
     [hasSearchQuery, elements]
   );
-  const elementsById = useMemo(() => {
-    const m = new Map();
-    for (const el of Array.isArray(elements) ? elements : []) {
-      if (el?.id != null) m.set(el.id, el);
-    }
-    return m;
-  }, [elements]);
   const manualSearchHits = useMemo(() => {
     if (!hasSearchQuery) return [];
     return runManualBoardSearch(manualSearchIndex, searchQuery, { limit: 60 });
@@ -657,6 +1280,15 @@ export default function WorkspacePage() {
     window.setTimeout(() => searchInputRef.current?.focus?.(), 0);
 
     const onPointerDown = (ev) => {
+      if (isMobile) {
+        const bar = mobileSearchBarRef.current;
+        const btn = searchBtnRef.current;
+        if (bar && bar.contains(ev.target)) return;
+        if (btn && btn.contains(ev.target)) return;
+        setSearchOpen(false);
+        return;
+      }
+
       const pop = searchPopoverRef.current;
       const btn = searchBtnRef.current;
       if (pop && pop.contains(ev.target)) return;
@@ -665,7 +1297,7 @@ export default function WorkspacePage() {
     };
     window.addEventListener('pointerdown', onPointerDown);
     return () => window.removeEventListener('pointerdown', onPointerDown);
-  }, [searchOpen]);
+  }, [searchOpen, isMobile]);
 
   const getCanvasPoint = (e) => {
     const el = canvasRef.current;
@@ -682,16 +1314,18 @@ export default function WorkspacePage() {
     return { left, top, width, height };
   };
 
-  const getDeskPointFromClient = (clientX, clientY) => {
+  const getDeskPointFromClient = useCallback((clientX, clientY) => {
     const el = canvasRef.current;
     if (!el) return { x: 0, y: 0 };
     const rect = el.getBoundingClientRect();
-    return { x: clientX - rect.left - viewOffset.x, y: clientY - rect.top - viewOffset.y };
-  };
+    const off = viewOffsetRef.current;
+    const s = viewScaleRef.current || 1;
+    return { x: (clientX - rect.left - off.x) / s, y: (clientY - rect.top - off.y) / s };
+  }, []);
 
   const isConnectableElement = (el) => Boolean(el?.id) && Boolean(el?.type) && el.type !== 'connector';
 
-  const getAnchorPoint = (el, side) => {
+  const getAnchorPoint = useCallback((el, side) => {
     // Outset ensures the arrowhead doesn't get hidden under the target element
     // because connectors are rendered beneath elements (z-index).
     const OUTSET = 10;
@@ -714,7 +1348,7 @@ export default function WorkspacePage() {
     }
 
     return { x: p.x + dir.x * OUTSET, y: p.y + dir.y * OUTSET, dir };
-  };
+  }, []);
 
   const pickHoverElementId = (deskP, threshold = 15) => {
     const px = Number(deskP?.x ?? 0);
@@ -765,7 +1399,7 @@ export default function WorkspacePage() {
     return best;
   };
 
-  const computeConnectorPathFromAnchors = (fromAnchor, toAnchor, bend) => {
+  const computeConnectorPathFromAnchors = useCallback((fromAnchor, toAnchor, bend) => {
     const p0 = { x: Number(fromAnchor?.x ?? 0), y: Number(fromAnchor?.y ?? 0) };
     const p3 = { x: Number(toAnchor?.x ?? 0), y: Number(toAnchor?.y ?? 0) };
     const d0 = fromAnchor?.dir || { x: 1, y: 0 };
@@ -784,7 +1418,7 @@ export default function WorkspacePage() {
     const handle = { x: mid.x + bx, y: mid.y + by };
     const d = `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p3.x} ${p3.y}`;
     return { d, mid, handle, p0, p3 };
-  };
+  }, []);
 
   const stopInteractions = (e) => {
     if (e?.currentTarget && typeof e.pointerId === 'number') {
@@ -798,6 +1432,9 @@ export default function WorkspacePage() {
     panStartRef.current = null;
     setSelectionRect(null);
     setIsPanning(false);
+    // Commit the latest view offset to state once (avoid doing this in pointermove).
+    setViewOffset(viewOffsetRef.current);
+    persistViewDebounced({ offset: viewOffsetRef.current, scale: viewScaleRef.current }, { immediate: true });
   };
 
   const extractContent = useCallback((el) => {
@@ -956,9 +1593,10 @@ export default function WorkspacePage() {
 
   const elementToVm = useCallback((el) => {
     if (!el || typeof el !== 'object') return el;
+    const normalizedId = normalizeElementId(el.id ?? el.elementId);
     const vm = {
       ...el,
-      id: el.id ?? el.elementId,
+      id: normalizedId,
       content: el.content ?? extractContent(el),
       reactions: normalizeReactions(el.reactions),
     };
@@ -969,6 +1607,13 @@ export default function WorkspacePage() {
     if (vm.link == null && vm.Link != null) vm.link = vm.Link;
     if (vm.drawing == null && vm.Drawing != null) vm.drawing = vm.Drawing;
     if (vm.connector == null && vm.Connector != null) vm.connector = vm.Connector;
+    // Normalize connector endpoints to numeric IDs when possible.
+    if (vm.type === 'connector') {
+      const child = vm.connector ?? vm.Connector ?? null;
+      const data = child?.data ?? null;
+      if (data?.from?.elementId != null) data.from.elementId = normalizeElementId(data.from.elementId);
+      if (data?.to?.elementId != null) data.to.elementId = normalizeElementId(data.to.elementId);
+    }
     return vm;
   }, [extractContent, normalizeReactions]);
 
@@ -990,7 +1635,7 @@ export default function WorkspacePage() {
         return;
       }
       const next = normalizeReactions(ack?.reactions);
-      setElements((prev) => prev.map((el) => (el.id === elementId ? { ...el, reactions: next } : el)));
+      setElements((prev) => prev.map((el) => (sameId(el.id, elementId) ? { ...el, reactions: next } : el)));
     });
   };
 
@@ -1019,7 +1664,7 @@ export default function WorkspacePage() {
 
     const updated = await updateElement(el.id, { ...base, payload });
     const vm = elementToVm(updated);
-    setElements((prev) => prev.map((x) => (x.id === vm.id ? { ...x, ...vm } : x)));
+      setElements((prev) => prev.map((x) => (sameId(x.id, vm.id) ? { ...x, ...vm } : x)));
 
     if (!opts.skipHistory && !applyingHistoryRef.current && opts.historyBefore) {
       const afterSnap = snapshotForHistory({ ...el, ...vm });
@@ -1082,7 +1727,7 @@ export default function WorkspacePage() {
       });
       const vm = elementToVm(created);
       if (vm?.id) createdElementIdsRef.current.add(vm.id);
-      setElements((prev) => [...prev, vm]);
+      setElements((prev) => upsertById(prev, vm));
       setSelectedConnectorId(vm?.id ?? null);
 
       if (!applyingHistoryRef.current) {
@@ -1165,6 +1810,7 @@ export default function WorkspacePage() {
   const startConnectorBendDrag = (connectorId, e) => {
     e.stopPropagation();
     e.preventDefault();
+    setConnectorsFollowDuringDrag(true);
     const idNum = connectorId;
     const el = elementsRef.current?.find?.((x) => x?.id === idNum) || elements.find((x) => x?.id === idNum);
     if (!el) return;
@@ -1201,12 +1847,13 @@ export default function WorkspacePage() {
     const onUp = async (ev) => {
       if (ev.pointerId !== pointerId) return;
       cleanup(onMove, onUp);
+      setConnectorsFollowDuringDrag(false);
       const curEl = elementsRef.current?.find?.((x) => x?.id === idNum) || el;
       const data = curEl?.connector?.data || curEl?.Connector?.data || {};
       try {
         const updated = await updateElement(idNum, { payload: { data } });
         const vm = elementToVm(updated);
-        setElements((prev) => prev.map((x) => (x.id === vm.id ? { ...x, ...vm } : x)));
+        setElements((prev) => prev.map((x) => (sameId(x.id, vm.id) ? { ...x, ...vm } : x)));
 
         if (!applyingHistoryRef.current && before) {
           const afterSnap = snapshotForHistory(vm);
@@ -1230,46 +1877,81 @@ export default function WorkspacePage() {
 
   const beginEditing = (elementId, explicitBeforeSnap) => {
     if (!elementId) return;
+    // Selecting an element implies it's the only active selection.
+    setSelectedElementIds(new Set([idKey(elementId)]));
     // Enforce a single active editor: switching elements should commit the previous one.
     if (editingElementId && editingElementId !== elementId) {
       endEditing();
     }
     if (!editStartSnapRef.current.has(elementId)) {
-      const before = explicitBeforeSnap || snapshotForHistory(elementsRef.current.find((x) => x.id === elementId));
+      const before = explicitBeforeSnap || snapshotForHistory(elementsRef.current.find((x) => sameId(x.id, elementId)));
       if (before) editStartSnapRef.current.set(elementId, before);
     }
+    editingElementIdRef.current = elementId;
     setEditingElementId(elementId);
   };
 
   const endEditing = async () => {
-    if (!editingElementId) return;
+    const activeId = editingElementIdRef.current ?? editingElementId;
+    if (!activeId) return;
     if (endingEditRef.current) return;
     endingEditRef.current = true;
-    const idToEnd = editingElementId;
+    const idToEnd = activeId;
     const current = elementsRef.current.find((el) => el.id === idToEnd);
     // Don't clobber a new editor that may have been opened while we were ending this one.
     setEditingElementId((cur) => (cur === idToEnd ? null : cur));
-    try {
-      if (current) {
-        const before = editStartSnapRef.current.get(idToEnd) || null;
-        editStartSnapRef.current.delete(idToEnd);
-        // Optimistic: reflect the latest local changes immediately; server sync happens async.
-        setElements((prev) => prev.map((el) => (el.id === idToEnd ? { ...el, ...current } : el)));
-        await persistElement(current, { historyBefore: before });
-      }
-    } catch {
+    if (editingElementIdRef.current === idToEnd) editingElementIdRef.current = null;
+
+    // Release the "ending" lock ASAP so fast UX (Esc/Enter/new element) never gets stuck
+    // on a slow/failed network request.
+    const before = editStartSnapRef.current.get(idToEnd) || null;
+    editStartSnapRef.current.delete(idToEnd);
+
+    // Optimistic: reflect the latest local changes immediately; server sync happens async.
+    if (current) setElements((prev) => prev.map((el) => (el.id === idToEnd ? { ...el, ...current } : el)));
+
+    endingEditRef.current = false;
+
+    if (!current) return;
+    // Fire-and-forget persistence. This prevents "board freeze" when backend is slow.
+    persistElement(current, { historyBefore: before }).catch(() => {
       // ignore
-    } finally {
-      endingEditRef.current = false;
+    });
+  };
+
+  const flushDragVisual = () => {
+    dragVisualRafRef.current = null;
+    const pending = dragVisualPendingRef.current;
+    if (!pending?.elementKey) return;
+    const node = elementNodeCacheRef.current.get(pending.elementKey);
+    if (!node) return;
+    node.style.transform = `translate3d(${pending.x}px, ${pending.y}px, 0) rotate(${pending.rotation ?? 0}deg)`;
+  };
+
+  const scheduleDragVisual = (elementKey, x, y, rotation) => {
+    if (!elementKey) return;
+    dragVisualPendingRef.current = { elementKey, x, y, rotation: Number(rotation ?? 0) };
+    if (dragVisualRafRef.current == null) {
+      dragVisualRafRef.current = window.requestAnimationFrame(flushDragVisual);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (dragVisualRafRef.current != null) {
+        window.cancelAnimationFrame(dragVisualRafRef.current);
+        dragVisualRafRef.current = null;
+      }
+      dragVisualPendingRef.current = null;
+    };
+  }, []);
 
   const maybeStartElementDrag = (elementId, pointerDownEvent) => {
     // For touch/pen pointer events, `button` can be -1; still allow dragging.
     if (pointerDownEvent.pointerType === 'mouse' && pointerDownEvent.button !== 0) return;
     if (interactionRef.current) return; // already dragging/resizing
 
-    const el = elementsRef.current.find((x) => x.id === elementId);
+    const el = elementsRef.current.find((x) => sameId(x.id, elementId));
     if (!el) return;
 
     const before = snapshotForHistory(el);
@@ -1288,49 +1970,76 @@ export default function WorkspacePage() {
     const beginDragNow = () => {
       // Suppress the click that will fire after a drag, so it doesn't enter edit mode.
       suppressNextElementClickRef.current.add(elementId);
+      setConnectorsFollowDuringDrag(true);
 
-      interactionRef.current = { kind: 'drag', elementId, startX, startY, origin: { x: el.x, y: el.y } };
+      const elementKey = idKey(elementId);
+      const node = elementKey ? elementNodeCacheRef.current.get(elementKey) : null;
+      if (node) node.style.willChange = 'transform';
+
+      interactionRef.current = {
+        kind: 'drag',
+        elementId,
+        elementKey,
+        hasDomNode: Boolean(node),
+        startX,
+        startY,
+        origin: { x: el.x, y: el.y },
+        latest: { x: el.x, y: el.y },
+        rotation: Number(el.rotation ?? 0),
+        pointerId,
+      };
 
       const onDragMove = (ev) => {
         const cur = interactionRef.current;
         if (!cur || cur.kind !== 'drag' || cur.elementId !== elementId) return;
-        const dx = ev.clientX - cur.startX;
-        const dy = ev.clientY - cur.startY;
+        if (cur.pointerId != null && ev.pointerId != null && ev.pointerId !== cur.pointerId) return;
+
+        // Elements are positioned in desk coordinates inside a scaled container.
+        // Convert screen delta -> desk delta for consistent movement at any zoom.
+        const s = Number(viewScaleRef.current || 1) || 1;
+        const dx = (ev.clientX - cur.startX) / s;
+        const dy = (ev.clientY - cur.startY) / s;
         const nextX = cur.origin.x + dx;
         const nextY = cur.origin.y + dy;
 
-        // Perf: update DOM directly during drag to avoid rerendering the entire page at 60fps.
-        const root = canvasRef.current;
-        if (root) {
-          let node = elementNodeCacheRef.current.get(elementId);
-          if (!node || !node.isConnected) {
-            node = root.querySelector?.(`[data-element-id="${elementId}"]`) || null;
-            if (node) elementNodeCacheRef.current.set(elementId, node);
-          }
-          if (node) {
-            const rotation = Number((elementsRef.current.find((x) => x.id === elementId) || el)?.rotation ?? 0);
-            node.style.transform = `translate3d(${nextX}px, ${nextY}px, 0) rotate(${rotation}deg)`;
-          }
-        }
-
-        // Keep the latest coords in the ref so persistElement() commits correct data on drag end.
-        const refEl = elementsRef.current.find((x) => x.id === elementId);
-        if (refEl) {
-          refEl.x = nextX;
-          refEl.y = nextY;
-        }
+        cur.latest = { x: nextX, y: nextY };
+        // Perf: update only the dragged node's transform during drag; commit state on pointerup.
+        if (cur.hasDomNode) scheduleDragVisual(cur.elementKey, nextX, nextY, cur.rotation);
+        else updateLocalElement(elementId, { x: nextX, y: nextY });
       };
 
       const onDragUp = async () => {
         window.removeEventListener('pointermove', onDragMove);
         window.removeEventListener('pointerup', onDragUp);
+        const cur = interactionRef.current;
         interactionRef.current = null;
-        const latest = elementsRef.current.find((x) => x.id === elementId);
-        if (latest) {
+        setConnectorsFollowDuringDrag(false);
+        const latestPos = cur?.kind === 'drag' && cur?.elementId === elementId ? cur.latest : null;
+        const latestBase = elementsRef.current.find((x) => sameId(x.id, elementId)) || el;
+        if (latestBase && latestPos) {
           try {
-            // Commit to React state once (end of drag) so other UI stays in sync without 60fps rerenders.
-            setElements((prev) => prev.map((x) => (x.id === elementId ? { ...x, x: latest.x, y: latest.y } : x)));
-            await persistElement(latest, { historyBefore: before });
+            // Clear the transient perf hint.
+            if (cur?.elementKey) {
+              const node = elementNodeCacheRef.current.get(cur.elementKey);
+              if (node) node.style.willChange = '';
+            }
+
+            // Ensure the final coords are visible before committing state.
+            if (dragVisualRafRef.current != null) {
+              window.cancelAnimationFrame(dragVisualRafRef.current);
+              dragVisualRafRef.current = null;
+            }
+            dragVisualPendingRef.current = cur?.elementKey
+              ? { elementKey: cur.elementKey, x: latestPos.x, y: latestPos.y, rotation: cur?.rotation ?? 0 }
+              : null;
+            flushDragVisual();
+            dragVisualPendingRef.current = null;
+
+            // Commit coords to state once (avoids per-frame full board work).
+            setElements((prev) =>
+              prev.map((xEl) => (sameId(xEl?.id, elementId) ? { ...xEl, x: latestPos.x, y: latestPos.y } : xEl))
+            );
+            await persistElement({ ...latestBase, x: latestPos.x, y: latestPos.y }, { historyBefore: before });
           } catch {
             // ignore
           }
@@ -1467,19 +2176,21 @@ export default function WorkspacePage() {
     const socket = socketRef.current;
     const deskId = workspace?.id ?? workspace?.deskId ?? id;
     if (!socket || !deskId) return;
+    const k = idKey(elementId);
+    if (!k) return;
 
-    const prevTimer = noteEditTimersRef.current.get(elementId);
+    const prevTimer = noteEditTimersRef.current.get(k);
     if (prevTimer) window.clearTimeout(prevTimer);
 
     const timer = window.setTimeout(() => {
-      const baseVersion = noteVersionsRef.current.get(elementId);
+      const baseVersion = noteVersionsRef.current.get(k);
       socket.emit(
         'note:edit',
         { deskId, elementId, text, baseVersion },
         (ack = {}) => {
           if (!ack?.ok) {
             if (ack?.error === 'VERSION_CONFLICT') {
-              if (ack.currentVersion != null) noteVersionsRef.current.set(elementId, ack.currentVersion);
+              if (ack.currentVersion != null) noteVersionsRef.current.set(k, ack.currentVersion);
               updateLocalElement(elementId, { content: String(ack.currentText ?? '') });
               setActionError('This note was updated by someone else. Synced to the latest version.');
               window.setTimeout(() => setActionError(null), 4500);
@@ -1489,18 +2200,18 @@ export default function WorkspacePage() {
             window.setTimeout(() => setActionError(null), 4500);
             return;
           }
-          if (ack?.version != null) noteVersionsRef.current.set(elementId, ack.version);
+          if (ack?.version != null) noteVersionsRef.current.set(k, ack.version);
         }
       );
     }, 220);
 
-    noteEditTimersRef.current.set(elementId, timer);
+    noteEditTimersRef.current.set(k, timer);
   };
 
   const handleDeleteElement = async (elOrId) => {
     const idToDeleteRaw = elOrId?.id ?? elOrId?.elementId ?? elOrId;
-    const idToDelete = Number(idToDeleteRaw);
-    if (!Number.isFinite(idToDelete)) {
+    const idToDeleteKey = idKey(idToDeleteRaw);
+    if (!idToDeleteKey) {
       // eslint-disable-next-line no-console
       console.error('Failed to delete element: invalid elementId', idToDeleteRaw);
       setActionError('Element not found');
@@ -1510,17 +2221,24 @@ export default function WorkspacePage() {
 
     // Prefer the latest in-memory element snapshot (may include unsaved local edits).
     const latestEl =
-      elementsRef.current?.find?.((x) => Number(x?.id) === idToDelete) ||
-      elements.find?.((x) => Number(x?.id) === idToDelete) ||
+      elementsRef.current?.find?.((x) => sameId(x?.id, idToDeleteRaw)) ||
+      elements.find?.((x) => sameId(x?.id, idToDeleteRaw)) ||
       null;
-    setDeletingElementId(idToDelete);
+    setDeletingElementId(idToDeleteKey);
     setActionError(null);
     try {
       // Optimistic: remove immediately, server sync in background.
-      setEditingElementId((cur) => (cur === idToDelete ? null : cur));
-      setCommentsPanel((cur) => (cur?.elementId === idToDelete ? null : cur));
-      setElements((prev) => prev.filter((x) => x.id !== idToDelete));
-      await deleteElement(idToDelete);
+      setEditingElementId((cur) => (sameId(cur, idToDeleteRaw) ? null : cur));
+      setSelectedElementIds((cur) => {
+        const k = idKey(idToDeleteRaw);
+        if (!k || !cur?.has?.(k)) return cur;
+        const next = new Set(cur);
+        next.delete(k);
+        return next;
+      });
+      setCommentsPanel((cur) => (sameId(cur?.elementId, idToDeleteRaw) ? null : cur));
+      setElements((prev) => prev.filter((x) => !sameId(x.id, idToDeleteRaw)));
+      await deleteElement(idToDeleteRaw);
       if (!applyingHistoryRef.current) {
         const deskId = workspace?.id ?? workspace?.deskId ?? id;
         const snap = snapshotForHistory(latestEl || elOrId);
@@ -1528,7 +2246,7 @@ export default function WorkspacePage() {
           pushHistory({
             kind: 'delete-element',
             deskId,
-            elementId: idToDelete,
+            elementId: idToDeleteRaw,
             snapshot: snap,
           });
         }
@@ -1593,13 +2311,35 @@ export default function WorkspacePage() {
     const deskId = workspace?.id ?? workspace?.deskId ?? id;
     if (!deskId) return;
 
-    const width = 320;
-    const height = 200;
+    let width = 320;
+    let height = 200;
+    const fileExt = getExt(file.name) || getExt(file.type);
+    const isPhotoFile = isPhotoExt(fileExt) || (String(file.type || '').startsWith('image/') && isPhotoExt(getExt(file.name)));
+    if (isPhotoFile) {
+      try {
+        const size = await readImageSizeFromFile(file);
+        const w0 = Number(size?.width || 0);
+        const h0 = Number(size?.height || 0);
+        if (w0 > 0 && h0 > 0) {
+          // Start images at a reasonable size but preserve aspect ratio.
+          const maxW = 520;
+          const maxH = 380;
+          const scale = Math.min(maxW / w0, maxH / h0, 1);
+          width = Math.max(120, Math.round(w0 * scale));
+          height = Math.max(120, Math.round(h0 * scale));
+        }
+      } catch {
+        // ignore: fallback to defaults
+      }
+    }
+
     const rect = canvasRef.current?.getBoundingClientRect?.();
     const canvasW = rect?.width ?? 1200;
     const canvasH = rect?.height ?? 800;
-    const x = Math.round(canvasW / 2 - width / 2 - viewOffset.x);
-    const y = Math.round(canvasH / 2 - height / 2 - viewOffset.y);
+    const off = viewOffsetRef.current;
+    const s = viewScaleRef.current || 1;
+    const x = Math.round((canvasW / 2 - off.x) / s - width / 2);
+    const y = Math.round((canvasH / 2 - off.y) / s - height / 2);
     const zIndex = Math.round(elementsRef.current.reduce((m, el) => Math.max(m, el.zIndex ?? 0), 0) + 1);
 
     setUploading(true);
@@ -1617,7 +2357,7 @@ export default function WorkspacePage() {
       });
       const vm = elementToVm(created);
       if (vm?.id) createdElementIdsRef.current.add(vm.id);
-      setElements((prev) => [...prev, vm]);
+      setElements((prev) => upsertById(prev, vm));
       if (!applyingHistoryRef.current) {
         const snap = snapshotForHistory(vm);
         if (deskId && snap) {
@@ -1630,6 +2370,8 @@ export default function WorkspacePage() {
         }
       }
       beginEditing(vm.id, snapshotForHistory(vm));
+      // Mobile UX: adding a document is a one-shot action.
+      if (isMobile) setActiveTool('hand');
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to upload/create document:', err?.response?.data || err);
@@ -1652,8 +2394,10 @@ export default function WorkspacePage() {
     const rect = canvasRef.current?.getBoundingClientRect?.();
     const canvasW = rect?.width ?? 1200;
     const canvasH = rect?.height ?? 800;
-    const x = Math.round(canvasW / 2 - width / 2 - viewOffset.x);
-    const y = Math.round(canvasH / 2 - height / 2 - viewOffset.y);
+    const off = viewOffsetRef.current;
+    const s = viewScaleRef.current || 1;
+    const x = Math.round((canvasW / 2 - off.x) / s - width / 2);
+    const y = Math.round((canvasH / 2 - off.y) / s - height / 2);
     const zIndex = Math.round(elementsRef.current.reduce((m, el) => Math.max(m, el.zIndex ?? 0), 0) + 1);
 
     setCreatingLink(true);
@@ -1682,7 +2426,7 @@ export default function WorkspacePage() {
       });
       const vm = elementToVm(created);
       if (vm?.id) createdElementIdsRef.current.add(vm.id);
-      setElements((prev) => [...prev, vm]);
+      setElements((prev) => upsertById(prev, vm));
       if (!applyingHistoryRef.current) {
         const snap = snapshotForHistory(vm);
         if (deskId && snap) {
@@ -1709,19 +2453,26 @@ export default function WorkspacePage() {
   const startResize = (elementId, handle, e) => {
     e.stopPropagation();
     e.preventDefault();
-    const el = elements.find((x) => x.id === elementId);
+    setConnectorsFollowDuringDrag(true);
+    const el = elements.find((x) => sameId(x.id, elementId));
     if (!el) return;
     const before = snapshotForHistory(el);
 
     const startX = e.clientX;
     const startY = e.clientY;
+    const originW = Number(el.width ?? 0);
+    const originH = Number(el.height ?? 0);
+    const lockAspect = el.type === 'note';
+    const aspect = lockAspect && originW > 0 && originH > 0 ? originW / originH : 1;
     interactionRef.current = {
       kind: 'resize',
       elementId,
       handle,
       startX,
       startY,
-      origin: { x: el.x, y: el.y, width: el.width, height: el.height },
+      origin: { x: el.x, y: el.y, width: originW, height: originH },
+      lockAspect,
+      aspect,
     };
 
     const minW = 120;
@@ -1739,17 +2490,71 @@ export default function WorkspacePage() {
       const topHandles = ['nw', 'n', 'ne'];
       const bottomHandles = ['sw', 's', 'se'];
 
-      if (rightHandles.includes(cur.handle)) width = Math.max(minW, cur.origin.width + dx);
-      if (bottomHandles.includes(cur.handle)) height = Math.max(minH, cur.origin.height + dy);
-      if (leftHandles.includes(cur.handle)) {
-        const nextW = Math.max(minW, cur.origin.width - dx);
-        x = cur.origin.x + (cur.origin.width - nextW);
-        width = nextW;
-      }
-      if (topHandles.includes(cur.handle)) {
-        const nextH = Math.max(minH, cur.origin.height - dy);
-        y = cur.origin.y + (cur.origin.height - nextH);
-        height = nextH;
+      const isLeft = leftHandles.includes(cur.handle);
+      const isRight = rightHandles.includes(cur.handle);
+      const isTop = topHandles.includes(cur.handle);
+      const isBottom = bottomHandles.includes(cur.handle);
+
+      if (cur.lockAspect) {
+        const r = Number(cur.aspect) > 0 ? Number(cur.aspect) : 1;
+        const deltaW = isRight ? dx : isLeft ? -dx : 0;
+        const deltaH = isBottom ? dy : isTop ? -dy : 0;
+
+        const baseW = Math.max(1, Number(cur.origin.width ?? 0));
+        const baseH = Math.max(1, Number(cur.origin.height ?? 0));
+        const relW = Math.abs(deltaW) / baseW;
+        const relH = Math.abs(deltaH) / baseH;
+
+        const clampSize = (w, h) => {
+          let nextW = Number(w);
+          let nextH = Number(h);
+          if (!Number.isFinite(nextW) || !Number.isFinite(nextH)) {
+            nextW = baseW;
+            nextH = baseH;
+          }
+
+          // Enforce mins while preserving ratio (iterate a couple times for stability).
+          for (let i = 0; i < 2; i += 1) {
+            if (nextW < minW) {
+              nextW = minW;
+              nextH = nextW / r;
+            }
+            if (nextH < minH) {
+              nextH = minH;
+              nextW = nextH * r;
+            }
+          }
+
+          return { nextW, nextH };
+        };
+
+        if (relW >= relH) {
+          const desiredW = cur.origin.width + deltaW;
+          const { nextW, nextH } = clampSize(desiredW, desiredW / r);
+          width = nextW;
+          height = nextH;
+        } else {
+          const desiredH = cur.origin.height + deltaH;
+          const { nextW, nextH } = clampSize(desiredH * r, desiredH);
+          width = nextW;
+          height = nextH;
+        }
+
+        if (isLeft) x = cur.origin.x + (cur.origin.width - width);
+        if (isTop) y = cur.origin.y + (cur.origin.height - height);
+      } else {
+        if (isRight) width = Math.max(minW, cur.origin.width + dx);
+        if (isBottom) height = Math.max(minH, cur.origin.height + dy);
+        if (isLeft) {
+          const nextW = Math.max(minW, cur.origin.width - dx);
+          x = cur.origin.x + (cur.origin.width - nextW);
+          width = nextW;
+        }
+        if (isTop) {
+          const nextH = Math.max(minH, cur.origin.height - dy);
+          y = cur.origin.y + (cur.origin.height - nextH);
+          height = nextH;
+        }
       }
 
       updateLocalElement(elementId, { x, y, width, height });
@@ -1759,7 +2564,8 @@ export default function WorkspacePage() {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       interactionRef.current = null;
-      const latest = elementsRef.current.find((x) => x.id === elementId);
+      setConnectorsFollowDuringDrag(false);
+      const latest = elementsRef.current.find((x) => sameId(x.id, elementId));
       if (latest) {
         try {
           await persistElement(latest, { historyBefore: before });
@@ -1778,6 +2584,76 @@ export default function WorkspacePage() {
     elementsRef.current = elements;
   }, [elements]);
 
+  const registerElementNode = useCallback((elementId, node) => {
+    const k = idKey(elementId);
+    if (!k) return;
+    const m = elementNodeCacheRef.current;
+    if (node) m.set(k, node);
+    else m.delete(k);
+  }, []);
+
+  const getElementByIdFromRef = useCallback((elementId) => {
+    const k = idKey(elementId);
+    if (!k) return null;
+    const list = elementsRef.current || [];
+    for (const el of list) {
+      if (sameId(el?.id, elementId)) return el;
+    }
+    return null;
+  }, []);
+
+  const getLiveAnchorPoint = useCallback(
+    (elementId, side) => {
+      const k = idKey(elementId);
+      if (!k) return null;
+      const node = elementNodeCacheRef.current.get(k);
+      if (node && canvasRef.current) {
+        const r = node.getBoundingClientRect();
+        const s = String(side || 'right');
+        let ax = r.right;
+        let ay = r.top + r.height / 2;
+        let dir = { x: 1, y: 0 };
+        if (s === 'top') {
+          ax = r.left + r.width / 2;
+          ay = r.top;
+          dir = { x: 0, y: -1 };
+        } else if (s === 'bottom') {
+          ax = r.left + r.width / 2;
+          ay = r.bottom;
+          dir = { x: 0, y: 1 };
+        } else if (s === 'left') {
+          ax = r.left;
+          ay = r.top + r.height / 2;
+          dir = { x: -1, y: 0 };
+        }
+
+        const deskP = getDeskPointFromClient(ax, ay);
+        const OUTSET = 10;
+        return { x: Number(deskP.x) + dir.x * OUTSET, y: Number(deskP.y) + dir.y * OUTSET, dir };
+      }
+
+      const el = getElementByIdFromRef(elementId);
+      if (!el) return null;
+      return getAnchorPoint(el, side);
+    },
+    [getDeskPointFromClient, getElementByIdFromRef, getAnchorPoint]
+  );
+
+  // Keep connector list stable across drag frames so the memoized connectors layer isn't forced to rerender.
+  const stableConnectorsRef = useRef([]);
+  const connectorElements = useMemo(() => {
+    const next = (Array.isArray(elements) ? elements : []).filter((el) => el?.type === 'connector');
+    const prev = stableConnectorsRef.current;
+    if (prev.length === next.length && prev.every((x, i) => x === next[i])) return prev;
+    stableConnectorsRef.current = next;
+    return next;
+  }, [elements]);
+
+  const onSelectConnector = useCallback((connectorId) => {
+    setEditingElementId(null);
+    setSelectedConnectorId(connectorId);
+  }, []);
+
   const applySnapshot = async (snap) => {
     if (!snap?.elementId) return;
     applyingHistoryRef.current = true;
@@ -1793,7 +2669,7 @@ export default function WorkspacePage() {
         payload: snap.payload,
       });
       const vm = elementToVm(updated);
-      setElements((prev) => prev.map((x) => (x.id === vm.id ? { ...x, ...vm, content: vm.content ?? x.content } : x)));
+      setElements((prev) => prev.map((x) => (sameId(x.id, vm.id) ? { ...x, ...vm, content: vm.content ?? x.content } : x)));
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to apply history snapshot:', err?.response?.data || err);
@@ -1826,7 +2702,7 @@ export default function WorkspacePage() {
         // Backend generates new ids; keep the history entry pointing at the restored element for redo.
         entry.elementId = vm.id;
         entry.snapshot = { ...snap, elementId: vm.id };
-        setElements((prev) => (prev.some((x) => x.id === vm.id) ? prev : [...prev, vm]));
+        setElements((prev) => upsertById(prev, vm));
       }
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -1846,7 +2722,14 @@ export default function WorkspacePage() {
     try {
       await deleteElement(elementId);
       setEditingElementId((cur) => (cur === elementId ? null : cur));
-      setElements((prev) => prev.filter((x) => x.id !== elementId));
+      setSelectedElementIds((cur) => {
+        const k = idKey(elementId);
+        if (!k || !cur?.has?.(k)) return cur;
+        const next = new Set(cur);
+        next.delete(k);
+        return next;
+      });
+      setElements((prev) => prev.filter((x) => !sameId(x.id, elementId)));
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to delete element from history:', err?.response?.data || err);
@@ -1909,16 +2792,56 @@ export default function WorkspacePage() {
     }
     e.preventDefault();
 
+    // Mobile pinch-to-zoom: when the 2nd finger touches, switch into pinch mode.
+    if (isMobile && e.pointerType === 'touch') {
+      const p0 = getCanvasPoint(e);
+      const pinch = mobilePinchRef.current;
+      pinch.pointers.set(e.pointerId, { x: p0.x, y: p0.y });
+
+      if (pinch.pointers.size === 2) {
+        const pts = Array.from(pinch.pointers.values());
+        const a = pts[0];
+        const b = pts[1];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const off0 = viewOffsetRef.current;
+        const s0 = viewScaleRef.current || 1;
+
+        pinch.active = true;
+        pinch.startDist = dist;
+        pinch.startScale = s0;
+        pinch.startOffset = { ...off0 };
+        pinch.deskMid = { x: (mid.x - off0.x) / s0, y: (mid.y - off0.y) / s0 };
+
+        // Cancel ongoing interactions while pinching.
+        selectStartRef.current = null;
+        setSelectionRect(null);
+        liveStrokeRef.current = null;
+        setLiveStroke(null);
+        eraseStateRef.current.active = false;
+        interactionRef.current = null;
+        setIsPanning(false);
+        panStartRef.current = null;
+        return;
+      }
+    }
+
     const p = getCanvasPoint(e);
-    const deskP = { x: p.x - viewOffset.x, y: p.y - viewOffset.y };
+    const off = viewOffsetRef.current;
+    const curScale = viewScaleRef.current || 1;
+    const deskP = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
 
     // Exit edit mode on click outside element.
     // Important UX: the first click outside should *only* finish editing, and not create a new element.
-    if (editingElementId) {
-      const insideEditing = e.target?.closest?.(`[data-element-id="${editingElementId}"]`);
+    const activeEditingId = editingElementIdRef.current ?? editingElementId;
+    if (activeEditingId) {
+      const insideEditing = e.target?.closest?.(`[data-element-id="${activeEditingId}"]`);
       if (!insideEditing) {
         endEditing();
-        return;
+        // For the Hand tool: allow the same gesture to start panning immediately after committing edits.
+        if (activeTool !== 'hand' && !handHoldRef.current.active) return;
       }
     }
 
@@ -1930,6 +2853,11 @@ export default function WorkspacePage() {
       setSelectedConnectorId(null);
       return;
     }
+
+    // Clicking empty canvas clears element selection (cursor tool UX).
+    // Do this after the "exit edit mode" early-return above, so a click first commits edits.
+    setSelectedElementIds(new Set());
+    setEditingElementId(null);
 
     if (activeTool === 'pen') {
       const stroke = { points: [{ x: deskP.x, y: deskP.y }], color: brushColor, width: brushWidth };
@@ -1973,7 +2901,7 @@ export default function WorkspacePage() {
           });
           const vm = elementToVm(created);
           if (vm?.id) createdElementIdsRef.current.add(vm.id);
-          setElements((prev) => [...prev, vm]);
+          setElements((prev) => upsertById(prev, vm));
           if (!applyingHistoryRef.current) {
             const snap = snapshotForHistory(vm);
             if (deskId && snap) {
@@ -1986,6 +2914,9 @@ export default function WorkspacePage() {
             }
           }
           beginEditing(vm.id, snapshotForHistory(vm));
+          // Mobile UX: element creation is a one-shot action.
+          // After placing a note/text, switch back to Hand so the next tap doesn't create again.
+          if (isMobile) setActiveTool('hand');
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error('Failed to create element:', err?.response?.data || err);
@@ -1997,20 +2928,58 @@ export default function WorkspacePage() {
     }
 
     if (activeTool === 'select') {
+      // Mobile UX: swipe should pan the board by default (instead of box-select).
+      // Pinch-to-zoom already uses 2 fingers; this enables 1-finger navigation in the default tool.
+      if (isMobile && e.pointerType === 'touch') {
+        selectStartRef.current = null;
+        setSelectionRect(null);
+        panStartRef.current = { p, startOffset: { ...viewOffsetRef.current } };
+        setIsPanning(true);
+        return;
+      }
       selectStartRef.current = p;
       setSelectionRect({ left: p.x, top: p.y, width: 0, height: 0 });
     }
 
     if (activeTool === 'hand') {
-      panStartRef.current = { p, startOffset: viewOffset };
+      panStartRef.current = { p, startOffset: { ...viewOffsetRef.current } };
       setIsPanning(true);
     }
   };
 
   const onCanvasPointerMove = (e) => {
+    if (isMobile && e.pointerType === 'touch') {
+      const pinch = mobilePinchRef.current;
+      if (pinch.pointers.has(e.pointerId)) {
+        const p0 = getCanvasPoint(e);
+        pinch.pointers.set(e.pointerId, { x: p0.x, y: p0.y });
+      }
+
+      if (pinch.active && pinch.pointers.size >= 2) {
+        const pts = Array.from(pinch.pointers.values());
+        const a = pts[0];
+        const b = pts[1];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+
+        const ratio = dist / (pinch.startDist || 1);
+        const nextScale = clampViewScale((pinch.startScale || 1) * ratio);
+        const nextOffset = {
+          x: mid.x - pinch.deskMid.x * nextScale,
+          y: mid.y - pinch.deskMid.y * nextScale,
+        };
+        scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
+        return;
+      }
+    }
+
     if (activeTool === 'pen' && liveStrokeRef.current) {
       const p = getCanvasPoint(e);
-      const deskP = { x: p.x - viewOffset.x, y: p.y - viewOffset.y };
+      const off = viewOffsetRef.current;
+      const s = viewScaleRef.current || 1;
+      const deskP = { x: (p.x - off.x) / s, y: (p.y - off.y) / s };
       const stroke = liveStrokeRef.current;
       const prev = stroke.points[stroke.points.length - 1];
       const dx = deskP.x - prev.x;
@@ -2036,7 +3005,9 @@ export default function WorkspacePage() {
       eraseStateRef.current.lastTs = now;
 
       const p = getCanvasPoint(e);
-      const deskP = { x: p.x - viewOffset.x, y: p.y - viewOffset.y };
+      const off = viewOffsetRef.current;
+      const s = viewScaleRef.current || 1;
+      const deskP = { x: (p.x - off.x) / s, y: (p.y - off.y) / s };
       const radius = Math.max(8, brushWidth * 2);
 
       const strokes = elementsRef.current.filter((el) => el?.type === 'drawing' && el?.drawing?.data);
@@ -2074,7 +3045,7 @@ export default function WorkspacePage() {
 
         eraseStateRef.current.erasedIds.add(el.id);
         // Optimistic remove; socket broadcast will reconcile for others.
-        setElements((prev) => prev.filter((xEl) => xEl.id !== el.id));
+        setElements((prev) => prev.filter((xEl) => !sameId(xEl.id, el.id)));
         if (!applyingHistoryRef.current) {
           const deskId = workspace?.id ?? workspace?.deskId ?? id;
           const snap = snapshotForHistory(el);
@@ -2097,7 +3068,9 @@ export default function WorkspacePage() {
 
     if (activeTool === 'connector' && !connectorDraftRef.current) {
       const p = getCanvasPoint(e);
-      const deskP = { x: p.x - viewOffset.x, y: p.y - viewOffset.y };
+      const off = viewOffsetRef.current;
+      const s = viewScaleRef.current || 1;
+      const deskP = { x: (p.x - off.x) / s, y: (p.y - off.y) / s };
       const hoverId = pickHoverElementId(deskP, 15);
       setConnectorHoverElementId(hoverId);
       return;
@@ -2106,16 +3079,74 @@ export default function WorkspacePage() {
     if (activeTool === 'select' && selectStartRef.current) {
       const p = getCanvasPoint(e);
       setSelectionRect(rectFromPoints(selectStartRef.current, p));
+
+      // Live box-select feedback (rAF throttled).
+      selectPendingEndRef.current = p;
+      if (selectRafRef.current == null) {
+        selectRafRef.current = window.requestAnimationFrame(() => {
+          selectRafRef.current = null;
+          const start = selectStartRef.current;
+          const end = selectPendingEndRef.current;
+          if (!start || !end) return;
+          const rect = rectFromPoints(start, end);
+          const minSize = 4; // px; treat smaller as a click
+          if (rect.width < minSize && rect.height < minSize) {
+            setSelectedElementIds(new Set());
+            setEditingElementId(null);
+            return;
+          }
+
+          const off = viewOffsetRef.current;
+          const s = viewScaleRef.current || 1;
+          const left = (rect.left - off.x) / s;
+          const top = (rect.top - off.y) / s;
+          const right = (rect.left + rect.width - off.x) / s;
+          const bottom = (rect.top + rect.height - off.y) / s;
+
+          const hits = [];
+          const list = elementsRef.current || [];
+          for (const el of list) {
+            if (!el?.id) continue;
+            if (el.type === 'connector') continue;
+            const ex = Number(el.x ?? 0);
+            const ey = Number(el.y ?? 0);
+            const ew = Number(el.width ?? 0);
+            const eh = Number(el.height ?? 0);
+            const intersects = ex <= right && ex + ew >= left && ey <= bottom && ey + eh >= top;
+            if (!intersects) continue;
+            hits.push(idKey(el.id));
+          }
+
+          setSelectedElementIds(new Set(hits));
+          setEditingElementId(null);
+        });
+      }
       return;
     }
 
-    if (activeTool === 'hand' && panStartRef.current) {
+    if (panStartRef.current) {
       const p = getCanvasPoint(e);
       const { p: start, startOffset } = panStartRef.current;
       const dx = p.x - start.x;
       const dy = p.y - start.y;
-      setViewOffset({ x: startOffset.x + dx, y: startOffset.y + dy });
+      scheduleApplyViewVars({ offset: { x: startOffset.x + dx, y: startOffset.y + dy } });
     }
+  };
+
+  const onCanvasWheel = (e) => {
+    // Zoom on wheel up/down. Prevent page scroll while cursor is over the canvas.
+    e.preventDefault();
+    const p = getCanvasPoint(e);
+    const off = viewOffsetRef.current;
+    const curScale = viewScaleRef.current || 1;
+    const nextScale = clampViewScale(curScale * Math.exp(-e.deltaY * 0.0015));
+    if (Math.abs(nextScale - curScale) < 1e-4) return;
+
+    // Keep desk point under cursor stable.
+    const d = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
+    const nextOffset = { x: p.x - d.x * nextScale, y: p.y - d.y * nextScale };
+    scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
+    persistViewDebounced({ offset: nextOffset, scale: nextScale });
   };
 
   const finalizeStroke = async () => {
@@ -2171,7 +3202,7 @@ export default function WorkspacePage() {
       const vm = elementToVm(created);
       if (vm?.id) {
         createdElementIdsRef.current.add(vm.id);
-        setElements((prev) => (prev.some((e) => e.id === vm.id) ? prev : [...prev, vm]));
+        setElements((prev) => upsertById(prev, vm));
         if (!applyingHistoryRef.current) {
           const snap = snapshotForHistory(vm);
           if (deskId && snap) {
@@ -2193,6 +3224,19 @@ export default function WorkspacePage() {
   };
 
   const onCanvasPointerUp = (e) => {
+    if (isMobile && e.pointerType === 'touch') {
+      const pinch = mobilePinchRef.current;
+      if (pinch.pointers.has(e.pointerId)) pinch.pointers.delete(e.pointerId);
+
+      if (pinch.active && pinch.pointers.size < 2) {
+        pinch.active = false;
+        const off = viewOffsetRef.current;
+        const s = viewScaleRef.current || 1;
+        setViewOffset(off);
+        persistViewDebounced({ offset: off, scale: s }, { immediate: true });
+      }
+    }
+
     if (activeTool === 'pen' && liveStrokeRef.current) {
       finalizeStroke();
     }
@@ -2200,6 +3244,43 @@ export default function WorkspacePage() {
       eraseStateRef.current.active = false;
       eraseStateRef.current.erasedIds = new Set();
     }
+
+    // Cursor tool: box-select elements into "edit mode" (selection/transform handles).
+    // We intentionally don't open text/link editors for multi-selection.
+    if (activeTool === 'select' && selectStartRef.current) {
+      const start = selectStartRef.current;
+      const end = getCanvasPoint(e);
+      const rect = rectFromPoints(start, end);
+      const minSize = 4; // px; treat smaller as a click
+      if (rect.width >= minSize || rect.height >= minSize) {
+        const off = viewOffsetRef.current;
+        const s = viewScaleRef.current || 1;
+        const left = (rect.left - off.x) / s;
+        const top = (rect.top - off.y) / s;
+        const right = (rect.left + rect.width - off.x) / s;
+        const bottom = (rect.top + rect.height - off.y) / s;
+
+        const hits = [];
+        const list = elementsRef.current || [];
+        for (const el of list) {
+          if (!el?.id) continue;
+          if (el.type === 'connector') continue;
+          const ex = Number(el.x ?? 0);
+          const ey = Number(el.y ?? 0);
+          const ew = Number(el.width ?? 0);
+          const eh = Number(el.height ?? 0);
+          // AABB intersection (touching counts).
+          const intersects = ex <= right && ex + ew >= left && ey <= bottom && ey + eh >= top;
+          if (!intersects) continue;
+          hits.push(idKey(el.id));
+        }
+
+        setSelectedElementIds(new Set(hits));
+        // If multiple are selected, avoid opening multiple editors.
+        if (hits.length !== 1) setEditingElementId(null);
+      }
+    }
+
     stopInteractions(e);
   };
 
@@ -2255,7 +3336,7 @@ export default function WorkspacePage() {
     getElementsByDesk(deskId)
       .then((data) => {
         if (!mounted) return;
-        setElements(Array.isArray(data) ? data.map(elementToVm) : []);
+        setElements(dedupeMergeById(Array.isArray(data) ? data.map(elementToVm) : []));
       })
       .catch(() => mounted && setElements([]));
 
@@ -2319,7 +3400,7 @@ export default function WorkspacePage() {
         const idToDelete = selectedConnectorId;
         setSelectedConnectorId(null);
         deleteElement(idToDelete)
-          .then(() => setElements((prev) => prev.filter((x) => x.id !== idToDelete)))
+          .then(() => setElements((prev) => prev.filter((x) => !sameId(x.id, idToDelete))))
           .catch(() => {
             // ignore
           });
@@ -2334,6 +3415,12 @@ export default function WorkspacePage() {
       if (matchShortcut(e, shortcuts['history.redo'])) {
         e.preventDefault();
         redoEv();
+        return;
+      }
+      if (matchShortcut(e, shortcuts['tool.select'])) {
+        e.preventDefault();
+        setActionError(null);
+        setActiveTool('select');
         return;
       }
       if (matchShortcut(e, shortcuts['tool.text'])) {
@@ -2378,7 +3465,11 @@ export default function WorkspacePage() {
     const cy = rect.height / 2;
     const ex = (el.x ?? 0) + (el.width ?? 240) / 2;
     const ey = (el.y ?? 0) + (el.height ?? 160) / 2;
-    setViewOffset({ x: cx - ex, y: cy - ey });
+    const s = viewScaleRef.current || 1;
+    const nextOffset = { x: cx - ex * s, y: cy - ey * s };
+    scheduleApplyViewVars({ offset: nextOffset, scale: s });
+    setViewOffset(nextOffset);
+    persistViewDebounced({ offset: nextOffset, scale: s });
   };
 
   useEffect(() => {
@@ -2399,6 +3490,7 @@ export default function WorkspacePage() {
     });
     socketRef.current = socket;
     let didAuthRetry = false;
+    const noteEditTimers = noteEditTimersRef.current;
 
     socket.on('connect', () => {
       socket.emit('desk:join', { deskId }, (ack = {}) => {
@@ -2437,51 +3529,58 @@ export default function WorkspacePage() {
 
     socket.on('note:updated', (msg = {}) => {
       if (Number(msg.deskId) !== Number(deskId)) return;
-      const elementId = Number(msg.elementId);
-      if (!elementId) return;
+      const elementId = msg.elementId;
+      if (!idKey(elementId)) return;
       // Guard against out-of-order websocket delivery: never apply an older version over a newer local state.
       if (msg.version != null) {
         const incomingV = Number(msg.version);
-        const curV = noteVersionsRef.current.get(elementId);
+        const curV = noteVersionsRef.current.get(idKey(elementId));
         if (curV != null && Number.isFinite(incomingV) && incomingV <= curV) return;
-        noteVersionsRef.current.set(elementId, incomingV);
+        noteVersionsRef.current.set(idKey(elementId), incomingV);
       }
-      setElements((prev) => prev.map((el) => (el.id === elementId ? { ...el, content: String(msg.text ?? '') } : el)));
+      setElements((prev) => prev.map((el) => (sameId(el.id, elementId) ? { ...el, content: String(msg.text ?? '') } : el)));
     });
 
     socket.on('element:created', (raw) => {
       const vm = elementToVm(raw);
       if (!vm?.id) return;
-      setElements((prev) => (prev.some((e) => e.id === vm.id) ? prev : [...prev, vm]));
+      setElements((prev) => upsertById(prev, vm));
     });
 
     socket.on('element:updated', (raw) => {
       const vm = elementToVm(raw);
       if (!vm?.id) return;
-      setElements((prev) => prev.map((e) => (e.id === vm.id ? { ...e, ...vm } : e)));
+      setElements((prev) => prev.map((e) => (sameId(e.id, vm.id) ? { ...e, ...vm } : e)));
     });
 
     socket.on('element:reactions', (msg = {}) => {
       if (Number(msg.deskId) !== Number(deskId)) return;
-      const elementId = Number(msg.elementId);
-      if (!elementId) return;
+      const elementId = msg.elementId;
+      if (!idKey(elementId)) return;
       const reactions = normalizeReactions(msg.reactions);
-      setElements((prev) => prev.map((el) => (el.id === elementId ? { ...el, reactions } : el)));
+      setElements((prev) => prev.map((el) => (sameId(el.id, elementId) ? { ...el, reactions } : el)));
     });
 
     socket.on('element:deleted', (msg = {}) => {
       if (Number(msg.deskId) !== Number(deskId)) return;
-      const elementId = Number(msg.elementId);
-      if (!elementId) return;
-      setElements((prev) => prev.filter((e) => e.id !== elementId));
-      setEditingElementId((cur) => (cur === elementId ? null : cur));
-      setCommentsPanel((cur) => (cur?.elementId === elementId ? null : cur));
+      const elementId = msg.elementId;
+      if (!idKey(elementId)) return;
+      setElements((prev) => prev.filter((e) => !sameId(e.id, elementId)));
+      setEditingElementId((cur) => (sameId(cur, elementId) ? null : cur));
+      setSelectedElementIds((cur) => {
+        const k = idKey(elementId);
+        if (!k || !cur?.has?.(k)) return cur;
+        const next = new Set(cur);
+        next.delete(k);
+        return next;
+      });
+      setCommentsPanel((cur) => (sameId(cur?.elementId, elementId) ? null : cur));
     });
 
     socket.on('comment:created', (msg = {}) => {
       if (!commentsEnabled) return;
       if (Number(msg.deskId) !== Number(deskId)) return;
-      const elementId = Number(msg.elementId);
+      const elementId = idKey(msg.elementId);
       const c = msg.comment;
       if (!elementId || !c?.id) return;
       setCommentsByElement((prev) => {
@@ -2496,7 +3595,6 @@ export default function WorkspacePage() {
     });
 
     return () => {
-      const noteEditTimers = noteEditTimersRef.current;
       try {
         socket.emit('desk:leave', { deskId });
       } catch {
@@ -2508,7 +3606,7 @@ export default function WorkspacePage() {
       socketRef.current = null;
       setPresentUserIds([]);
     };
-  }, [workspace?.id, workspace?.deskId, id, commentsEnabled, elementToVm]);
+  }, [workspace?.id, workspace?.deskId, id, commentsEnabled, elementToVm, normalizeReactions]);
 
   useEffect(() => {
     if (!commentsPanel) return () => {};
@@ -2554,6 +3652,8 @@ export default function WorkspacePage() {
     Object.assign(el, patch);
   }, []);
 
+  const beginEditingEv = useEvent(beginEditing);
+
   const maybeEnterEditOnPointerUp = useCallback(
     (elementId, ev) => {
       if (!elementId) return;
@@ -2566,20 +3666,20 @@ export default function WorkspacePage() {
       if (ev?.target?.closest?.('button')) return;
       if (editingElementId === elementId) return;
       ev?.preventDefault?.();
-      beginEditing(elementId);
+      beginEditingEv(elementId);
     },
-    [activeTool, editingElementId, beginEditing]
+    [activeTool, editingElementId, beginEditingEv]
   );
 
   // Stable action wrappers for memoized element components (avoid rerendering all cards on each drag frame).
   const onElementPointerDownEv = useEvent(onElementPointerDown);
   const onElementClickEv = useEvent(onElementClick);
-  const beginEditingEv = useEvent(beginEditing);
   const endEditingEv = useEvent(endEditing);
   const updateLocalElementEv = useEvent(updateLocalElement);
   const queueNoteEditEv = useEvent(queueNoteEdit);
   const startResizeEv = useEvent(startResize);
   const startConnectorDragEv = useEvent(startConnectorDrag);
+  const startConnectorBendDragEv = useEvent(startConnectorBendDrag);
   const openReactionPickerEv = useEvent(openReactionPicker);
   const toggleReactionEv = useEvent(toggleReaction);
   const openCommentsEv = useEvent(openComments);
@@ -2703,6 +3803,94 @@ export default function WorkspacePage() {
     };
   }, [docTextPreviewKey, docTextPreview]);
 
+  const onMobileSheetDragStart = useCallback((ev) => {
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    mobileSheetDragRef.current.active = true;
+    mobileSheetDragRef.current.pointerId = ev.pointerId;
+    mobileSheetDragRef.current.startY = ev.clientY;
+    mobileSheetDragRef.current.lastY = ev.clientY;
+    setMobileSheetDragging(true);
+    try {
+      (mobileSheetRef.current || ev.currentTarget)?.setPointerCapture?.(ev.pointerId);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const onMobileSheetDragMove = useCallback((ev) => {
+    const d = mobileSheetDragRef.current;
+    if (!d.active || d.pointerId !== ev.pointerId) return;
+    const dy = Math.max(0, ev.clientY - d.startY);
+    d.lastY = ev.clientY;
+    setMobileSheetDragY(dy);
+  }, []);
+
+  const onMobileSheetDragEnd = useCallback((ev) => {
+    const d = mobileSheetDragRef.current;
+    if (!d.active || d.pointerId !== ev.pointerId) return;
+    d.active = false;
+    d.pointerId = null;
+    setMobileSheetDragging(false);
+
+    const dy = Math.max(0, ev.clientY - d.startY);
+    const shouldClose = dy > 90;
+    if (shouldClose) {
+      setMobileToolsOpen(false);
+      setMobileSheetDragY(0);
+      return;
+    }
+    setMobileSheetDragY(0);
+  }, []);
+
+  const closeAiPanel = useCallback(() => {
+    aiSheetDragRef.current.active = false;
+    aiSheetDragRef.current.pointerId = null;
+    setAiSheetDragging(false);
+    setAiSheetDragY(0);
+    setAiPanelOpen(false);
+  }, []);
+
+  const onAiSheetDragStart = useCallback((ev) => {
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    aiSheetDragRef.current.active = true;
+    aiSheetDragRef.current.pointerId = ev.pointerId;
+    aiSheetDragRef.current.startY = ev.clientY;
+    aiSheetDragRef.current.lastY = ev.clientY;
+    setAiSheetDragging(true);
+    try {
+      (aiSheetRef.current || ev.currentTarget)?.setPointerCapture?.(ev.pointerId);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const onAiSheetDragMove = useCallback((ev) => {
+    const d = aiSheetDragRef.current;
+    if (!d.active || d.pointerId !== ev.pointerId) return;
+    const dy = Math.max(0, ev.clientY - d.startY);
+    d.lastY = ev.clientY;
+    setAiSheetDragY(dy);
+  }, []);
+
+  const onAiSheetDragEnd = useCallback(
+    (ev) => {
+      const d = aiSheetDragRef.current;
+      if (!d.active || d.pointerId !== ev.pointerId) return;
+      d.active = false;
+      d.pointerId = null;
+      setAiSheetDragging(false);
+
+      const dy = Math.max(0, ev.clientY - d.startY);
+      const shouldClose = dy > 90;
+      if (shouldClose) {
+        closeAiPanel();
+        return;
+      }
+      setAiSheetDragY(0);
+    },
+    [closeAiPanel]
+  );
+
   if (loading) {
     return (
       <div className={styles.page}>
@@ -2732,9 +3920,85 @@ export default function WorkspacePage() {
     );
   }
 
+  const boardTitle = String(
+    workspace?.name ?? workspace?.title ?? workspace?.deskName ?? workspace?.Desk?.name ?? workspace?.Board?.name ?? 'Untitled'
+  );
+
+  const shareBoard = async () => {
+    try {
+      const url = typeof window !== 'undefined' ? window.location.href : '';
+      if (typeof navigator !== 'undefined' && navigator.share) {
+        await navigator.share({ title: boardTitle, url });
+        return;
+      }
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      }
+    } catch {
+      // ignore share errors
+    }
+  };
+
   return (
     <div className={styles.page}>
-      <header className={styles.topBar}>
+      {isMobile ? (
+        <header className={`${styles.mobileTopBar} ${searchOpen ? styles.mobileTopBarSearch : ''}`}>
+          {!searchOpen ? (
+            <div className={styles.mobileTopPill} role="banner" aria-label="Board header">
+              <Link to="/home" className={styles.mobileTopIconBtn} aria-label="Home">
+                <Home size={20} />
+              </Link>
+              <div className={styles.mobileBoardTitle} title={boardTitle}>
+                {boardTitle}
+              </div>
+              <button
+                type="button"
+                className={styles.mobileTopIconBtn}
+                aria-label="Search"
+                ref={searchBtnRef}
+                onClick={() => setSearchOpen(true)}
+              >
+                <Search size={20} />
+              </button>
+              <div className={styles.mobileAvatarWrap} aria-label="Profile">
+                <UserMenu variant="bare" />
+              </div>
+              <button type="button" className={styles.mobileTopIconBtn} aria-label="Share board" onClick={shareBoard}>
+                <Share2 size={20} />
+              </button>
+              <button type="button" className={styles.mobileTopIconBtn} aria-label="Board settings">
+                <MoreVertical size={20} />
+              </button>
+            </div>
+          ) : (
+            <div ref={mobileSearchBarRef} className={styles.mobileSearchBar} role="search" aria-label="Search">
+              <Search size={20} className={styles.mobileSearchIcon} aria-hidden="true" />
+              <input
+                ref={searchInputRef}
+                className={styles.mobileSearchInput}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setSearchOpen(false);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className={styles.mobileSearchClose}
+                aria-label="Close search"
+                onClick={() => setSearchOpen(false)}
+              >
+                <X size={22} />
+              </button>
+            </div>
+          )}
+        </header>
+      ) : (
+        <header className={styles.topBar}>
         <div className={styles.left}>
           <Link className={styles.back} to="/home" aria-label="Back to home">
             <ArrowLeft size={18} />
@@ -2876,48 +4140,265 @@ export default function WorkspacePage() {
           <UserMenu variant="compact" />
         </div>
       </header>
+      )}
 
       <div className={styles.body}>
-        <aside className={styles.leftRail} aria-label="Tools">
-          <div className={styles.toolsPanel}>
-            {TOOLS.map(({ id: toolId, label, Icon }) => {
-              const isActive = toolId !== 'attach' && activeTool === toolId;
-              const btn = (
+        {isMobile && !mobileToolsOpen ? (
+          <div className={styles.mobileUndoRedo} aria-label="History">
+            <button
+              type="button"
+              className={styles.mobileUndoRedoBtn}
+              aria-label="Undo"
+              onClick={undo}
+              disabled={!historyMeta.canUndo}
+            >
+              <Undo2 size={18} />
+            </button>
+            <button
+              type="button"
+              className={styles.mobileUndoRedoBtn}
+              aria-label="Redo"
+              onClick={redo}
+              disabled={!historyMeta.canRedo}
+            >
+              <Redo2 size={18} />
+            </button>
+          </div>
+        ) : null}
+
+        {isMobile && searchOpen ? (
+          <div
+            className={styles.mobileSearchDismiss}
+            role="presentation"
+            onPointerDown={() => setSearchOpen(false)}
+          />
+        ) : null}
+
+        {!isMobile ? (
+          <aside className={styles.leftRail} aria-label="Tools">
+            <div className={styles.toolsPanel}>
+              {TOOLS.map(({ id: toolId, label, Icon }) => {
+                const isActive = toolId !== 'attach' && activeTool === toolId;
+                const btn = (
+                  <button
+                    key={toolId}
+                    type="button"
+                    className={`${styles.tool} ${isActive ? styles.toolActive : ''}`}
+                    aria-label={label}
+                    aria-pressed={isActive}
+                    onClick={() => {
+                      if (toolId === 'attach') {
+                        openAttachDialog();
+                        return;
+                      }
+                      setActionError(null);
+                      setActiveTool(toolId);
+                    }}
+                  >
+                    {toolId === 'attach' && uploading ? (
+                      <Loader2 size={18} className={styles.spinner} />
+                    ) : (
+                      <Icon size={18} />
+                    )}
+                  </button>
+                );
+
+                if (toolId !== 'link' && toolId !== 'pen') return btn;
+
+                return (
+                  <div key={toolId} className={styles.toolWrap}>
+                    {btn}
+                    {activeTool === 'link' && toolId === 'link' ? (
+                      <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
+                        <div className={styles.toolPopoverRow}>
+                          <input
+                            ref={linkInputRef}
+                            className={styles.linkInput}
+                            placeholder="Paste URL and press Enter"
+                            value={linkDraftUrl}
+                            disabled={creatingLink}
+                            onChange={(ev) => setLinkDraftUrl(ev.target.value)}
+                            onKeyDown={(ev) => {
+                              if (ev.key === 'Escape') {
+                                ev.preventDefault();
+                                setLinkDraftUrl('');
+                                setActiveTool('select');
+                                return;
+                              }
+                              if (ev.key === 'Enter' && !ev.shiftKey) {
+                                ev.preventDefault();
+                                submitLink();
+                              }
+                            }}
+                          />
+                          {creatingLink ? <Loader2 size={16} className={styles.spinner} /> : null}
+                        </div>
+                        <div className={styles.toolPopoverHint}>Enter — add to board · Esc — close</div>
+                      </div>
+                    ) : null}
+
+                    {activeTool === 'pen' && toolId === 'pen' ? (
+                      <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
+                        <div className={styles.toolPopoverRow}>
+                          <div className={styles.swatches} aria-label="Brush color">
+                            {BRUSH_COLORS.map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                className={`${styles.swatch} ${brushColor === c ? styles.swatchActive : ''}`}
+                                style={{ background: c }}
+                                onClick={() => setBrushColor(c)}
+                                aria-label={`Color ${c}`}
+                                aria-pressed={brushColor === c}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                        <div className={styles.toolPopoverRow}>
+                          <div className={styles.widthRow}>
+                            <input
+                              className={styles.widthSlider}
+                              type="range"
+                              min={1}
+                              max={24}
+                              value={brushWidth}
+                              onChange={(ev) => setBrushWidth(Number(ev.target.value))}
+                              aria-label="Brush width"
+                            />
+                            <div className={styles.widthLabel}>{brushWidth}px</div>
+                          </div>
+                        </div>
+                        <div className={styles.toolPopoverHint}>Drag — draw · Esc — switch tool</div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className={styles.historyPanel} aria-label="History">
+              <button
+                type="button"
+                className={styles.historyBtn}
+                aria-label="Undo"
+                title={`Undo (${formatShortcut(shortcuts['history.undo'] || DEFAULT_SHORTCUTS['history.undo'])})`}
+                onClick={undo}
+                disabled={!historyMeta.canUndo}
+              >
+                <Undo2 size={18} />
+              </button>
+              <button
+                type="button"
+                className={styles.historyBtn}
+                aria-label="Redo"
+                title={`Redo (${formatShortcut(shortcuts['history.redo'] || DEFAULT_SHORTCUTS['history.redo'])})`}
+                onClick={redo}
+                disabled={!historyMeta.canRedo}
+              >
+                <Redo2 size={18} />
+              </button>
+            </div>
+          </aside>
+        ) : (
+          <>
+            {!mobileToolsOpen ? (
+              <div className={styles.mobileFabWrap}>
                 <button
-                  key={toolId}
                   type="button"
-                  className={`${styles.tool} ${isActive ? styles.toolActive : ''}`}
-                  aria-label={label}
-                  aria-pressed={isActive}
+                  className={`${styles.mobileFabBtn} ${aiPanelOpen ? styles.mobileFabBtnActive : ''}`}
+                  aria-label="Open AI chat"
+                  aria-pressed={aiPanelOpen}
+                  title="Чат с ИИ"
                   onClick={() => {
-                    if (toolId === 'attach') {
-                      openAttachDialog();
-                      return;
-                    }
+                    setAiPanelOpen(true);
+                    setMobileToolsOpen(false);
+                    setMobileSheetDragY(0);
+                    setMobileSheetDragging(false);
+                    setCommentsPanel(null);
                     setActionError(null);
-                    setActiveTool(toolId);
                   }}
                 >
-                  {toolId === 'attach' && uploading ? (
-                    <Loader2 size={18} className={styles.spinner} />
-                  ) : (
-                    <Icon size={18} />
-                  )}
+                  <MessageCircle size={22} />
                 </button>
-              );
+                <button
+                  type="button"
+                  className={styles.mobileFabBtn}
+                  aria-label="Open tools"
+                  aria-expanded={mobileToolsOpen}
+                  onClick={() => setMobileToolsOpen(true)}
+                >
+                  <Plus size={22} />
+                </button>
+              </div>
+            ) : null}
 
-              if (toolId !== 'link' && toolId !== 'pen') return btn;
+            {mobileToolsOpen ? (
+              <div
+                className={styles.mobileSheetOverlay}
+                role="presentation"
+                onPointerDown={() => {
+                  setMobileToolsOpen(false);
+                  setMobileSheetDragY(0);
+                  setMobileSheetDragging(false);
+                }}
+              >
+                <div
+                  ref={mobileSheetRef}
+                  className={`${styles.mobileSheet} ${mobileSheetDragging ? styles.mobileSheetDragging : ''}`}
+                  role="dialog"
+                  aria-label="Tools"
+                  onPointerDown={(ev) => ev.stopPropagation()}
+                  onPointerMove={onMobileSheetDragMove}
+                  onPointerUp={onMobileSheetDragEnd}
+                  onPointerCancel={onMobileSheetDragEnd}
+                  style={{ transform: `translateY(${mobileSheetDragY}px)` }}
+                >
+                  <div
+                    className={styles.mobileSheetHandle}
+                    aria-hidden="true"
+                    onPointerDown={onMobileSheetDragStart}
+                  />
 
-              return (
-                <div key={toolId} className={styles.toolWrap}>
-                  {btn}
-                  {activeTool === 'link' && toolId === 'link' ? (
-                    <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
-                      <div className={styles.toolPopoverRow}>
+                  <div className={styles.mobileToolGrid}>
+                    {TOOLS.filter(({ id: toolId }) => toolId !== 'hand').map(({ id: toolId, label, Icon }) => {
+                      const isActive = toolId !== 'attach' && activeTool === toolId;
+                      return (
+                        <button
+                          key={toolId}
+                          type="button"
+                          className={`${styles.mobileToolItem} ${isActive ? styles.mobileToolItemActive : ''}`}
+                          aria-label={label}
+                          aria-pressed={isActive}
+                          onClick={() => {
+                            if (toolId === 'attach') {
+                              openAttachDialog();
+                              setMobileToolsOpen(false);
+                              return;
+                            }
+                            setActionError(null);
+                            setActiveTool(toolId);
+                            if (toolId !== 'pen' && toolId !== 'link') setMobileToolsOpen(false);
+                          }}
+                        >
+                          <span className={styles.mobileToolIcon} aria-hidden="true">
+                            {toolId === 'attach' && uploading ? (
+                              <Loader2 size={20} className={styles.spinner} />
+                            ) : (
+                              <Icon size={20} />
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {activeTool === 'link' ? (
+                    <div className={styles.mobileToolSection}>
+                      <div className={styles.mobileToolSectionTitle}>Link</div>
+                      <div className={styles.mobileLinkRow}>
                         <input
-                          ref={linkInputRef}
-                          className={styles.linkInput}
-                          placeholder="Paste URL and press Enter"
+                          className={styles.mobileLinkInput}
+                          placeholder="Paste URL…"
                           value={linkDraftUrl}
                           disabled={creatingLink}
                           onChange={(ev) => setLinkDraftUrl(ev.target.value)}
@@ -2926,22 +4407,38 @@ export default function WorkspacePage() {
                               ev.preventDefault();
                               setLinkDraftUrl('');
                               setActiveTool('select');
+                              setMobileToolsOpen(false);
                               return;
                             }
                             if (ev.key === 'Enter' && !ev.shiftKey) {
                               ev.preventDefault();
+                              const ok = Boolean(normalizeUrlClient(linkDraftUrl));
+                              if (!ok) return;
                               submitLink();
+                              setMobileToolsOpen(false);
                             }
                           }}
                         />
-                        {creatingLink ? <Loader2 size={16} className={styles.spinner} /> : null}
+                        <button
+                          type="button"
+                          className={styles.mobileLinkBtn}
+                          disabled={!normalizeUrlClient(linkDraftUrl) || creatingLink}
+                          onClick={() => {
+                            const ok = Boolean(normalizeUrlClient(linkDraftUrl));
+                            if (!ok) return;
+                            submitLink();
+                            setMobileToolsOpen(false);
+                          }}
+                        >
+                          Add
+                        </button>
                       </div>
-                      <div className={styles.toolPopoverHint}>Enter — add to board · Esc — close</div>
                     </div>
                   ) : null}
 
-                  {activeTool === 'pen' && toolId === 'pen' ? (
-                    <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
+                  {activeTool === 'pen' ? (
+                    <div className={styles.mobileToolSection}>
+                      <div className={styles.mobileToolSectionTitle}>Brush</div>
                       <div className={styles.toolPopoverRow}>
                         <div className={styles.swatches} aria-label="Brush color">
                           {BRUSH_COLORS.map((c) => (
@@ -2971,37 +4468,13 @@ export default function WorkspacePage() {
                           <div className={styles.widthLabel}>{brushWidth}px</div>
                         </div>
                       </div>
-                      <div className={styles.toolPopoverHint}>Drag — draw · Esc — switch tool</div>
                     </div>
                   ) : null}
                 </div>
-              );
-            })}
-          </div>
-
-          <div className={styles.historyPanel} aria-label="History">
-            <button
-              type="button"
-              className={styles.historyBtn}
-              aria-label="Undo"
-              title={`Undo (${formatShortcut(shortcuts['history.undo'] || DEFAULT_SHORTCUTS['history.undo'])})`}
-              onClick={undo}
-              disabled={!historyMeta.canUndo}
-            >
-              <Undo2 size={18} />
-            </button>
-            <button
-              type="button"
-              className={styles.historyBtn}
-              aria-label="Redo"
-              title={`Redo (${formatShortcut(shortcuts['history.redo'] || DEFAULT_SHORTCUTS['history.redo'])})`}
-              onClick={redo}
-              disabled={!historyMeta.canRedo}
-            >
-              <Redo2 size={18} />
-            </button>
-          </div>
-        </aside>
+              </div>
+            ) : null}
+          </>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -3019,131 +4492,25 @@ export default function WorkspacePage() {
           onPointerUp={onCanvasPointerUp}
           onPointerCancel={onCanvasPointerUp}
           onPointerLeave={onCanvasPointerUp}
+          onWheel={onCanvasWheel}
           style={{
             '--canvas-cursor': effectiveCursor,
-            '--grid-offset-x': `${viewOffset.x}px`,
-            '--grid-offset-y': `${viewOffset.y}px`,
-            '--view-offset-x': `${viewOffset.x}px`,
-            '--view-offset-y': `${viewOffset.y}px`,
             '--note-bg': `url(${note2Img})`,
           }}
         >
           <div className={styles.grid} />
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}
           <div className={styles.boardContent}>
-            <svg className={styles.connectorsLayer} aria-hidden="true">
-              <defs>
-                <marker
-                  id="connector-arrow"
-                  viewBox="0 0 10 10"
-                  refX="9"
-                  refY="5"
-                  markerWidth="6"
-                  markerHeight="6"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
-                </marker>
-              </defs>
-
-              {elements
-                .filter((el) => el?.type === 'connector')
-                .map((el) => {
-                  const data = el?.connector?.data || el?.Connector?.data || {};
-                  const from = data?.from || {};
-                  const to = data?.to || {};
-                  const fromEl = elementsById.get(from.elementId);
-                  const toEl = elementsById.get(to.elementId);
-                  if (!fromEl || !toEl) return null;
-                  const a0 = getAnchorPoint(fromEl, from.side);
-                  const a1 = getAnchorPoint(toEl, to.side);
-                  const bend = data?.bend || { x: 0, y: 0 };
-                  const { d, handle } = computeConnectorPathFromAnchors(a0, a1, bend);
-                  const color = String(data?.style?.color || 'rgba(15,23,42,0.75)');
-                  const w = Math.max(1, Number(data?.style?.width ?? 2));
-                  const selected = selectedConnectorId === el.id;
-                  const arrow = data?.style?.arrowEnd !== false;
-
-                  return (
-                    <g key={el.id} className={selected ? styles.connectorSelected : ''}>
-                      <path
-                        d={d}
-                        fill="none"
-                        stroke={color}
-                        strokeWidth={selected ? Math.max(2, w + 0.75) : w}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{ color }}
-                        markerEnd={arrow ? 'url(#connector-arrow)' : undefined}
-                      />
-                      <path
-                        d={d}
-                        fill="none"
-                        stroke="transparent"
-                        strokeWidth={Math.max(10, w + 10)}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        onPointerDown={(ev) => {
-                          ev.stopPropagation();
-                          ev.preventDefault();
-                          setEditingElementId(null);
-                          setSelectedConnectorId(el.id);
-                        }}
-                      />
-                      {selected ? (
-                        <circle
-                          cx={handle.x}
-                          cy={handle.y}
-                          r={7}
-                          className={styles.connectorBendHandle}
-                          onPointerDown={(ev) => startConnectorBendDrag(el.id, ev)}
-                        />
-                      ) : null}
-                    </g>
-                  );
-                })}
-
-              {connectorDraft?.from?.elementId ? (
-                (() => {
-                  const fromEl = elementsById.get(connectorDraft.from.elementId);
-                  if (!fromEl) return null;
-                  const a0 = getAnchorPoint(fromEl, connectorDraft.from.side);
-
-                  let a1 = null;
-                  if (connectorDraft?.toHover?.elementId && connectorDraft?.toHover?.side) {
-                    const toEl = elementsById.get(connectorDraft.toHover.elementId);
-                    if (toEl) a1 = getAnchorPoint(toEl, connectorDraft.toHover.side);
-                  }
-                  if (!a1) {
-                    const p3 = connectorDraft.cursor || { x: a0.x + 1, y: a0.y + 1 };
-                    const dx = Number(p3.x) - a0.x;
-                    const dy = Number(p3.y) - a0.y;
-                    const ax = Math.abs(dx);
-                    const ay = Math.abs(dy);
-                    // For a free endpoint (cursor), we want the end-control point to sit "behind" the cursor,
-                    // so the curve doesn't overshoot past it. Since the path function treats `dir` as "outward",
-                    // we invert the vector here.
-                    const dir =
-                      ax >= ay ? { x: dx >= 0 ? -1 : 1, y: 0 } : { x: 0, y: dy >= 0 ? -1 : 1 };
-                    a1 = { x: Number(p3.x), y: Number(p3.y), dir };
-                  }
-
-                  const { d } = computeConnectorPathFromAnchors(a0, a1, { x: 0, y: 0 });
-                  return (
-                    <path
-                      d={d}
-                      fill="none"
-                      stroke="rgba(15,23,42,0.55)"
-                      strokeWidth={2}
-                      strokeDasharray="6 6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      markerEnd="url(#connector-arrow)"
-                    />
-                  );
-                })()
-              ) : null}
-            </svg>
+            <ConnectorsLayer
+              connectors={connectorElements}
+              connectorDraft={connectorDraft}
+              selectedConnectorId={selectedConnectorId}
+              onSelectConnector={onSelectConnector}
+              startConnectorBendDrag={startConnectorBendDragEv}
+              computeConnectorPathFromAnchors={computeConnectorPathFromAnchors}
+              getAnchorPoint={getLiveAnchorPoint}
+              active={connectorsFollowDuringDrag}
+            />
 
             {elements.map((el) => {
               if (el?.type === 'connector') return null;
@@ -3153,22 +4520,32 @@ export default function WorkspacePage() {
                 const strokeColor = String(data?.color || '#0f172a');
                 const strokeW = Number(data?.width ?? 4);
                 const path = pointsToSvgPath(pts);
-                  const dx = Number(el.x ?? 0);
-                  const dy = Number(el.y ?? 0);
+                const drag = interactionRef.current;
+                const dragPos = drag?.kind === 'drag' && sameId(drag.elementId, el.id) ? drag.latest : null;
+                const dx = Number(dragPos?.x ?? (el.x ?? 0));
+                const dy = Number(dragPos?.y ?? (el.y ?? 0));
+                const isSelected = selectedElementIds.has(idKey(el.id));
                 return (
                   <div
                     key={el.id}
                     data-element-id={el.id}
                     className={`${styles.element} ${styles.drawingElement}`}
+                    ref={(node) => registerElementNode(el.id, node)}
                     style={{
                         left: 0,
                         top: 0,
                       width: el.width ?? 10,
                       height: el.height ?? 10,
                       zIndex: el.zIndex ?? 0,
-                        transform: `translate3d(${dx}px, ${dy}px, 0) rotate(${el.rotation ?? 0}deg)`,
+                      transform: `translate3d(${dx}px, ${dy}px, 0) rotate(${el.rotation ?? 0}deg)`,
                     }}
                     onPointerDown={(ev) => onElementPointerDown(el.id, ev)}
+                    onClick={(ev) => {
+                      if (activeTool === 'hand' || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'connector') return;
+                      ev.stopPropagation();
+                      setSelectedElementIds(new Set([idKey(el.id)]));
+                      setEditingElementId(null);
+                    }}
                   >
                     <svg
                       className={styles.drawingSvg}
@@ -3186,17 +4563,68 @@ export default function WorkspacePage() {
                         strokeLinejoin="round"
                       />
                     </svg>
+
+                    {isSelected ? (
+                      <div className={styles.transformBox}>
+                        <div className={styles.elementActions}>
+                          <button
+                            type="button"
+                            className={styles.deleteElementBtn}
+                            onPointerDown={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              handleDeleteElement(el);
+                            }}
+                            disabled={sameId(deletingElementId, el.id)}
+                            aria-label="Delete element"
+                            title="Delete element"
+                          >
+                            {sameId(deletingElementId, el.id) ? (
+                              <Loader2 size={16} className={styles.spinner} />
+                            ) : (
+                              <Trash2 size={16} />
+                            )}
+                          </button>
+                        </div>
+                        <div
+                          className={`${styles.resizeHandle} ${styles.hNW}`}
+                          onPointerDown={(ev) => startResize(el.id, 'nw', ev)}
+                        />
+                        <div className={`${styles.resizeHandle} ${styles.hN}`} onPointerDown={(ev) => startResize(el.id, 'n', ev)} />
+                        <div
+                          className={`${styles.resizeHandle} ${styles.hNE}`}
+                          onPointerDown={(ev) => startResize(el.id, 'ne', ev)}
+                        />
+                        <div className={`${styles.resizeHandle} ${styles.hE}`} onPointerDown={(ev) => startResize(el.id, 'e', ev)} />
+                        <div
+                          className={`${styles.resizeHandle} ${styles.hSE}`}
+                          onPointerDown={(ev) => startResize(el.id, 'se', ev)}
+                        />
+                        <div className={`${styles.resizeHandle} ${styles.hS}`} onPointerDown={(ev) => startResize(el.id, 's', ev)} />
+                        <div
+                          className={`${styles.resizeHandle} ${styles.hSW}`}
+                          onPointerDown={(ev) => startResize(el.id, 'sw', ev)}
+                        />
+                        <div className={`${styles.resizeHandle} ${styles.hW}`} onPointerDown={(ev) => startResize(el.id, 'w', ev)} />
+                      </div>
+                    ) : null}
                   </div>
                 );
               }
 
               if (el?.type === 'note' || el?.type === 'text') {
                 const isEditing = editingElementId === el.id;
+                const isSelected = selectedElementIds.has(idKey(el.id));
+                const drag = interactionRef.current;
+                const dragPos = drag?.kind === 'drag' && sameId(drag.elementId, el.id) ? drag.latest : null;
                 return (
                   <NoteTextElement
                     key={el.id}
                     el={el}
+                    isSelected={isSelected}
                     isEditing={isEditing}
+                    dragX={dragPos?.x ?? null}
+                    dragY={dragPos?.y ?? null}
                     commentsEnabled={commentsEnabled}
                     deletingElementId={deletingElementId}
                     searchQuery={searchQuery}
@@ -3205,16 +4633,18 @@ export default function WorkspacePage() {
                     connectorHoverElementId={connectorHoverElementId}
                     connectorFromElementId={connectorDraft?.from?.elementId ?? null}
                     connectorToHoverElementId={connectorDraft?.toHover?.elementId ?? null}
+                    registerNode={registerElementNode}
                     actions={noteTextActions}
                   />
                 );
               }
 
               const isEditing = editingElementId === el.id;
+              const isSelected = selectedElementIds.has(idKey(el.id));
               const isDocument = el.type === 'document';
               const isLink = el.type === 'link';
               const showConnectorEndpoints =
-                isEditing ||
+                isSelected ||
                 (activeTool === 'connector' && connectorHoverElementId === el.id) ||
                 (connectorDraft?.from?.elementId === el.id || connectorDraft?.toHover?.elementId === el.id);
               const innerClass =
@@ -3231,6 +4661,7 @@ export default function WorkspacePage() {
               const docUrl = doc?.url;
               const docExt = getExt(docTitle) || getExt(docUrl);
               const DocIcon = pickDocIcon(docExt);
+              const isPhotoDoc = Boolean(docUrl) && isPhotoExt(docExt);
 
               const link = isLink ? el.link ?? el.Link : null;
               const linkUrl = link?.url || '';
@@ -3239,14 +4670,17 @@ export default function WorkspacePage() {
               const linkHost = safeHostname(linkUrl);
 
               const reactionBubbles = layoutReactionBubbles(el.id, el.reactions);
-                const ex = Number(el.x ?? 0);
-                const ey = Number(el.y ?? 0);
+              const drag = interactionRef.current;
+              const dragPos = drag?.kind === 'drag' && sameId(drag.elementId, el.id) ? drag.latest : null;
+              const ex = Number(dragPos?.x ?? (el.x ?? 0));
+              const ey = Number(dragPos?.y ?? (el.y ?? 0));
 
               return (
                 <div
                   key={el.id}
                   data-element-id={el.id}
                   className={styles.element}
+                  ref={(node) => registerElementNode(el.id, node)}
                   style={{
                       left: 0,
                       top: 0,
@@ -3289,96 +4723,102 @@ export default function WorkspacePage() {
                     }`}
                   >
                     {isDocument ? (
-                      <div className={styles.docCard}>
-                        <div className={styles.docHeader}>
-                          <div className={styles.docIcon}>
-                            <DocIcon size={18} />
-                          </div>
-                          <div className={styles.docInfo}>
-                            <div className={styles.docTitleRow}>
-                              <button
-                                type="button"
-                                className={styles.docTitleBtn}
-                                onPointerDown={(ev) => ev.stopPropagation()}
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  openDocument(docUrl);
-                                }}
-                                disabled={!docUrl}
-                                title={docUrl ? 'Open' : 'No file'}
-                              >
-                                {renderHighlightedText(docTitle, searchQuery, styles.searchMark)}
-                              </button>
-                              <div className={styles.docActions}>
+                      isPhotoDoc ? (
+                        <div className={styles.photoCard} aria-label={docTitle}>
+                          <img className={styles.photoImg} src={docUrl} alt={docTitle} draggable={false} />
+                        </div>
+                      ) : (
+                        <div className={styles.docCard}>
+                          <div className={styles.docHeader}>
+                            <div className={styles.docIcon}>
+                              <DocIcon size={18} />
+                            </div>
+                            <div className={styles.docInfo}>
+                              <div className={styles.docTitleRow}>
                                 <button
                                   type="button"
-                                  className={styles.docActionBtn}
+                                  className={styles.docTitleBtn}
                                   onPointerDown={(ev) => ev.stopPropagation()}
                                   onClick={(ev) => {
                                     ev.stopPropagation();
                                     openDocument(docUrl);
                                   }}
                                   disabled={!docUrl}
-                                  aria-label="Open file"
-                                  title="Open"
+                                  title={docUrl ? 'Open' : 'No file'}
                                 >
-                                  <ExternalLink size={16} />
+                                  {renderHighlightedText(docTitle, searchQuery, styles.searchMark)}
                                 </button>
-                                <button
-                                  type="button"
-                                  className={styles.docActionBtn}
-                                  onPointerDown={(ev) => ev.stopPropagation()}
-                                  onClick={(ev) => {
-                                    ev.stopPropagation();
-                                    downloadDocument(docUrl, docTitle);
-                                  }}
-                                  disabled={!docUrl}
-                                  aria-label="Download file"
-                                  title="Download"
-                                >
-                                  <Download size={16} />
-                                </button>
+                                <div className={styles.docActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.docActionBtn}
+                                    onPointerDown={(ev) => ev.stopPropagation()}
+                                    onClick={(ev) => {
+                                      ev.stopPropagation();
+                                      openDocument(docUrl);
+                                    }}
+                                    disabled={!docUrl}
+                                    aria-label="Open file"
+                                    title="Open"
+                                  >
+                                    <ExternalLink size={16} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.docActionBtn}
+                                    onPointerDown={(ev) => ev.stopPropagation()}
+                                    onClick={(ev) => {
+                                      ev.stopPropagation();
+                                      downloadDocument(docUrl, docTitle);
+                                    }}
+                                    disabled={!docUrl}
+                                    aria-label="Download file"
+                                    title="Download"
+                                  >
+                                    <Download size={16} />
+                                  </button>
+                                </div>
                               </div>
+                              <div className={styles.docMeta}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
                             </div>
-                            <div className={styles.docMeta}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
+                          </div>
+                          <div className={styles.docPreview}>
+                            {docUrl && ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(docExt) ? (
+                              <img
+                                className={styles.docThumb}
+                                src={docUrl}
+                                alt={docTitle}
+                                draggable={false}
+                                onPointerDown={(ev) => ev.stopPropagation()}
+                              />
+                            ) : docUrl && docExt === 'pdf' ? (
+                              <object
+                                className={styles.docPdf}
+                                data={docUrl}
+                                type="application/pdf"
+                                aria-label={docTitle}
+                              >
+                                <div className={styles.docPreviewFallback}>Preview not available</div>
+                              </object>
+                            ) : docUrl && TEXT_PREVIEW_EXTS.has(docExt) ? (
+                              <div className={styles.docTextPreview} aria-label="Text preview">
+                                <pre className={styles.docTextPre}>
+                                  {docTextPreview[docUrl] != null
+                                    ? docTextPreview[docUrl] || 'Preview not available'
+                                    : 'Loading preview...'}
+                                </pre>
+                              </div>
+                            ) : (
+                              <div className={styles.docPreviewFallback}>
+                                <div className={styles.docFallbackIcon}>
+                                  <DocIcon size={34} />
+                                </div>
+                                <div className={styles.docFallbackExt}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
+                              </div>
+                            )}
                           </div>
                         </div>
-                        <div className={styles.docPreview}>
-                          {docUrl && ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(docExt) ? (
-                            <img
-                              className={styles.docThumb}
-                              src={docUrl}
-                              alt={docTitle}
-                              draggable={false}
-                              onPointerDown={(ev) => ev.stopPropagation()}
-                            />
-                          ) : docUrl && docExt === 'pdf' ? (
-                            <object
-                              className={styles.docPdf}
-                              data={docUrl}
-                              type="application/pdf"
-                              aria-label={docTitle}
-                            >
-                              <div className={styles.docPreviewFallback}>Preview not available</div>
-                            </object>
-                          ) : docUrl && TEXT_PREVIEW_EXTS.has(docExt) ? (
-                            <div className={styles.docTextPreview} aria-label="Text preview">
-                              <pre className={styles.docTextPre}>
-                                {docTextPreview[docUrl] != null
-                                  ? docTextPreview[docUrl] || 'Preview not available'
-                                  : 'Loading preview...'}
-                              </pre>
-                            </div>
-                          ) : (
-                            <div className={styles.docPreviewFallback}>
-                              <div className={styles.docFallbackIcon}>
-                                <DocIcon size={34} />
-                              </div>
-                              <div className={styles.docFallbackExt}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      )
                     ) : isLink ? (
                       <div className={styles.linkCard}>
                         <div className={styles.linkHeader}>
@@ -3591,7 +5031,7 @@ export default function WorkspacePage() {
                     </div>
                   ) : null}
 
-                  {isEditing ? (
+                  {isSelected ? (
                     <div className={styles.transformBox}>
                       <div className={styles.elementActions}>
                         <button
@@ -3602,11 +5042,11 @@ export default function WorkspacePage() {
                             ev.stopPropagation();
                             handleDeleteElement(el);
                           }}
-                          disabled={deletingElementId === el.id}
+                          disabled={sameId(deletingElementId, el.id)}
                           aria-label="Delete element"
                           title="Delete element"
                         >
-                          {deletingElementId === el.id ? (
+                          {sameId(deletingElementId, el.id) ? (
                             <Loader2 size={16} className={styles.spinner} />
                           ) : (
                             <Trash2 size={16} />
@@ -3704,15 +5144,57 @@ export default function WorkspacePage() {
           ) : null}
         </main>
 
-        <div className={styles.zoom}>
-          <button type="button" className={styles.zoomBtn}>
-            −
-          </button>
-          <div className={styles.zoomPct}>100%</div>
-          <button type="button" className={styles.zoomBtn}>
-            +
-          </button>
-        </div>
+        {!isMobile ? (
+          <div className={styles.zoom}>
+            <button
+              type="button"
+              className={styles.zoomBtn}
+              onClick={() => {
+                const node = canvasRef.current;
+                if (!node) return;
+                const rect = node.getBoundingClientRect();
+                const p = { x: rect.width / 2, y: rect.height / 2 };
+                const off = viewOffsetRef.current;
+                const curScale = viewScaleRef.current || 1;
+                const nextScale = clampViewScale(curScale / 1.12);
+                const d = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
+                const nextOffset = { x: p.x - d.x * nextScale, y: p.y - d.y * nextScale };
+                scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
+                setViewOffset(nextOffset);
+                persistViewDebounced({ offset: nextOffset, scale: nextScale });
+              }}
+              aria-label="Zoom out"
+              title="Zoom out"
+            >
+              −
+            </button>
+            <div ref={zoomPctRef} className={styles.zoomPct}>
+              100%
+            </div>
+            <button
+              type="button"
+              className={styles.zoomBtn}
+              onClick={() => {
+                const node = canvasRef.current;
+                if (!node) return;
+                const rect = node.getBoundingClientRect();
+                const p = { x: rect.width / 2, y: rect.height / 2 };
+                const off = viewOffsetRef.current;
+                const curScale = viewScaleRef.current || 1;
+                const nextScale = clampViewScale(curScale * 1.12);
+                const d = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
+                const nextOffset = { x: p.x - d.x * nextScale, y: p.y - d.y * nextScale };
+                scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
+                setViewOffset(nextOffset);
+                persistViewDebounced({ offset: nextOffset, scale: nextScale });
+              }}
+              aria-label="Zoom in"
+              title="Zoom in"
+            >
+              +
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {commentsEnabled && commentsPanel ? (
@@ -3790,103 +5272,252 @@ export default function WorkspacePage() {
       ) : null}
 
       {aiPanelOpen ? (
-        <div
-          className={styles.aiPanel}
-          role="dialog"
-          aria-label="AI chat"
-          onPointerDown={(ev) => ev.stopPropagation()}
-        >
-          <div className={styles.aiPanelHeader}>
-            <div className={styles.aiPanelTitle}>AI чат</div>
-            <button
-              type="button"
-              className={styles.aiPanelClose}
-              onClick={() => setAiPanelOpen(false)}
-              aria-label="Close AI chat"
-              title="Закрыть"
+        isMobile ? (
+          <div
+            className={styles.aiSheetOverlay}
+            role="presentation"
+            onPointerDown={() => {
+              closeAiPanel();
+            }}
+          >
+            <div
+              ref={aiSheetRef}
+              className={`${styles.aiSheet} ${aiSheetDragging ? styles.aiSheetDragging : ''}`}
+              role="dialog"
+              aria-label="AI chat"
+              onPointerDown={(ev) => ev.stopPropagation()}
+              onPointerMove={onAiSheetDragMove}
+              onPointerUp={onAiSheetDragEnd}
+              onPointerCancel={onAiSheetDragEnd}
+              style={{ transform: `translateY(${aiSheetDragY}px)` }}
             >
-              <X size={18} />
-            </button>
-          </div>
+              <div className={styles.aiSheetHandle} aria-hidden="true" onPointerDown={onAiSheetDragStart} />
 
-          <div className={styles.aiPanelMeta}>
-            {aiStatus?.enabled
-              ? `provider: ${aiStatus?.provider || 'unknown'}${aiStatus?.model ? ` · model: ${aiStatus.model}` : ''}`
-              : 'AI выключен (нужен AI_PROVIDER=ollama на сервере)'}
-          </div>
-
-          <div ref={aiListRef} className={styles.aiMessages} aria-label="AI messages">
-            {aiMessages.length ? (
-              aiMessages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`${styles.aiMsgRow} ${m.role === 'user' ? styles.aiMsgRowUser : styles.aiMsgRowAssistant}`}
-                >
-                  <div className={`${styles.aiBubble} ${m.role === 'user' ? styles.aiBubbleUser : styles.aiBubbleAssistant}`}>
-                    {String(m.content ?? '')}
-                  </div>
+              <div className={styles.aiSheetHeader}>
+                <div className={styles.aiSheetHeaderTitle}>
+                  <div className={styles.aiSheetName}>{aiStatus?.model || aiStatus?.provider || 'Sidekick'}</div>
+                  <span className={styles.aiSheetBeta}>Beta</span>
                 </div>
-              ))
-            ) : (
-              <div className={styles.aiEmpty}>
-                Напишите вопрос — ИИ увидит текстовый слепок элементов доски и сможет объяснить/суммаризировать.
+                <div className={styles.aiSheetHeaderActions}>
+                  <button
+                    type="button"
+                    className={styles.aiSheetIconBtn}
+                    aria-label="New chat"
+                    title="Новый чат"
+                    disabled={aiSending}
+                    onClick={() => {
+                      setAiMessages([]);
+                      setAiDraft('');
+                      setAiError(null);
+                      window.setTimeout(() => aiInputRef.current?.focus?.(), 0);
+                    }}
+                  >
+                    <PenLine size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.aiSheetIconBtn}
+                    onClick={() => closeAiPanel()}
+                    aria-label="Close AI chat"
+                    title="Закрыть"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
               </div>
-            )}
-          </div>
 
-          <div className={styles.aiComposer}>
-            {aiError ? <div className={styles.aiError}>{aiError}</div> : null}
-            <div className={styles.aiQuickRow}>
-              <button
-                type="button"
-                className={styles.aiQuickBtn}
-                onClick={() => sendAiMessage('Сделай краткую суммаризацию контента доски и выдели ключевые темы.')}
-                disabled={aiSending || !deskIdNum}
-              >
-                Суммаризация
-              </button>
-              <button
-                type="button"
-                className={styles.aiQuickBtn}
-                onClick={() => {
-                  setAiMessages([]);
-                  setAiError(null);
-                }}
-                disabled={aiSending}
-              >
-                Очистить
-              </button>
-            </div>
-            <div className={styles.aiSendRow}>
-              <textarea
-                ref={aiInputRef}
-                className={styles.aiInput}
-                value={aiDraft}
-                placeholder="Спросить ИИ…"
-                onChange={(ev) => setAiDraft(ev.target.value)}
-                onKeyDown={(ev) => {
-                  if (ev.key === 'Escape') {
-                    ev.preventDefault();
-                    setAiPanelOpen(false);
-                    return;
-                  }
-                  if (ev.key === 'Enter' && !ev.shiftKey) {
-                    ev.preventDefault();
-                    sendAiMessage();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className={styles.aiSendBtn}
-                onClick={() => sendAiMessage()}
-                disabled={aiSending || !String(aiDraft || '').trim() || !deskIdNum}
-              >
-                {aiSending ? <Loader2 size={16} className={styles.spinner} /> : 'Отправить'}
-              </button>
+              <div className={styles.aiSheetMeta}>
+                {aiStatus?.enabled
+                  ? `Подключено: ${aiStatus?.provider || 'unknown'}${aiStatus?.model ? ` · ${aiStatus.model}` : ''}`
+                  : 'AI выключен (нужен AI_PROVIDER=ollama на сервере)'}
+              </div>
+
+              <div ref={aiListRef} className={styles.aiMessages} aria-label="AI messages">
+                {aiMessages.length ? (
+                  <>
+                    {aiMessages.map((m) => (
+                      <div
+                        key={m.id}
+                        className={`${styles.aiMsgRow} ${m.role === 'user' ? styles.aiMsgRowUser : styles.aiMsgRowAssistant}`}
+                      >
+                        <div className={`${styles.aiBubble} ${m.role === 'user' ? styles.aiBubbleUser : styles.aiBubbleAssistant}`}>
+                          {String(m.content ?? '')}
+                        </div>
+                      </div>
+                    ))}
+                    {aiSending ? (
+                      <div className={`${styles.aiMsgRow} ${styles.aiMsgRowAssistant}`}>
+                        <div className={`${styles.aiBubble} ${styles.aiBubbleAssistant}`}>
+                          {(aiStatus?.model || aiStatus?.provider || 'Sidekick')} is thinking…
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className={styles.aiIntro}>
+                    <div className={styles.aiIntroTop}>
+                      <span className={styles.aiIntroIcon} aria-hidden="true">
+                        <Spline size={18} />
+                      </span>
+                      <div className={styles.aiIntroTitle}>Привет! Я помогу с доской.</div>
+                    </div>
+                    <div className={styles.aiIntroText}>
+                      Пока функционал небольшой: отвечаю по текстовому слепку элементов и могу суммаризировать, предлагать задачи и планы.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.aiComposer}>
+                {aiError ? <div className={styles.aiError}>{aiError}</div> : null}
+
+                <div className={styles.aiPromptRow} aria-label="Prompt suggestions">
+                  {AI_PROMPT_SUGGESTIONS.map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      className={styles.aiPromptChip}
+                      onClick={() => sendAiMessage(p.prompt)}
+                      disabled={aiSending || !deskIdNum}
+                      title={p.prompt}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className={styles.aiSendRow}>
+                  <textarea
+                    ref={aiInputRef}
+                    className={styles.aiInput}
+                    value={aiDraft}
+                    placeholder="Введите сообщение…"
+                    onChange={(ev) => setAiDraft(ev.target.value)}
+                    onKeyDown={(ev) => {
+                      if (ev.key === 'Escape') {
+                        ev.preventDefault();
+                        closeAiPanel();
+                        return;
+                      }
+                      if (ev.key === 'Enter' && !ev.shiftKey) {
+                        ev.preventDefault();
+                        sendAiMessage();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={`${styles.aiSendBtn} ${styles.aiSendBtnIcon}`}
+                    onClick={() => sendAiMessage()}
+                    disabled={aiSending || !String(aiDraft || '').trim() || !deskIdNum}
+                    aria-label="Send"
+                    title="Отправить"
+                  >
+                    {aiSending ? <Square size={16} /> : <ArrowUp size={16} />}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div
+            className={styles.aiPanel}
+            role="dialog"
+            aria-label="AI chat"
+            onPointerDown={(ev) => ev.stopPropagation()}
+          >
+            <div className={styles.aiPanelHeader}>
+              <div className={styles.aiPanelTitle}>AI чат</div>
+              <button
+                type="button"
+                className={styles.aiPanelClose}
+                onClick={() => setAiPanelOpen(false)}
+                aria-label="Close AI chat"
+                title="Закрыть"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className={styles.aiPanelMeta}>
+              {aiStatus?.enabled
+                ? `provider: ${aiStatus?.provider || 'unknown'}${aiStatus?.model ? ` · model: ${aiStatus.model}` : ''}`
+                : 'AI выключен (нужен AI_PROVIDER=ollama на сервере)'}
+            </div>
+
+            <div ref={aiListRef} className={styles.aiMessages} aria-label="AI messages">
+              {aiMessages.length ? (
+                aiMessages.map((m) => (
+                  <div
+                    key={m.id}
+                    className={`${styles.aiMsgRow} ${m.role === 'user' ? styles.aiMsgRowUser : styles.aiMsgRowAssistant}`}
+                  >
+                    <div className={`${styles.aiBubble} ${m.role === 'user' ? styles.aiBubbleUser : styles.aiBubbleAssistant}`}>
+                      {String(m.content ?? '')}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className={styles.aiEmpty}>
+                  Напишите вопрос — ИИ увидит текстовый слепок элементов доски и сможет объяснить/суммаризировать.
+                </div>
+              )}
+            </div>
+
+            <div className={styles.aiComposer}>
+              {aiError ? <div className={styles.aiError}>{aiError}</div> : null}
+              <div className={styles.aiQuickRow}>
+                <button
+                  type="button"
+                  className={styles.aiQuickBtn}
+                  onClick={() => sendAiMessage('Сделай краткую суммаризацию контента доски и выдели ключевые темы.')}
+                  disabled={aiSending || !deskIdNum}
+                >
+                  Суммаризация
+                </button>
+                <button
+                  type="button"
+                  className={styles.aiQuickBtn}
+                  onClick={() => {
+                    setAiMessages([]);
+                    setAiError(null);
+                  }}
+                  disabled={aiSending}
+                >
+                  Очистить
+                </button>
+              </div>
+              <div className={styles.aiSendRow}>
+                <textarea
+                  ref={aiInputRef}
+                  className={styles.aiInput}
+                  value={aiDraft}
+                  placeholder="Спросить ИИ…"
+                  onChange={(ev) => setAiDraft(ev.target.value)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === 'Escape') {
+                      ev.preventDefault();
+                      setAiPanelOpen(false);
+                      return;
+                    }
+                    if (ev.key === 'Enter' && !ev.shiftKey) {
+                      ev.preventDefault();
+                      sendAiMessage();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className={styles.aiSendBtn}
+                  onClick={() => sendAiMessage()}
+                  disabled={aiSending || !String(aiDraft || '').trim() || !deskIdNum}
+                >
+                  {aiSending ? <Loader2 size={16} className={styles.spinner} /> : 'Отправить'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
       ) : null}
 
       {reactionPicker ? (

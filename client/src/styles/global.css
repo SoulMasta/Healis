@@ -20,6 +20,20 @@
     Arial, 'Apple Color Emoji', 'Segoe UI Emoji';
 }
 
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --panel: #0f172a;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --border: rgba(226, 232, 240, 0.14);
+  --shadow: 0 10px 34px rgba(0, 0, 0, 0.40);
+  --blue: #5b8dff;
+  --blue-2: #2b6cff;
+  --chip: rgba(91, 141, 255, 0.16);
+  --grid: rgba(226, 232, 240, 0.06);
+}
+
 *,
 *::before,
 *::after {
