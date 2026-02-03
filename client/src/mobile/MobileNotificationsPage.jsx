@@ -5,6 +5,7 @@ import styles from './MobileNotificationsPage.module.css';
 import { getToken } from '../http/userAPI';
 import { getMyGroupInvites, getMyGroupJoinRequests, approveGroupJoinRequest, denyGroupJoinRequest } from '../http/groupAPI';
 import { getMyCalendar, respondToCalendarInvite, respondToCalendarPeriodInvite } from '../http/calendarAPI';
+import { listMyNotifications, markNotificationRead } from '../http/notificationsAPI';
 import { loadNotificationFeed, NOTIFICATION_FEED_STORAGE_KEY } from '../utils/notificationFeed';
 
 function pad2(n) {
@@ -69,6 +70,7 @@ export default function MobileNotificationsPage() {
   const [tab, setTab] = useState('all');
   const [loading, setLoading] = useState(false);
   const [feed, setFeed] = useState(() => loadNotificationFeed());
+  const [serverNotifications, setServerNotifications] = useState([]);
 
   const [groupInvites, setGroupInvites] = useState([]);
   const [joinRequests, setJoinRequests] = useState([]);
@@ -108,19 +110,22 @@ export default function MobileNotificationsPage() {
       setJoinRequests([]);
       setCalendarPending([]);
       setCalendarPendingPeriods([]);
+      setServerNotifications([]);
       return;
     }
     setLoading(true);
     try {
-      const [inv, req, cal] = await Promise.all([
+      const [inv, req, cal, noti] = await Promise.all([
         getMyGroupInvites().catch(() => []),
         getMyGroupJoinRequests().catch(() => []),
         getMyCalendar({ month: monthParam(new Date()) }).catch(() => null),
+        listMyNotifications({ limit: 50, offset: 0 }).catch(() => ({ notifications: [] })),
       ]);
       setGroupInvites(Array.isArray(inv) ? inv : []);
       setJoinRequests(Array.isArray(req) ? req : []);
       setCalendarPending(Array.isArray(cal?.pending) ? cal.pending : []);
       setCalendarPendingPeriods(Array.isArray(cal?.pendingPeriods) ? cal.pendingPeriods : []);
+      setServerNotifications(Array.isArray(noti?.notifications) ? noti.notifications : []);
     } finally {
       setLoading(false);
     }
@@ -132,6 +137,27 @@ export default function MobileNotificationsPage() {
 
   const items = useMemo(() => {
     const out = [];
+
+    // Persistent server inbox (includes calendar worker notifications).
+    for (const n of Array.isArray(serverNotifications) ? serverNotifications.slice(0, 50) : []) {
+      const payload = n?.payload || {};
+      const isCalendar = String(n?.type || '').toUpperCase().includes('CALENDAR');
+      const createdAt = n?.createdAt ? new Date(n.createdAt) : null;
+      const createdLabel = createdAt && !Number.isNaN(createdAt.getTime()) ? whenLabel(createdAt.toISOString()) : '';
+      const event = payload?.event || {};
+      const startsAt = event?.startsAt;
+      const when = startsAt ? whenLabel(startsAt) : '';
+      const meta = [when, createdLabel].filter(Boolean).join(' • ');
+      out.push({
+        kind: isCalendar ? 'calendar' : 'boards',
+        id: `sn-${n?.id}`,
+        title: n?.title || (isCalendar ? 'Календарь' : 'Уведомление'),
+        subtitle: String(n?.body || '').trim() || String(event?.title || '').trim(),
+        meta: meta || undefined,
+        icon: <CalendarDays size={18} />,
+        actions: { serverNotificationId: n?.id, readAt: n?.readAt },
+      });
+    }
 
     // In-app reminder feed (e.g. calendar reminders).
     for (const row of Array.isArray(feed) ? feed.slice().reverse().slice(0, 20) : []) {
@@ -202,7 +228,7 @@ export default function MobileNotificationsPage() {
     }
 
     return out;
-  }, [calendarPending, calendarPendingPeriods, feed, groupInvites, joinRequests]);
+  }, [calendarPending, calendarPendingPeriods, feed, groupInvites, joinRequests, serverNotifications]);
 
   const filtered = useMemo(() => {
     if (tab === 'all') return items;
@@ -250,6 +276,19 @@ export default function MobileNotificationsPage() {
       alert(e?.response?.data?.error || e?.message || 'Не удалось ответить');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const markServerRead = async (id) => {
+    if (!id) return;
+    try {
+      await markNotificationRead(id);
+      // optimistic refresh
+      setServerNotifications((prev) =>
+        (Array.isArray(prev) ? prev : []).map((n) => (Number(n?.id) === Number(id) ? { ...n, readAt: n.readAt || new Date().toISOString() } : n))
+      );
+    } catch {
+      // ignore
     }
   };
 
@@ -307,6 +346,17 @@ export default function MobileNotificationsPage() {
                           Отклонить
                         </button>
                       </>
+                    ) : a?.serverNotificationId ? (
+                      <button
+                        type="button"
+                        className={styles.actionOk}
+                        onClick={() => markServerRead(a.serverNotificationId)}
+                        disabled={isBusy || Boolean(a.readAt)}
+                        title={a.readAt ? 'Уже прочитано' : 'Отметить прочитанным'}
+                      >
+                        <Check size={16} />
+                        {a.readAt ? 'Прочитано' : 'Прочитать'}
+                      </button>
                     ) : null
                   }
                 />

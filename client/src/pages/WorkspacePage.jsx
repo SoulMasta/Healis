@@ -234,6 +234,7 @@ function IconBtn({ label, title, children, onClick, disabled, buttonRef, classNa
 
 const NoteTextElement = React.memo(function NoteTextElement({
   el,
+  isMobile,
   isSelected,
   isEditing,
   dragX,
@@ -371,6 +372,7 @@ const NoteTextElement = React.memo(function NoteTextElement({
       onPointerUp={(ev) => actions.maybeEnterEditOnPointerUp(elementId, ev)}
       onClick={(ev) => actions.onElementClick(elementId, ev)}
       onContextMenu={(ev) => {
+        if (isMobile) return;
         if (activeTool === 'pen' || activeTool === 'eraser') return;
         ev.preventDefault();
         ev.stopPropagation();
@@ -841,7 +843,7 @@ export default function WorkspacePage() {
   const [uploading, setUploading] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
   const [linkDraftUrl, setLinkDraftUrl] = useState('');
-  const [activeTool, setActiveTool] = useState(TOOLS[0].id);
+  const [activeTool, setActiveTool] = useState(() => (isMobile ? 'hand' : TOOLS[0].id));
   const [, setViewOffset] = useState({ x: 0, y: 0 });
   const [selectionRect, setSelectionRect] = useState(null);
   const [isPanning, setIsPanning] = useState(false);
@@ -867,6 +869,8 @@ export default function WorkspacePage() {
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   const [mobileSheetDragY, setMobileSheetDragY] = useState(0);
   const [mobileSheetDragging, setMobileSheetDragging] = useState(false);
+  const [mobileBrushBarOpen, setMobileBrushBarOpen] = useState(false);
+  const [mobileLinkOpen, setMobileLinkOpen] = useState(false);
   const [aiSheetDragY, setAiSheetDragY] = useState(0);
   const [aiSheetDragging, setAiSheetDragging] = useState(false);
 
@@ -907,10 +911,28 @@ export default function WorkspacePage() {
   const aiInputRef = useRef(null);
   const aiListRef = useRef(null);
 
+  const inputDebugEnabled = useMemo(() => {
+    try {
+      const qs = new URLSearchParams(window.location.search);
+      if (qs.get('inputDebug') === '1') return true;
+      if (window.localStorage.getItem('healis.inputDebug') === '1') return true;
+    } catch {
+      // ignore
+    }
+    return false;
+  }, []);
+
+  const [inputDebugText, setInputDebugText] = useState('');
+  const inputDebugLinesRef = useRef([]);
+  const inputDebugFlushRafRef = useRef(null);
+  const inputDebugLastFlushRef = useRef(0);
+  const inputDebugLastMoveLogRef = useRef(new Map()); // pointerId -> ts
+
   const selectStartRef = useRef(null);
   const selectRafRef = useRef(null);
   const selectPendingEndRef = useRef(null);
   const panStartRef = useRef(null);
+  const panRafRef = useRef(null);
   const interactionRef = useRef(null);
   const viewOffsetRef = useRef({ x: 0, y: 0 });
   const viewScaleRef = useRef(VIEW_SCALE_BASE);
@@ -920,6 +942,7 @@ export default function WorkspacePage() {
   const persistViewDebouncedRef = useRef(null);
   const didRestoreViewRef = useRef(false);
   const suppressNextElementClickRef = useRef(new Set());
+  const mobileSuppressDragPointerIdRef = useRef(null);
   const fetchingPreviewsRef = useRef(new Set());
   const historyRef = useRef({ past: [], future: [] });
   const createdElementIdsRef = useRef(new Set()); // elementIds created in this session (used for delete undo)
@@ -946,6 +969,7 @@ export default function WorkspacePage() {
   const mobileSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
   const aiSheetRef = useRef(null);
   const aiSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
+  const mobileLongPressRef = useRef({ timerId: null, pointerId: null, elementId: null });
   const mobilePinchRef = useRef({
     active: false,
     pointers: new Map(), // pointerId -> { x, y }
@@ -953,11 +977,35 @@ export default function WorkspacePage() {
     startScale: 1,
     startOffset: { x: 0, y: 0 },
     deskMid: { x: 0, y: 0 },
+    rect: { left: 0, top: 0 },
   });
 
   useEffect(() => {
     if (!isMobile) setMobileToolsOpen(false);
   }, [isMobile]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileBrushBarOpen(false);
+      setMobileLinkOpen(false);
+      return;
+    }
+    // Mobile UX: Hand is the default mode; other tools should not "stick" (except transient brush/eraser).
+    if (activeTool !== 'hand' && activeTool !== 'pen' && activeTool !== 'eraser') {
+      setActiveTool('hand');
+    }
+    // Disable box-select visuals on mobile completely.
+    selectStartRef.current = null;
+    setSelectionRect(null);
+  }, [isMobile, activeTool]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    // If the brush UI is closed, always return to Hand.
+    if (!mobileBrushBarOpen && (activeTool === 'pen' || activeTool === 'eraser')) {
+      setActiveTool('hand');
+    }
+  }, [isMobile, mobileBrushBarOpen, activeTool]);
 
   useEffect(() => {
     if (!isMobile) return;
@@ -1034,6 +1082,95 @@ export default function WorkspacePage() {
     [applyViewVarsNow]
   );
 
+  const pushInputDebug = useCallback(
+    (tag, data = null) => {
+      if (!inputDebugEnabled) return;
+      const ts = Math.round(performance.now());
+      let payload = '';
+      try {
+        payload = data ? ` ${JSON.stringify(data)}` : '';
+      } catch {
+        payload = ' [unserializable]';
+      }
+      const lines = inputDebugLinesRef.current;
+      lines.push(`[${ts}] ${tag}${payload}`);
+      if (lines.length > 240) lines.splice(0, lines.length - 240);
+
+      const scheduleFlush = () => {
+        inputDebugFlushRafRef.current = null;
+        const now = performance.now();
+        // Throttle UI updates; never update in pointermove directly.
+        if (now - (inputDebugLastFlushRef.current || 0) < 180) {
+          inputDebugFlushRafRef.current = window.requestAnimationFrame(scheduleFlush);
+          return;
+        }
+        inputDebugLastFlushRef.current = now;
+        setInputDebugText(lines.join('\n'));
+      };
+      if (inputDebugFlushRafRef.current == null) inputDebugFlushRafRef.current = window.requestAnimationFrame(scheduleFlush);
+    },
+    [inputDebugEnabled]
+  );
+
+  const runPanFrame = useCallback(() => {
+    panRafRef.current = null;
+    const pan = panStartRef.current;
+    if (!pan) return;
+    if (inputDebugEnabled) {
+      const dt = Math.round(performance.now() - (pan.lastRafTs || performance.now()));
+      pan.lastRafTs = performance.now();
+      pushInputDebug('raf.pan', { dt, pid: pan.pointerId, lx: pan.lastClientX, ly: pan.lastClientY });
+    }
+    const dx = Number((pan.lastClientX ?? pan.startClientX) - pan.startClientX);
+    const dy = Number((pan.lastClientY ?? pan.startClientY) - pan.startClientY);
+    const startOffset = pan.startOffset || viewOffsetRef.current;
+    applyViewVarsNow({ offset: { x: startOffset.x + dx, y: startOffset.y + dy } });
+    // Keep running while pan gesture is active.
+    if (panStartRef.current) panRafRef.current = window.requestAnimationFrame(runPanFrame);
+  }, [applyViewVarsNow, inputDebugEnabled, pushInputDebug]);
+
+  const ensurePanRaf = useCallback(() => {
+    if (panRafRef.current != null) return;
+    panRafRef.current = window.requestAnimationFrame(runPanFrame);
+  }, [runPanFrame]);
+
+  const pinchRafRef = useRef(null);
+  const runPinchFrame = useCallback(() => {
+    pinchRafRef.current = null;
+    const pinch = mobilePinchRef.current;
+    if (!pinch?.active) return;
+    if (!pinch.pointers || pinch.pointers.size < 2) return;
+    const pts = Array.from(pinch.pointers.values());
+    const a = pts[0];
+    const b = pts[1];
+    const dx = Number(b.x - a.x);
+    const dy = Number(b.y - a.y);
+    const dist = Math.hypot(dx, dy) || 1;
+    const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const mid = { x: midClient.x - (pinch.rect?.left ?? 0), y: midClient.y - (pinch.rect?.top ?? 0) };
+
+    const ratio = dist / (pinch.startDist || 1);
+    const nextScale = clampViewScale((pinch.startScale || 1) * ratio);
+    const nextOffset = {
+      x: mid.x - pinch.deskMid.x * nextScale,
+      y: mid.y - pinch.deskMid.y * nextScale,
+    };
+    applyViewVarsNow({ offset: nextOffset, scale: nextScale });
+    if (inputDebugEnabled) {
+      pushInputDebug('raf.pinch', {
+        scale: Number(nextScale.toFixed(4)),
+        off: { x: Math.round(nextOffset.x), y: Math.round(nextOffset.y) },
+        pCount: pinch.pointers.size,
+      });
+    }
+    if (pinch.active) pinchRafRef.current = window.requestAnimationFrame(runPinchFrame);
+  }, [applyViewVarsNow, inputDebugEnabled, pushInputDebug]);
+
+  const ensurePinchRaf = useCallback(() => {
+    if (pinchRafRef.current != null) return;
+    pinchRafRef.current = window.requestAnimationFrame(runPinchFrame);
+  }, [runPinchFrame]);
+
   const persistViewDebounced = useCallback(
     (next, opts = {}) => {
       if (!viewStorageKey) return;
@@ -1078,6 +1215,42 @@ export default function WorkspacePage() {
     persistViewDebouncedRef.current = persistViewDebounced;
   }, [persistViewDebounced]);
 
+  useEffect(() => {
+    // Robust mobile handling: don't rely on React's element-level leave/up ordering.
+    // Some real devices emit pointerleave mid-gesture; we must not treat it as gesture end.
+    const onWindowPointerUpOrCancel = (e) => {
+      const isTouch = e?.pointerType === 'touch';
+      if (!isTouch) return;
+
+      const panActive = Boolean(panStartRef.current);
+      const pinchActive = Boolean(mobilePinchRef.current?.active);
+      const drawActive = Boolean(liveStrokeRef.current);
+      const eraseActive = Boolean(eraseStateRef.current?.active);
+      const boxSelectActive = Boolean(selectStartRef.current);
+      if (!panActive && !pinchActive && !drawActive && !eraseActive && !boxSelectActive) return;
+
+      // Only act if this pointer is part of an active gesture.
+      const pid = typeof e?.pointerId === 'number' ? e.pointerId : null;
+      const panPid = panStartRef.current?.pointerId ?? null;
+      const pinchHas = pid != null ? mobilePinchRef.current?.pointers?.has?.(pid) : false;
+      if (pid != null && panPid != null && pid !== panPid && !pinchHas && !drawActive && !eraseActive) return;
+
+      if (inputDebugEnabled) {
+        pushInputDebug('window.end', { type: e.type, pid, panActive, pinchActive, drawActive, eraseActive, boxSelectActive });
+      }
+
+      // Ensure state is finalized even if canvas didn't receive the up/cancel.
+      stopInteractions(e);
+    };
+
+    window.addEventListener('pointerup', onWindowPointerUpOrCancel, true);
+    window.addEventListener('pointercancel', onWindowPointerUpOrCancel, true);
+    return () => {
+      window.removeEventListener('pointerup', onWindowPointerUpOrCancel, true);
+      window.removeEventListener('pointercancel', onWindowPointerUpOrCancel, true);
+    };
+  }, [inputDebugEnabled, pushInputDebug]);
+
   useLayoutEffect(() => {
     // Initialize CSS vars without causing heavy React re-renders.
     applyViewVarsNow({ offset: viewOffsetRef.current, scale: viewScaleRef.current });
@@ -1085,6 +1258,18 @@ export default function WorkspacePage() {
       if (viewApplyRafRef.current != null) {
         window.cancelAnimationFrame(viewApplyRafRef.current);
         viewApplyRafRef.current = null;
+      }
+      if (panRafRef.current != null) {
+        window.cancelAnimationFrame(panRafRef.current);
+        panRafRef.current = null;
+      }
+      if (pinchRafRef.current != null) {
+        window.cancelAnimationFrame(pinchRafRef.current);
+        pinchRafRef.current = null;
+      }
+      if (inputDebugFlushRafRef.current != null) {
+        window.cancelAnimationFrame(inputDebugFlushRafRef.current);
+        inputDebugFlushRafRef.current = null;
       }
       viewPendingRef.current = null;
       if (viewSaveTimerRef.current) {
@@ -1430,8 +1615,24 @@ export default function WorkspacePage() {
     }
     selectStartRef.current = null;
     panStartRef.current = null;
+    if (panRafRef.current != null) {
+      window.cancelAnimationFrame(panRafRef.current);
+      panRafRef.current = null;
+    }
+    if (pinchRafRef.current != null) {
+      window.cancelAnimationFrame(pinchRafRef.current);
+      pinchRafRef.current = null;
+    }
     setSelectionRect(null);
     setIsPanning(false);
+    if (inputDebugEnabled) {
+      pushInputDebug('stopInteractions', {
+        type: e?.type,
+        pid: typeof e?.pointerId === 'number' ? e.pointerId : null,
+        pType: e?.pointerType,
+        cancelable: Boolean(e?.cancelable),
+      });
+    }
     // Commit the latest view offset to state once (avoid doing this in pointermove).
     setViewOffset(viewOffsetRef.current);
     persistViewDebounced({ offset: viewOffsetRef.current, scale: viewScaleRef.current }, { immediate: true });
@@ -1774,9 +1975,9 @@ export default function WorkspacePage() {
     const onMove = (ev) => {
       if (ev.pointerId !== pointerId) return;
       const deskP = getDeskPointFromClient(ev.clientX, ev.clientY);
-      const hoverId = pickHoverElementId(deskP, 15);
+      const hoverId = pickHoverElementId(deskP, isMobile ? 24 : 15);
       const hoverEl = hoverId ? (elementsRef.current || []).find((x) => x?.id === hoverId) : null;
-      const hoverSide = hoverEl ? pickSideAtPoint(hoverEl, deskP, 18) : null;
+      const hoverSide = hoverEl ? pickSideAtPoint(hoverEl, deskP, isMobile ? 26 : 18) : null;
       setConnectorDraftNext({
         from: initial.from,
         toHover: { elementId: hoverId, side: hoverSide },
@@ -2052,6 +2253,11 @@ export default function WorkspacePage() {
 
     const onMove = (ev) => {
       if (ev.pointerId !== pointerId) return;
+      // If a mobile long-press consumed this pointer, do not start dragging.
+      if (isMobile && mobileSuppressDragPointerIdRef.current === pointerId) {
+        cleanup(onMove, onUp);
+        return;
+      }
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
       if (dx * dx + dy * dy < threshold * threshold) return;
@@ -2062,6 +2268,9 @@ export default function WorkspacePage() {
     const onUp = (ev) => {
       if (ev.pointerId !== pointerId) return;
       cleanup(onMove, onUp);
+      if (isMobile && mobileSuppressDragPointerIdRef.current === pointerId) {
+        mobileSuppressDragPointerIdRef.current = null;
+      }
     };
 
     window.addEventListener('pointermove', onMove, true);
@@ -2069,8 +2278,78 @@ export default function WorkspacePage() {
   };
 
   const onElementPointerDown = (elementId, e) => {
-    // Let "hand" tool pan even when pointer is over an element.
-    if (activeTool === 'hand') return;
+    // Hand tool on mobile should still allow interacting with elements (move/edit/long-press),
+    // while keeping panning for empty canvas.
+    if (activeTool === 'hand') {
+      if (!isMobile || e.pointerType !== 'touch') return;
+
+      // Prevent the canvas from capturing this pointer for pan.
+      e.stopPropagation();
+      if (!isEditableTarget(e.target) && !e.target?.closest?.('button')) {
+        e.preventDefault();
+      }
+
+      setSelectedElementIds(new Set([idKey(elementId)]));
+      setEditingElementId(null);
+
+      // Long-press -> reaction picker (more stable than mobile context menu).
+      if (!isEditableTarget(e.target) && !e.target?.closest?.('button')) {
+        const prev = mobileLongPressRef.current;
+        if (prev?.timerId) window.clearTimeout(prev.timerId);
+        mobileLongPressRef.current = { timerId: null, pointerId: e.pointerId, elementId };
+
+        const pointerId = e.pointerId;
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const MOVE_CANCEL_PX = 10;
+
+        const cleanup = (onMove, onUp) => {
+          window.removeEventListener('pointermove', onMove, true);
+          window.removeEventListener('pointerup', onUp, true);
+          window.removeEventListener('pointercancel', onUp, true);
+        };
+
+        const onMove = (ev) => {
+          if (ev.pointerId !== pointerId) return;
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+          if (dx * dx + dy * dy < MOVE_CANCEL_PX * MOVE_CANCEL_PX) return;
+          const cur = mobileLongPressRef.current;
+          if (cur?.timerId) window.clearTimeout(cur.timerId);
+          mobileLongPressRef.current = { timerId: null, pointerId: null, elementId: null };
+          cleanup(onMove, onUp);
+        };
+
+        const onUp = (ev) => {
+          if (ev.pointerId !== pointerId) return;
+          const cur = mobileLongPressRef.current;
+          if (cur?.timerId) window.clearTimeout(cur.timerId);
+          mobileLongPressRef.current = { timerId: null, pointerId: null, elementId: null };
+          if (mobileSuppressDragPointerIdRef.current === pointerId) {
+            mobileSuppressDragPointerIdRef.current = null;
+          }
+          cleanup(onMove, onUp);
+        };
+
+        const timerId = window.setTimeout(() => {
+          // Mark this pointer as consumed so drag detection won't kick in.
+          mobileSuppressDragPointerIdRef.current = pointerId;
+          suppressNextElementClickRef.current.add(elementId);
+          openReactionPicker(elementId, startX, startY);
+          mobileLongPressRef.current = { timerId: null, pointerId: null, elementId: null };
+          cleanup(onMove, onUp);
+        }, 460);
+
+        mobileLongPressRef.current = { timerId, pointerId, elementId };
+        window.addEventListener('pointermove', onMove, true);
+        window.addEventListener('pointerup', onUp, true);
+        window.addEventListener('pointercancel', onUp, true);
+      }
+
+      // Allow dragging elements in Hand mode on mobile.
+      maybeStartElementDrag(elementId, e);
+      return;
+    }
     // Allow drawing tools to work over elements (don't stop bubbling to the canvas).
     if (activeTool === 'pen' || activeTool === 'eraser') return;
     if (activeTool === 'connector') {
@@ -2108,6 +2387,18 @@ export default function WorkspacePage() {
       suppressNextElementClickRef.current.delete(elementId);
       ev.preventDefault();
       ev.stopPropagation();
+      return;
+    }
+
+    if (isMobile && activeTool === 'hand') {
+      ev.stopPropagation();
+      const el = elementsRef.current?.find?.((x) => sameId(x?.id, elementId)) || null;
+      if (el?.type === 'note' || el?.type === 'text') {
+        if (editingElementId === elementId) return;
+        beginEditing(elementId);
+      } else {
+        setSelectedElementIds(new Set([idKey(elementId)]));
+      }
       return;
     }
 
@@ -2440,6 +2731,7 @@ export default function WorkspacePage() {
       }
       beginEditing(vm.id, snapshotForHistory(vm));
       setLinkDraftUrl('');
+      if (isMobile) setActiveTool('hand');
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to create link:', err?.response?.data || err);
@@ -2781,6 +3073,58 @@ export default function WorkspacePage() {
   const undoEv = useEvent(undo);
   const redoEv = useEvent(redo);
 
+  const createNoteOrTextAtDeskPoint = (type, deskP, { beginEdit = true, anchor = 'topLeft' } = {}) => {
+    const kind = type === 'note' ? 'note' : 'text';
+    const deskId = workspace?.id ?? workspace?.deskId ?? id;
+    if (!deskId) return;
+    const list = elementsRef.current || [];
+    const zIndex = Math.round(list.reduce((m, el) => Math.max(m, el?.zIndex ?? 0), 0) + 1);
+    const width = Math.round(kind === 'note' ? 260 : 240);
+    const height = Math.round(kind === 'note' ? 200 : 80);
+    const ax = Number(deskP?.x ?? 0);
+    const ay = Number(deskP?.y ?? 0);
+    const x = Math.round(anchor === 'center' ? ax - width / 2 : ax);
+    const y = Math.round(anchor === 'center' ? ay - height / 2 : ay);
+
+    setActionError(null);
+    (async () => {
+      try {
+        const created = await createElementOnDesk(deskId, {
+          type: kind,
+          x,
+          y,
+          width,
+          height,
+          zIndex,
+          payload: kind === 'note' ? { text: '' } : { content: '' },
+        });
+        const vm = elementToVm(created);
+        if (vm?.id) createdElementIdsRef.current.add(vm.id);
+        setElements((prev) => upsertById(prev, vm));
+        if (!applyingHistoryRef.current) {
+          const snap = snapshotForHistory(vm);
+          if (deskId && snap) {
+            pushHistory({
+              kind: 'create-element',
+              deskId,
+              elementId: vm.id,
+              snapshot: snap,
+            });
+          }
+        }
+        if (beginEdit && vm?.id) beginEditing(vm.id, snapshotForHistory(vm));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to create element:', err?.response?.data || err);
+        setActionError(err?.response?.data?.error || err?.message || 'Failed to create element');
+        window.setTimeout(() => setActionError(null), 4000);
+      } finally {
+        // Mobile UX: creation is a one-shot action; always return to Hand.
+        if (isMobile) setActiveTool('hand');
+      }
+    })();
+  };
+
   const onCanvasPointerDown = (e) => {
     // For touch/pen pointer events, `button` can be -1; we still want creation to work.
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -2790,22 +3134,47 @@ export default function WorkspacePage() {
     } catch {
       // ignore
     }
+    if (inputDebugEnabled) {
+      let hasCap = null;
+      try {
+        hasCap = typeof target?.hasPointerCapture === 'function' ? target.hasPointerCapture(e.pointerId) : null;
+      } catch {
+        hasCap = null;
+      }
+      pushInputDebug('pointer.down', {
+        type: e.type,
+        pid: e.pointerId,
+        pType: e.pointerType,
+        primary: e.isPrimary,
+        buttons: e.buttons,
+        cancelable: Boolean(e.cancelable),
+        prevented: Boolean(e.defaultPrevented),
+        hasCap,
+        x: Math.round(e.clientX),
+        y: Math.round(e.clientY),
+      });
+    }
     e.preventDefault();
 
     // Mobile pinch-to-zoom: when the 2nd finger touches, switch into pinch mode.
     if (isMobile && e.pointerType === 'touch') {
-      const p0 = getCanvasPoint(e);
       const pinch = mobilePinchRef.current;
-      pinch.pointers.set(e.pointerId, { x: p0.x, y: p0.y });
+      if (pinch.pointers.size === 0) {
+        const node = canvasRef.current;
+        const rect = node?.getBoundingClientRect?.();
+        if (rect) pinch.rect = { left: rect.left, top: rect.top };
+      }
+      pinch.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       if (pinch.pointers.size === 2) {
         const pts = Array.from(pinch.pointers.values());
         const a = pts[0];
         const b = pts[1];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
+        const dx = Number(b.x - a.x);
+        const dy = Number(b.y - a.y);
         const dist = Math.hypot(dx, dy) || 1;
-        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const mid = { x: midClient.x - (pinch.rect?.left ?? 0), y: midClient.y - (pinch.rect?.top ?? 0) };
         const off0 = viewOffsetRef.current;
         const s0 = viewScaleRef.current || 1;
 
@@ -2814,6 +3183,14 @@ export default function WorkspacePage() {
         pinch.startScale = s0;
         pinch.startOffset = { ...off0 };
         pinch.deskMid = { x: (mid.x - off0.x) / s0, y: (mid.y - off0.y) / s0 };
+        ensurePinchRaf();
+        if (inputDebugEnabled) {
+          pushInputDebug('pinch.start', {
+            pCount: pinch.pointers.size,
+            dist: Math.round(dist),
+            startScale: Number((s0 || 1).toFixed(4)),
+          });
+        }
 
         // Cancel ongoing interactions while pinching.
         selectStartRef.current = null;
@@ -2877,64 +3254,34 @@ export default function WorkspacePage() {
     if (activeTool === 'note' || activeTool === 'text') {
       const hitElement = e.target?.closest?.('[data-element-id]');
       if (hitElement) return;
-      // Backend expects integer coordinates (Sequelize INTEGER fields).
-      const x = Math.round(deskP.x);
-      const y = Math.round(deskP.y);
-      const zIndex = Math.round(elements.reduce((m, el) => Math.max(m, el.zIndex ?? 0), 0) + 1);
       const type = activeTool === 'note' ? 'note' : 'text';
-      const width = Math.round(type === 'note' ? 260 : 240);
-      const height = Math.round(type === 'note' ? 200 : 80);
-
-      const deskId = workspace?.id ?? workspace?.deskId ?? id;
-      setActionError(null);
-
-      (async () => {
-        try {
-          const created = await createElementOnDesk(deskId, {
-            type,
-            x,
-            y,
-            width,
-            height,
-            zIndex,
-            payload: type === 'note' ? { text: '' } : { content: '' },
-          });
-          const vm = elementToVm(created);
-          if (vm?.id) createdElementIdsRef.current.add(vm.id);
-          setElements((prev) => upsertById(prev, vm));
-          if (!applyingHistoryRef.current) {
-            const snap = snapshotForHistory(vm);
-            if (deskId && snap) {
-              pushHistory({
-                kind: 'create-element',
-                deskId,
-                elementId: vm.id,
-                snapshot: snap,
-              });
-            }
-          }
-          beginEditing(vm.id, snapshotForHistory(vm));
-          // Mobile UX: element creation is a one-shot action.
-          // After placing a note/text, switch back to Hand so the next tap doesn't create again.
-          if (isMobile) setActiveTool('hand');
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.error('Failed to create element:', err?.response?.data || err);
-          setActionError(err?.response?.data?.error || err?.message || 'Failed to create element');
-          window.setTimeout(() => setActionError(null), 4000);
-        }
-      })();
+      createNoteOrTextAtDeskPoint(type, deskP, { beginEdit: true });
       return;
     }
 
     if (activeTool === 'select') {
+      if (isMobile) {
+        // Mobile: disable box-select entirely.
+        selectStartRef.current = null;
+        setSelectionRect(null);
+        return;
+      }
       // Mobile UX: swipe should pan the board by default (instead of box-select).
       // Pinch-to-zoom already uses 2 fingers; this enables 1-finger navigation in the default tool.
       if (isMobile && e.pointerType === 'touch') {
         selectStartRef.current = null;
         setSelectionRect(null);
-        panStartRef.current = { p, startOffset: { ...viewOffsetRef.current } };
+        panStartRef.current = {
+          pointerId: e.pointerId,
+          startClientX: e.clientX,
+          startClientY: e.clientY,
+          lastClientX: e.clientX,
+          lastClientY: e.clientY,
+          startOffset: { ...viewOffsetRef.current },
+        };
         setIsPanning(true);
+        ensurePanRaf();
+        if (inputDebugEnabled) pushInputDebug('pan.start', { fromTool: 'select', pid: e.pointerId });
         return;
       }
       selectStartRef.current = p;
@@ -2942,35 +3289,65 @@ export default function WorkspacePage() {
     }
 
     if (activeTool === 'hand') {
-      panStartRef.current = { p, startOffset: { ...viewOffsetRef.current } };
+      panStartRef.current = {
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        lastClientX: e.clientX,
+        lastClientY: e.clientY,
+        startOffset: { ...viewOffsetRef.current },
+      };
       setIsPanning(true);
+      ensurePanRaf();
+      if (inputDebugEnabled) pushInputDebug('pan.start', { fromTool: 'hand', pid: e.pointerId });
     }
   };
 
   const onCanvasPointerMove = (e) => {
+    // Real mobile browsers may cancel/throttle pointermove if they decide the gesture is scroll/zoom.
+    // During active canvas gestures, aggressively prevent default (when allowed).
+    if (isMobile && e.pointerType === 'touch' && e.cancelable) {
+      const pinchActive = Boolean(mobilePinchRef.current?.active);
+      const panActive = Boolean(panStartRef.current);
+      const drawActive = Boolean(liveStrokeRef.current);
+      const eraseActive = Boolean(eraseStateRef.current?.active);
+      if (pinchActive || panActive || drawActive || eraseActive) {
+        e.preventDefault();
+        if (inputDebugEnabled) pushInputDebug('move.preventDefault', { pinchActive, panActive, drawActive, eraseActive });
+      }
+    }
+    if (inputDebugEnabled) {
+      const last = inputDebugLastMoveLogRef.current;
+      const prevTs = last.get(e.pointerId) || 0;
+      const now = performance.now();
+      // Sample moves (avoid 1000+ lines/sec).
+      if (now - prevTs > 45) {
+        last.set(e.pointerId, now);
+        let coalesced = null;
+        try {
+          coalesced = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents()?.length ?? 0 : null;
+        } catch {
+          coalesced = null;
+        }
+        pushInputDebug('pointer.move', {
+          pid: e.pointerId,
+          pType: e.pointerType,
+          x: Math.round(e.clientX),
+          y: Math.round(e.clientY),
+          mx: Number(e.movementX ?? 0),
+          my: Number(e.movementY ?? 0),
+          coalesced,
+        });
+      }
+    }
     if (isMobile && e.pointerType === 'touch') {
       const pinch = mobilePinchRef.current;
       if (pinch.pointers.has(e.pointerId)) {
-        const p0 = getCanvasPoint(e);
-        pinch.pointers.set(e.pointerId, { x: p0.x, y: p0.y });
+        pinch.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       }
 
       if (pinch.active && pinch.pointers.size >= 2) {
-        const pts = Array.from(pinch.pointers.values());
-        const a = pts[0];
-        const b = pts[1];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.hypot(dx, dy) || 1;
-        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-
-        const ratio = dist / (pinch.startDist || 1);
-        const nextScale = clampViewScale((pinch.startScale || 1) * ratio);
-        const nextOffset = {
-          x: mid.x - pinch.deskMid.x * nextScale,
-          y: mid.y - pinch.deskMid.y * nextScale,
-        };
-        scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
+        ensurePinchRaf();
         return;
       }
     }
@@ -3071,7 +3448,7 @@ export default function WorkspacePage() {
       const off = viewOffsetRef.current;
       const s = viewScaleRef.current || 1;
       const deskP = { x: (p.x - off.x) / s, y: (p.y - off.y) / s };
-      const hoverId = pickHoverElementId(deskP, 15);
+      const hoverId = pickHoverElementId(deskP, isMobile ? 24 : 15);
       setConnectorHoverElementId(hoverId);
       return;
     }
@@ -3125,11 +3502,12 @@ export default function WorkspacePage() {
     }
 
     if (panStartRef.current) {
-      const p = getCanvasPoint(e);
-      const { p: start, startOffset } = panStartRef.current;
-      const dx = p.x - start.x;
-      const dy = p.y - start.y;
-      scheduleApplyViewVars({ offset: { x: startOffset.x + dx, y: startOffset.y + dy } });
+      const pan = panStartRef.current;
+      if (pan?.pointerId === e.pointerId) {
+        pan.lastClientX = e.clientX;
+        pan.lastClientY = e.clientY;
+        ensurePanRaf();
+      }
     }
   };
 
@@ -3224,12 +3602,26 @@ export default function WorkspacePage() {
   };
 
   const onCanvasPointerUp = (e) => {
+    if (inputDebugEnabled) {
+      pushInputDebug('pointer.up', {
+        type: e.type,
+        pid: e.pointerId,
+        pType: e.pointerType,
+        x: Math.round(e.clientX),
+        y: Math.round(e.clientY),
+      });
+    }
     if (isMobile && e.pointerType === 'touch') {
       const pinch = mobilePinchRef.current;
       if (pinch.pointers.has(e.pointerId)) pinch.pointers.delete(e.pointerId);
 
       if (pinch.active && pinch.pointers.size < 2) {
         pinch.active = false;
+        if (pinchRafRef.current != null) {
+          window.cancelAnimationFrame(pinchRafRef.current);
+          pinchRafRef.current = null;
+        }
+        if (inputDebugEnabled) pushInputDebug('pinch.end', { remaining: pinch.pointers.size });
         const off = viewOffsetRef.current;
         const s = viewScaleRef.current || 1;
         setViewOffset(off);
@@ -3381,7 +3773,7 @@ export default function WorkspacePage() {
         if (activeTool === 'connector') {
           e.preventDefault();
           setConnectorHoverElementId(null);
-          setActiveTool('select');
+          setActiveTool(isMobile ? 'hand' : 'select');
           return;
         }
         if (activeTool === 'pen' || activeTool === 'eraser') {
@@ -3390,7 +3782,8 @@ export default function WorkspacePage() {
           setLiveStroke(null);
           eraseStateRef.current.active = false;
           eraseStateRef.current.erasedIds = new Set();
-          setActiveTool('select');
+          setMobileBrushBarOpen(false);
+          setActiveTool(isMobile ? 'hand' : 'select');
           return;
         }
       }
@@ -3420,7 +3813,7 @@ export default function WorkspacePage() {
       if (matchShortcut(e, shortcuts['tool.select'])) {
         e.preventDefault();
         setActionError(null);
-        setActiveTool('select');
+        setActiveTool(isMobile ? 'hand' : 'select');
         return;
       }
       if (matchShortcut(e, shortcuts['tool.text'])) {
@@ -3836,6 +4229,7 @@ export default function WorkspacePage() {
     const shouldClose = dy > 90;
     if (shouldClose) {
       setMobileToolsOpen(false);
+      setMobileLinkOpen(false);
       setMobileSheetDragY(0);
       return;
     }
@@ -3940,7 +4334,7 @@ export default function WorkspacePage() {
   };
 
   return (
-    <div className={styles.page}>
+    <div className={`${styles.page} ${mobileBrushBarOpen ? styles.pageBrushMode : ''}`}>
       {isMobile ? (
         <header className={`${styles.mobileTopBar} ${searchOpen ? styles.mobileTopBarSearch : ''}`}>
           {!searchOpen ? (
@@ -4301,7 +4695,7 @@ export default function WorkspacePage() {
           </aside>
         ) : (
           <>
-            {!mobileToolsOpen ? (
+            {!mobileToolsOpen && !mobileBrushBarOpen ? (
               <div className={styles.mobileFabWrap}>
                 <button
                   type="button"
@@ -4312,6 +4706,8 @@ export default function WorkspacePage() {
                   onClick={() => {
                     setAiPanelOpen(true);
                     setMobileToolsOpen(false);
+                    setMobileBrushBarOpen(false);
+                    setMobileLinkOpen(false);
                     setMobileSheetDragY(0);
                     setMobileSheetDragging(false);
                     setCommentsPanel(null);
@@ -4325,10 +4721,79 @@ export default function WorkspacePage() {
                   className={styles.mobileFabBtn}
                   aria-label="Open tools"
                   aria-expanded={mobileToolsOpen}
-                  onClick={() => setMobileToolsOpen(true)}
+                  onClick={() => {
+                    setMobileBrushBarOpen(false);
+                    setMobileLinkOpen(false);
+                    setMobileToolsOpen(true);
+                  }}
                 >
                   <Plus size={22} />
                 </button>
+              </div>
+            ) : null}
+
+            {mobileBrushBarOpen ? (
+              <div className={styles.mobileBrushBar} role="toolbar" aria-label="Brush tools">
+                <button
+                  type="button"
+                  className={styles.mobileBrushExit}
+                  aria-label="Exit brush"
+                  onClick={() => {
+                    liveStrokeRef.current = null;
+                    setLiveStroke(null);
+                    eraseStateRef.current.active = false;
+                    eraseStateRef.current.erasedIds = new Set();
+                    setMobileBrushBarOpen(false);
+                    setActiveTool('hand');
+                  }}
+                >
+                  <X size={20} />
+                </button>
+
+                <div className={styles.mobileBrushModes} aria-label="Brush mode">
+                  <button
+                    type="button"
+                    className={`${styles.mobileBrushModeBtn} ${activeTool === 'pen' ? styles.mobileBrushModeBtnActive : ''}`}
+                    aria-label="Pen"
+                    aria-pressed={activeTool === 'pen'}
+                    onClick={() => setActiveTool('pen')}
+                  >
+                    <PenLine size={20} />
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.mobileBrushModeBtn} ${activeTool === 'eraser' ? styles.mobileBrushModeBtnActive : ''}`}
+                    aria-label="Eraser"
+                    aria-pressed={activeTool === 'eraser'}
+                    onClick={() => setActiveTool('eraser')}
+                  >
+                    <Eraser size={20} />
+                  </button>
+                </div>
+
+                <div className={styles.mobileBrushSwatches} aria-label="Brush color">
+                  {BRUSH_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      className={`${styles.mobileBrushSwatch} ${brushColor === c ? styles.mobileBrushSwatchActive : ''}`}
+                      style={{ background: c }}
+                      onClick={() => setBrushColor(c)}
+                      aria-label={`Color ${c}`}
+                      aria-pressed={brushColor === c}
+                    />
+                  ))}
+                </div>
+
+                <input
+                  className={styles.mobileBrushWidth}
+                  type="range"
+                  min={1}
+                  max={24}
+                  value={brushWidth}
+                  onChange={(ev) => setBrushWidth(Number(ev.target.value))}
+                  aria-label="Brush width"
+                />
               </div>
             ) : null}
 
@@ -4338,6 +4803,7 @@ export default function WorkspacePage() {
                 role="presentation"
                 onPointerDown={() => {
                   setMobileToolsOpen(false);
+                  setMobileLinkOpen(false);
                   setMobileSheetDragY(0);
                   setMobileSheetDragging(false);
                 }}
@@ -4360,24 +4826,43 @@ export default function WorkspacePage() {
                   />
 
                   <div className={styles.mobileToolGrid}>
-                    {TOOLS.filter(({ id: toolId }) => toolId !== 'hand').map(({ id: toolId, label, Icon }) => {
-                      const isActive = toolId !== 'attach' && activeTool === toolId;
+                    {TOOLS.filter(({ id: toolId }) => toolId !== 'hand' && toolId !== 'select').map(({ id: toolId, label, Icon }) => {
+                      const disabled = toolId === 'connector';
                       return (
                         <button
                           key={toolId}
                           type="button"
-                          className={`${styles.mobileToolItem} ${isActive ? styles.mobileToolItemActive : ''}`}
+                          className={`${styles.mobileToolItem} ${disabled ? styles.mobileToolItemDisabled : ''}`}
                           aria-label={label}
-                          aria-pressed={isActive}
+                          disabled={disabled}
                           onClick={() => {
                             if (toolId === 'attach') {
                               openAttachDialog();
                               setMobileToolsOpen(false);
+                              setMobileLinkOpen(false);
                               return;
                             }
-                            setActionError(null);
-                            setActiveTool(toolId);
-                            if (toolId !== 'pen' && toolId !== 'link') setMobileToolsOpen(false);
+                            if (toolId === 'note' || toolId === 'text') {
+                              const rect = canvasRef.current?.getBoundingClientRect?.();
+                              if (!rect) return;
+                              const centerDesk = getDeskPointFromClient(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                              createNoteOrTextAtDeskPoint(toolId, centerDesk, { beginEdit: true, anchor: 'center' });
+                              setMobileToolsOpen(false);
+                              setMobileLinkOpen(false);
+                              return;
+                            }
+                            if (toolId === 'pen' || toolId === 'eraser') {
+                              setActionError(null);
+                              setActiveTool(toolId);
+                              setMobileBrushBarOpen(true);
+                              setMobileToolsOpen(false);
+                              setMobileLinkOpen(false);
+                              return;
+                            }
+                            if (toolId === 'link') {
+                              setMobileLinkOpen(true);
+                              return;
+                            }
                           }}
                         >
                           <span className={styles.mobileToolIcon} aria-hidden="true">
@@ -4387,12 +4872,13 @@ export default function WorkspacePage() {
                               <Icon size={20} />
                             )}
                           </span>
+                          <span className={styles.mobileToolLabel}>{label}</span>
                         </button>
                       );
                     })}
                   </div>
 
-                  {activeTool === 'link' ? (
+                  {mobileLinkOpen ? (
                     <div className={styles.mobileToolSection}>
                       <div className={styles.mobileToolSectionTitle}>Link</div>
                       <div className={styles.mobileLinkRow}>
@@ -4405,9 +4891,7 @@ export default function WorkspacePage() {
                           onKeyDown={(ev) => {
                             if (ev.key === 'Escape') {
                               ev.preventDefault();
-                              setLinkDraftUrl('');
-                              setActiveTool('select');
-                              setMobileToolsOpen(false);
+                              setMobileLinkOpen(false);
                               return;
                             }
                             if (ev.key === 'Enter' && !ev.shiftKey) {
@@ -4416,6 +4900,7 @@ export default function WorkspacePage() {
                               if (!ok) return;
                               submitLink();
                               setMobileToolsOpen(false);
+                              setMobileLinkOpen(false);
                             }
                           }}
                         />
@@ -4428,45 +4913,11 @@ export default function WorkspacePage() {
                             if (!ok) return;
                             submitLink();
                             setMobileToolsOpen(false);
+                            setMobileLinkOpen(false);
                           }}
                         >
                           Add
                         </button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {activeTool === 'pen' ? (
-                    <div className={styles.mobileToolSection}>
-                      <div className={styles.mobileToolSectionTitle}>Brush</div>
-                      <div className={styles.toolPopoverRow}>
-                        <div className={styles.swatches} aria-label="Brush color">
-                          {BRUSH_COLORS.map((c) => (
-                            <button
-                              key={c}
-                              type="button"
-                              className={`${styles.swatch} ${brushColor === c ? styles.swatchActive : ''}`}
-                              style={{ background: c }}
-                              onClick={() => setBrushColor(c)}
-                              aria-label={`Color ${c}`}
-                              aria-pressed={brushColor === c}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                      <div className={styles.toolPopoverRow}>
-                        <div className={styles.widthRow}>
-                          <input
-                            className={styles.widthSlider}
-                            type="range"
-                            min={1}
-                            max={24}
-                            value={brushWidth}
-                            onChange={(ev) => setBrushWidth(Number(ev.target.value))}
-                            aria-label="Brush width"
-                          />
-                          <div className={styles.widthLabel}>{brushWidth}px</div>
-                        </div>
                       </div>
                     </div>
                   ) : null}
@@ -4491,13 +4942,109 @@ export default function WorkspacePage() {
           onPointerMove={onCanvasPointerMove}
           onPointerUp={onCanvasPointerUp}
           onPointerCancel={onCanvasPointerUp}
-          onPointerLeave={onCanvasPointerUp}
+          // IMPORTANT: never end touch gestures on pointerleave (real devices emit it mid-gesture).
+          onPointerLeave={isMobile ? undefined : onCanvasPointerUp}
           onWheel={onCanvasWheel}
           style={{
             '--canvas-cursor': effectiveCursor,
             '--note-bg': `url(${note2Img})`,
           }}
         >
+          {inputDebugEnabled ? (
+            <div
+              style={{
+                position: 'absolute',
+                left: 8,
+                top: 8,
+                zIndex: 9999,
+                width: 'min(520px, calc(100vw - 16px))',
+                maxHeight: 'min(55vh, 520px)',
+                overflow: 'hidden',
+                borderRadius: 12,
+                border: '1px solid rgba(15, 23, 42, 0.18)',
+                background: 'rgba(255, 255, 255, 0.94)',
+                backdropFilter: 'blur(10px)',
+                boxShadow: '0 10px 30px rgba(15, 23, 42, 0.18)',
+                pointerEvents: 'auto',
+              }}
+              onPointerDown={(ev) => ev.stopPropagation()}
+              onPointerMove={(ev) => ev.stopPropagation()}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '10px 10px 8px 10px',
+                  borderBottom: '1px solid rgba(15, 23, 42, 0.10)',
+                  fontSize: 12,
+                  fontWeight: 800,
+                  color: 'rgba(15, 23, 42, 0.82)',
+                }}
+              >
+                <div>Input debug (disable: remove `?inputDebug=1`)</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    style={{
+                      height: 28,
+                      padding: '0 10px',
+                      borderRadius: 10,
+                      border: '1px solid rgba(15, 23, 42, 0.14)',
+                      background: 'rgba(255, 255, 255, 0.9)',
+                      fontSize: 12,
+                      fontWeight: 750,
+                      cursor: 'pointer',
+                    }}
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(inputDebugText || '');
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      height: 28,
+                      padding: '0 10px',
+                      borderRadius: 10,
+                      border: '1px solid rgba(15, 23, 42, 0.14)',
+                      background: 'rgba(255, 255, 255, 0.9)',
+                      fontSize: 12,
+                      fontWeight: 750,
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      inputDebugLinesRef.current = [];
+                      setInputDebugText('');
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <pre
+                style={{
+                  margin: 0,
+                  padding: 10,
+                  maxHeight: 'calc(min(55vh, 520px) - 42px)',
+                  overflow: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 11,
+                  lineHeight: 1.25,
+                  color: 'rgba(15, 23, 42, 0.86)',
+                }}
+              >
+                {inputDebugText || '[no events yet]'}
+              </pre>
+            </div>
+          ) : null}
           <div className={styles.grid} />
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}
           <div className={styles.boardContent}>
@@ -4621,6 +5168,7 @@ export default function WorkspacePage() {
                   <NoteTextElement
                     key={el.id}
                     el={el}
+                    isMobile={isMobile}
                     isSelected={isSelected}
                     isEditing={isEditing}
                     dragX={dragPos?.x ?? null}
@@ -4692,6 +5240,7 @@ export default function WorkspacePage() {
                   onPointerDown={(ev) => onElementPointerDown(el.id, ev)}
                   onClick={(ev) => onElementClick(el.id, ev)}
                   onContextMenu={(ev) => {
+                    if (isMobile) return;
                     if (activeTool === 'pen' || activeTool === 'eraser') return;
                     ev.preventDefault();
                     ev.stopPropagation();

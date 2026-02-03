@@ -39,6 +39,12 @@ function daysUntil(isoStartsAt, now = new Date()) {
   return Math.round(diff);
 }
 
+function msUntil(isoStartsAt, now = new Date()) {
+  const b = new Date(isoStartsAt);
+  if (Number.isNaN(b.getTime())) return null;
+  return b.getTime() - now.getTime();
+}
+
 function eventKey(ev) {
   const id = ev?.id ?? ev?.eventId;
   if (id !== undefined && id !== null && String(id)) return `id:${String(id)}`;
@@ -66,23 +72,49 @@ function buildTitle(ev) {
   return title || 'Событие';
 }
 
+function typeLabel(type) {
+  const t = String(type || '').toUpperCase();
+  const map = {
+    CT: 'ЦТ',
+    COLLOQUIUM: 'Коллоквиум',
+    EXAM: 'Экзамен',
+    DEADLINE: 'ДЗ',
+    HOMEWORK: 'ДЗ',
+    OTHER: 'Другое',
+  };
+  return map[t] || t || 'Событие';
+}
+
 function buildBody(ev, days) {
   const dt = new Date(ev?.startsAt);
   const when = Number.isNaN(dt.getTime())
     ? ''
-    : new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit' }).format(dt);
+    : new Intl.DateTimeFormat('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        ...(ev?.allDay ? {} : { hour: '2-digit', minute: '2-digit' }),
+      }).format(dt);
   const subject = String(ev?.subject || '').trim();
+  const t = typeLabel(ev?.type);
   const parts = [];
   parts.push(`Напоминание: «${buildTitle(ev)}» ${reminderLabel(days)}.`);
+  if (t) parts.push(`Тип: ${t}.`);
   if (subject) parts.push(`Предмет: ${subject}.`);
   if (when) parts.push(`Дата: ${when}.`);
   return parts.join('\n');
 }
 
-function tryBrowserNotification(title, body) {
+async function trySystemNotification(title, body) {
   try {
     if (!('Notification' in window)) return;
     if (window.Notification.permission !== 'granted') return;
+    // Prefer ServiceWorker notification on mobile PWAs (more "system-like").
+    const reg = await navigator?.serviceWorker?.getRegistration?.();
+    if (reg?.showNotification) {
+      await reg.showNotification(title, { body });
+      return;
+    }
+    // Fallback: page-level Notification.
     // eslint-disable-next-line no-new
     new window.Notification(title, { body });
   } catch {
@@ -117,16 +149,52 @@ export function useEventReminderNotifications() {
         }
 
         const sent = loadSent();
-        const thresholds = [7, 3, 1];
+        const dayThresholds = [7, 3, 1]; // requirement: 7 days, 3 days, 24 hours (for all-day we treat as 1 day)
+        const thresholdsMs = [
+          { kind: 'D7', ms: 7 * 24 * 60 * 60 * 1000 },
+          { kind: 'D3', ms: 3 * 24 * 60 * 60 * 1000 },
+          { kind: 'H24', ms: 24 * 60 * 60 * 1000 },
+        ];
+        const jitterMs = 60 * 60 * 1000 + 15_000; // hourly tick + buffer
 
         for (const ev of rows.filter(Boolean)) {
-          const d = daysUntil(ev?.startsAt, now);
-          if (d === null) continue;
-          if (!thresholds.includes(d)) continue;
-          if (d < 0) continue;
-
           const key = eventKey(ev);
           const prev = sent[key] && typeof sent[key] === 'object' ? sent[key] : {};
+
+          // Timed events: trigger around exact thresholds (7d/3d/24h).
+          if (ev?.allDay === false) {
+            const diff = msUntil(ev?.startsAt, now);
+            if (diff == null || diff < 0) continue;
+            for (const th of thresholdsMs) {
+              if (!(diff <= th.ms && diff > th.ms - jitterMs)) continue;
+              if (prev[String(th.kind)]) continue;
+              const days = th.kind === 'H24' ? 1 : th.kind === 'D3' ? 3 : 7;
+              const body = buildBody(ev, days);
+              toast({
+                kind: 'info',
+                title: 'Ближайшее событие',
+                message: body,
+                durationMs: 7000,
+              });
+              await trySystemNotification('Ближайшее событие', body);
+              pushNotificationFeed({
+                id: `reminder:${key}:${th.kind}`,
+                kind: 'calendar',
+                title: 'Напоминание о событии',
+                message: body,
+                createdAt: Date.now(),
+                meta: { eventKey: key, daysBefore: days, startsAt: ev?.startsAt, eventTitle: buildTitle(ev) },
+              });
+              sent[key] = { ...prev, [String(th.kind)]: true, last: Date.now() };
+              break;
+            }
+            continue;
+          }
+
+          // All-day events: trigger by day difference.
+          const d = daysUntil(ev?.startsAt, now);
+          if (d === null || d < 0) continue;
+          if (!dayThresholds.includes(d)) continue;
           if (prev[String(d)]) continue;
 
           const body = buildBody(ev, d);
@@ -136,7 +204,7 @@ export function useEventReminderNotifications() {
             message: body,
             durationMs: 7000,
           });
-          tryBrowserNotification('Ближайшее событие', body);
+          await trySystemNotification('Ближайшее событие', body);
           pushNotificationFeed({
             id: `reminder:${key}:${d}`,
             kind: 'calendar',

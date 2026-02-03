@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { CalendarEventInvite, CalendarEvent, CalendarNotificationLog, Group } = require('../models/models');
+const { CalendarEventInvite, CalendarEvent, CalendarMyEvent, CalendarNotificationLog, Group } = require('../models/models');
 const { emitToUser } = require('../realtime/bus');
 const { createNotificationForUser } = require('./notificationService');
 
@@ -89,6 +89,52 @@ async function tick({ intervalMs }) {
           startsAt: ev.startsAt,
           allDay: ev.allDay,
           group: ev.group ? { groupId: ev.group.groupId, name: ev.group.name } : undefined,
+        },
+      });
+    }
+
+    // Personal (my) events: best-effort notifications too (uses Notification.dedupeKey instead of CalendarNotificationLog).
+    // Note: This does not depend on group invites, so it works for user's own events.
+    const myEvents = await CalendarMyEvent.findAll({
+      where: { startsAt: { [Op.gt]: now, [Op.gte]: from, [Op.lte]: to } },
+      order: [['startsAt', 'ASC'], ['id', 'ASC']],
+    });
+
+    for (const ev of myEvents) {
+      const e = ev?.toJSON ? ev.toJSON() : ev;
+      if (!e?.id || !e?.userId) continue;
+      const when =
+        th.kind === 'D7' ? 'in 7 days' : th.kind === 'D3' ? 'in 3 days' : th.kind === 'H24' ? 'in 24 hours' : th.kind;
+      const dedupeKey = `cal:my:${e.id}:${e.userId}:${th.kind}`;
+      await createNotificationForUser({
+        userId: e.userId,
+        type: 'CALENDAR_EVENT',
+        title: `Upcoming event (${when})`,
+        body: String(e.title || 'Event'),
+        dedupeKey,
+        payload: {
+          kind: th.kind,
+          event: {
+            myEventId: e.id,
+            type: e.type,
+            title: e.title,
+            subject: e.subject,
+            startsAt: e.startsAt,
+            allDay: e.allDay,
+          },
+        },
+      });
+
+      emitToUser(e.userId, 'calendar:notification', {
+        kind: th.kind,
+        userId: e.userId,
+        event: {
+          myEventId: e.id,
+          type: e.type,
+          title: e.title,
+          subject: e.subject,
+          startsAt: e.startsAt,
+          allDay: e.allDay,
         },
       });
     }

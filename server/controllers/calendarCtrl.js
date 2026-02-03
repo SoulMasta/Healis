@@ -61,6 +61,9 @@ function normalizeEventInvite(row) {
           title: ev.title,
           subject: ev.subject,
           description: ev.description,
+          // UI-facing alias (kept explicit to avoid breaking older clients relying on `description`).
+          comment: ev.description,
+          materials: Array.isArray(ev.materials) ? ev.materials : [],
           startsAt: ev.startsAt,
           endsAt: ev.endsAt,
           allDay: ev.allDay,
@@ -102,10 +105,26 @@ function normalizeMyEvent(row) {
     title: ev?.title,
     subject: ev?.subject,
     description: ev?.description,
+    comment: ev?.description,
+    materials: Array.isArray(ev?.materials) ? ev.materials : [],
     startsAt: ev?.startsAt,
     endsAt: ev?.endsAt,
     allDay: ev?.allDay,
   };
+}
+
+function normalizeMaterials(raw) {
+  if (!raw) return [];
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const it of raw) {
+    if (!it || typeof it !== 'object') continue;
+    const url = String(it.url || '').trim();
+    if (!url) continue;
+    const title = it.title != null ? String(it.title).trim() : '';
+    out.push({ url, ...(title ? { title } : {}) });
+  }
+  return out;
 }
 
 class CalendarController {
@@ -247,7 +266,7 @@ class CalendarController {
       }
 
       const type = String(req.body?.type || 'CT').toUpperCase();
-      const allowedTypes = new Set(['CT', 'COLLOQUIUM', 'EXAM', 'DEADLINE']);
+      const allowedTypes = new Set(['CT', 'COLLOQUIUM', 'EXAM', 'DEADLINE', 'HOMEWORK', 'OTHER']);
       if (!allowedTypes.has(type)) {
         await t.rollback();
         return res.status(400).json({ error: `type must be one of: ${Array.from(allowedTypes).join(', ')}` });
@@ -263,7 +282,18 @@ class CalendarController {
       const allDay = req.body?.allDay === undefined ? true : Boolean(req.body?.allDay);
 
       const subject = req.body?.subject != null ? String(req.body.subject).trim() : null;
-      const description = req.body?.description != null ? String(req.body.description).trim() : null;
+      const description =
+        req.body?.comment != null
+          ? String(req.body.comment).trim()
+          : req.body?.description != null
+            ? String(req.body.description).trim()
+            : null;
+
+      const materials = normalizeMaterials(req.body?.materials);
+      if (materials === null) {
+        await t.rollback();
+        return res.status(400).json({ error: 'materials must be an array of { url, title? }' });
+      }
 
       const ev = await CalendarMyEvent.create(
         {
@@ -272,6 +302,7 @@ class CalendarController {
           title,
           subject: subject || null,
           description: description || null,
+          materials,
           startsAt,
           endsAt: endsAt || null,
           allDay,
@@ -423,7 +454,7 @@ class CalendarController {
       }
 
       const type = String(req.body?.type || 'CT').toUpperCase();
-      const allowedTypes = new Set(['CT', 'COLLOQUIUM', 'EXAM', 'DEADLINE']);
+      const allowedTypes = new Set(['CT', 'COLLOQUIUM', 'EXAM', 'DEADLINE', 'HOMEWORK', 'OTHER']);
       if (!allowedTypes.has(type)) {
         await t.rollback();
         return res.status(400).json({ error: `type must be one of: ${Array.from(allowedTypes).join(', ')}` });
@@ -439,7 +470,18 @@ class CalendarController {
       const allDay = req.body?.allDay === undefined ? true : Boolean(req.body?.allDay);
 
       const subject = req.body?.subject != null ? String(req.body.subject).trim() : null;
-      const description = req.body?.description != null ? String(req.body.description).trim() : null;
+      const description =
+        req.body?.comment != null
+          ? String(req.body.comment).trim()
+          : req.body?.description != null
+            ? String(req.body.description).trim()
+            : null;
+
+      const materials = normalizeMaterials(req.body?.materials);
+      if (materials === null) {
+        await t.rollback();
+        return res.status(400).json({ error: 'materials must be an array of { url, title? }' });
+      }
 
       const event = await CalendarEvent.create(
         {
@@ -449,6 +491,7 @@ class CalendarController {
           title,
           subject: subject || null,
           description: description || null,
+          materials,
           startsAt,
           endsAt: endsAt || null,
           allDay,

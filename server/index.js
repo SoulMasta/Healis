@@ -219,6 +219,19 @@ async function start() {
       // ignore
     }
 
+    // Schema back-compat: calendar event attachments/materials.
+    // Keep safe even if DB_SYNC_ALTER is off.
+    try {
+      await sequelize.query(
+        'ALTER TABLE "calendar_events" ADD COLUMN IF NOT EXISTS "materials" JSONB NOT NULL DEFAULT \'[]\'::jsonb;'
+      );
+      await sequelize.query(
+        'ALTER TABLE "calendar_my_events" ADD COLUMN IF NOT EXISTS "materials" JSONB NOT NULL DEFAULT \'[]\'::jsonb;'
+      );
+    } catch {
+      // ignore
+    }
+
     // In early development it's convenient to auto-align schema with models.
     // Set DB_SYNC_ALTER=true to enable non-destructive alters (still be careful in production).
     await sequelize.sync({ alter: process.env.DB_SYNC_ALTER === 'true' });

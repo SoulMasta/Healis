@@ -353,6 +353,19 @@
   outline: none;
 }
 
+.textarea {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 10px;
+  background: var(--panel);
+  color: rgba(15, 23, 42, 0.88);
+  font-weight: 650;
+  outline: none;
+  min-height: 74px;
+  resize: vertical;
+  line-height: 1.35;
+}
+
 .input[type="date"] {
   padding-right: 8px;
 }
@@ -631,6 +644,84 @@
   .starostaLayout {
     grid-template-columns: 1fr;
   }
+}
+
+/* --- Event details modal --- */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 50;
+}
+
+.modal {
+  width: min(720px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+}
+
+.modalTitle {
+  font-weight: 950;
+  letter-spacing: -0.25px;
+  font-size: 16px;
+}
+
+.modalMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.modalText {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.modalBlock {
+  margin-top: 12px;
+}
+
+.modalTextBlock {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(15, 23, 42, 0.86);
+  white-space: pre-wrap;
+}
+
+.modalList {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modalLink {
+  font-size: 13px;
+  color: rgba(43, 108, 255, 1);
+  font-weight: 750;
+  text-decoration: none;
+  word-break: break-word;
+}
+
+.modalLink:hover {
+  text-decoration: underline;
+}
+
+.modalActions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 

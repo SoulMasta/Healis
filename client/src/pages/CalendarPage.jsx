@@ -84,7 +84,9 @@ function typeLabel(type) {
     CT: 'ЦТ',
     COLLOQUIUM: 'Коллоквиум',
     EXAM: 'Экзамен',
-    DEADLINE: 'Дедлайн',
+    DEADLINE: 'ДЗ',
+    HOMEWORK: 'ДЗ',
+    OTHER: 'Другое',
   };
   return map[t] || t || 'Событие';
 }
@@ -121,12 +123,35 @@ function tagColor(tag) {
     ЦТ: '#3b82f6',
     Коллоквиум: '#a855f7',
     Экзамен: '#f59e0b',
-    Дедлайн: '#111827',
+    ДЗ: '#111827',
+    Другое: '#64748b',
     Семестр: '#0ea5e9',
     Сессия: '#ef4444',
     Каникулы: '#22c55e',
   };
   return colors[tag] || '#64748b';
+}
+
+function parseMaterialsText(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  const lines = raw
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const out = [];
+  for (const line of lines) {
+    // Supported formats:
+    // - URL
+    // - Title | URL
+    const parts = line.split('|').map((p) => p.trim()).filter(Boolean);
+    if (!parts.length) continue;
+    const url = parts.length === 1 ? parts[0] : parts[parts.length - 1];
+    const title = parts.length >= 2 ? parts.slice(0, -1).join(' | ') : '';
+    if (!url) continue;
+    out.push(title ? { title, url } : { url });
+  }
+  return out;
 }
 
 export default function CalendarPage() {
@@ -137,6 +162,8 @@ export default function CalendarPage() {
   const [cursor, setCursor] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const cells = useMemo(() => buildMonthGrid(cursor), [cursor]);
   const [selectedDayKey, setSelectedDayKey] = useState(() => isoDateKey(new Date()));
+  const [view, setView] = useState('month'); // 'month' | 'day'
+  const [details, setDetails] = useState(null); // { kind: 'MY'|'GROUP'|'PERIOD', event }
 
   const [groups, setGroups] = useState([]);
   const [loadingGroups, setLoadingGroups] = useState(false);
@@ -164,6 +191,10 @@ export default function CalendarPage() {
   const [gType, setGType] = useState('CT');
   const [gSubject, setGSubject] = useState('');
   const [gDate, setGDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [gAllDay, setGAllDay] = useState(true);
+  const [gTime, setGTime] = useState('09:00');
+  const [gComment, setGComment] = useState('');
+  const [gMaterialsText, setGMaterialsText] = useState('');
 
   const [pType, setPType] = useState('SEMESTER');
   const [pTitle, setPTitle] = useState('');
@@ -174,6 +205,10 @@ export default function CalendarPage() {
   const [myType, setMyType] = useState('CT');
   const [mySubject, setMySubject] = useState('');
   const [myDate, setMyDate] = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
+  const [myAllDay, setMyAllDay] = useState(true);
+  const [myTime, setMyTime] = useState('09:00');
+  const [myComment, setMyComment] = useState('');
+  const [myMaterialsText, setMyMaterialsText] = useState('');
   const [creatingMyEvent, setCreatingMyEvent] = useState(false);
 
   useEffect(() => {
@@ -273,6 +308,17 @@ export default function CalendarPage() {
     setCursor((d) => new Date(d.getFullYear(), d.getMonth() + dir, 1));
   };
 
+  const shiftSelectedDay = (deltaDays) => {
+    const cur = selectedDayKey ? new Date(selectedDayKey) : new Date();
+    if (Number.isNaN(cur.getTime())) return;
+    const next = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + Number(deltaDays || 0));
+    const key = isoDateKey(next);
+    if (!key) return;
+    setSelectedDayKey(key);
+    // Keep month cursor aligned with the day we are viewing.
+    setCursor(new Date(next.getFullYear(), next.getMonth(), 1));
+  };
+
   const confirmedEventsByDay = useMemo(() => {
     const map = new Map();
     const monthStart = startOfMonth(cursor);
@@ -330,6 +376,14 @@ export default function CalendarPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cursor]);
 
+  // Autocomplete: prefill create forms with currently selected day.
+  useEffect(() => {
+    if (!selectedDayKey) return;
+    if (!myTitle.trim()) setMyDate(selectedDayKey);
+    if (!gTitle.trim()) setGDate(selectedDayKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDayKey]);
+
   const selectedDayItems = useMemo(() => {
     const key = selectedDayKey;
     if (!key) return { events: [], periods: [] };
@@ -384,16 +438,21 @@ export default function CalendarPage() {
 
     setCreatingMyEvent(true);
     try {
-      const startsAt = new Date(`${myDate}T00:00`).toISOString();
+      const timePart = myAllDay ? '00:00' : myTime || '09:00';
+      const startsAt = new Date(`${myDate}T${timePart}`).toISOString();
       await createMyCalendarEvent({
         title: myTitle.trim(),
         type: myType,
         subject: mySubject.trim() || null,
+        comment: myComment.trim() || null,
+        materials: parseMaterialsText(myMaterialsText),
         startsAt,
-        allDay: true,
+        allDay: Boolean(myAllDay),
       });
       setMyTitle('');
       setMySubject('');
+      setMyComment('');
+      setMyMaterialsText('');
       await loadCalendar();
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -411,16 +470,21 @@ export default function CalendarPage() {
     if (!gTitle.trim()) return;
     setCreatingGroupEvent(true);
     try {
-      const startsAt = new Date(`${gDate}T00:00`).toISOString();
+      const timePart = gAllDay ? '00:00' : gTime || '09:00';
+      const startsAt = new Date(`${gDate}T${timePart}`).toISOString();
       await createGroupCalendarEvent(myGroupId, {
         title: gTitle.trim(),
         type: gType,
         subject: gSubject.trim() || null,
+        comment: gComment.trim() || null,
+        materials: parseMaterialsText(gMaterialsText),
         startsAt,
-        allDay: true,
+        allDay: Boolean(gAllDay),
       });
       setGTitle('');
       setGSubject('');
+      setGComment('');
+      setGMaterialsText('');
       await loadGroupData();
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -533,9 +597,22 @@ export default function CalendarPage() {
               Мой календарь
             </button>
           )}
-          <button type="button" className={`${styles.modeBtn} ${styles.modeBtnActive}`}>
-            Month
-          </button>
+          <div className={styles.modeTabs} aria-label="Режим отображения">
+            <button
+              type="button"
+              className={`${styles.modeBtn} ${view === 'month' ? styles.modeBtnActive : ''}`}
+              onClick={() => setView('month')}
+            >
+              Месяц
+            </button>
+            <button
+              type="button"
+              className={`${styles.modeBtn} ${view === 'day' ? styles.modeBtnActive : ''}`}
+              onClick={() => setView('day')}
+            >
+              День
+            </button>
+          </div>
         </div>
       </header>
 
@@ -633,9 +710,10 @@ export default function CalendarPage() {
                         Тип
                         <select className={styles.select} value={gType} onChange={(e) => setGType(e.target.value)}>
                           <option value="CT">ЦТ</option>
-                          <option value="COLLOQUIUM">Коллоквиум</option>
                           <option value="EXAM">Экзамен</option>
-                          <option value="DEADLINE">Дедлайн</option>
+                          <option value="COLLOQUIUM">Коллоквиум</option>
+                          <option value="HOMEWORK">ДЗ</option>
+                          <option value="OTHER">Другое</option>
                         </select>
                       </label>
                       <label className={styles.formLabel}>
@@ -643,9 +721,39 @@ export default function CalendarPage() {
                         <input className={styles.input} type="date" value={gDate} onChange={(e) => setGDate(e.target.value)} required />
                       </label>
                     </div>
+                    <div className={styles.row2}>
+                      <label className={styles.formLabel}>
+                        Режим
+                        <select
+                          className={styles.select}
+                          value={gAllDay ? 'allDay' : 'time'}
+                          onChange={(e) => setGAllDay(e.target.value === 'allDay')}
+                        >
+                          <option value="allDay">Весь день</option>
+                          <option value="time">Указать время</option>
+                        </select>
+                      </label>
+                      <label className={styles.formLabel}>
+                        Время
+                        <input className={styles.input} type="time" value={gTime} onChange={(e) => setGTime(e.target.value)} disabled={gAllDay} />
+                      </label>
+                    </div>
                     <label className={styles.formLabel}>
                       Предмет (опц.)
                       <input className={styles.input} value={gSubject} onChange={(e) => setGSubject(e.target.value)} />
+                    </label>
+                    <label className={styles.formLabel}>
+                      Комментарий (опц.)
+                      <textarea className={styles.textarea} value={gComment} onChange={(e) => setGComment(e.target.value)} />
+                    </label>
+                    <label className={styles.formLabel}>
+                      Материалы (опц.)
+                      <textarea
+                        className={styles.textarea}
+                        value={gMaterialsText}
+                        onChange={(e) => setGMaterialsText(e.target.value)}
+                        placeholder={'Ссылки, по одной на строку\nили: Название | https://...'}
+                      />
                     </label>
                     <button type="submit" className={styles.primaryBtn} disabled={creatingGroupEvent || !gTitle.trim()}>
                       {creatingGroupEvent ? <Loader2 size={16} className={styles.spinner} /> : <Plus size={16} />}
@@ -656,6 +764,7 @@ export default function CalendarPage() {
                   <div className={styles.list}>
                     {groupEvents.map((ev) => {
                       const t = typeLabel(ev.type);
+                      const time = ev?.allDay ? '' : timeLabel(ev?.startsAt);
                       const busy = deletingGroupId === `e:${ev.eventId}`;
                       return (
                         <div key={ev.eventId} className={styles.listItem}>
@@ -664,6 +773,7 @@ export default function CalendarPage() {
                               <span className={styles.tag} style={{ background: tagColor(t) }}>{t}</span>
                               <span className={styles.tag} style={{ background: '#64748b' }}>
                                 {new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(new Date(ev.startsAt))}
+                                {time ? ` • ${time}` : ''}
                               </span>
                             </div>
                             <div className={styles.title}>{ev.title}</div>
@@ -703,321 +813,523 @@ export default function CalendarPage() {
                 </div>
 
                 <div className={styles.split}>
-                <div>
-                  <div className={styles.weekHeader}>
-                    {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((d) => (
-                      <div key={d} className={styles.weekDay}>
-                        {d}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className={styles.grid}>
-                    {cells.map((date, idx) => {
-                      const key = date ? isoDateKey(date) : `empty-${idx}`;
-                      const events = date ? confirmedEventsByDay.get(key) || [] : [];
-                      const isToday = isSameDay(date, today);
-                      const periodItems = date ? events.filter((x) => x.kind === 'PERIOD') : [];
-                      const underline = (() => {
-                        if (!periodItems.length) return null;
-                        let bestType = null;
-                        let bestPri = -1;
-                        for (const it of periodItems) {
-                          const t = it?.event?.type;
-                          const pri = periodPriority(t);
-                          if (pri > bestPri) {
-                            bestPri = pri;
-                            bestType = t;
-                          }
-                        }
-                        return bestType ? periodUnderlineColor(bestType) : null;
-                      })();
-                      const isSelected = Boolean(date && key === selectedDayKey);
-                      const nonPeriodCount = date ? events.filter((x) => x.kind !== 'PERIOD').length : 0;
-                      return (
-                        <div
-                          // eslint-disable-next-line react/no-array-index-key
-                          key={idx}
-                          className={`${styles.cell} ${date ? styles.cellClickable : styles.cellEmpty} ${isToday ? styles.cellToday : ''} ${isSelected ? styles.cellSelected : ''}`}
-                          role={date ? 'button' : undefined}
-                          tabIndex={date ? 0 : -1}
-                          onClick={date ? () => setSelectedDayKey(key) : undefined}
-                          onKeyDown={
-                            date
-                              ? (e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    setSelectedDayKey(key);
-                                  }
-                                }
-                              : undefined
-                          }
-                        >
-                          <div className={styles.cellTop}>
-                            <div
-                              className={`${styles.dateNum} ${underline ? styles.dateNumPeriod : ''}`}
-                              style={underline ? { '--periodUnderline': underline } : undefined}
-                            >
-                              {date ? date.getDate() : ''}
-                            </div>
-                            {nonPeriodCount ? <div className={styles.count}>{nonPeriodCount}</div> : null}
+                  {view === 'month' ? (
+                    <div>
+                      <div className={styles.weekHeader}>
+                        {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((d) => (
+                          <div key={d} className={styles.weekDay}>
+                            {d}
                           </div>
-
-                          {/* Intentionally no per-day cards here (minimal month view). */}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <aside className={styles.sidebar}>
-                  <div className={styles.sidebarBlock}>
-                    <div className={styles.sidebarTitle}>
-                      {selectedDayKey
-                        ? `События на ${new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'long' }).format(new Date(selectedDayKey))}`
-                        : 'События дня'}
-                    </div>
-                    <div className={styles.sidebarSub}>Кликните по дню в календаре, чтобы посмотреть детали.</div>
-
-                    {selectedDayItems.periods.length ? (
-                      <div className={styles.dayList}>
-                        {selectedDayItems.periods.map((p) => {
-                          const label = periodTypeLabel(p?.type);
-                          return (
-                            <div key={`dp-${p.periodId}`} className={styles.dayRow}>
-                              <span className={styles.dayDot} style={{ background: tagColor(label) }} />
-                              <div className={styles.dayMain}>
-                                <div className={styles.dayTitle}>{p?.title || label}</div>
-                                <div className={styles.dayMeta}>
-                                  {label} • до{' '}
-                                  {p?.endsAt
-                                    ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(new Date(p.endsAt))
-                                    : ''}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
+                        ))}
                       </div>
-                    ) : null}
 
-                    {selectedDayItems.events.length ? (
-                      <div className={styles.dayList}>
-                        {selectedDayItems.events.map(({ kind, event: ev }) => {
-                          const isMy = kind === 'MY';
-                          const t = typeLabel(ev?.type);
-                          const time = ev?.allDay ? '' : timeLabel(ev?.startsAt);
-                          const canDelete = isMy && ev?.myEventId;
-                          const busyDelete = deletingMyEventId === ev?.myEventId;
+                      <div className={styles.grid}>
+                        {cells.map((date, idx) => {
+                          const key = date ? isoDateKey(date) : `empty-${idx}`;
+                          const events = date ? confirmedEventsByDay.get(key) || [] : [];
+                          const isToday = isSameDay(date, today);
+                          const periodItems = date ? events.filter((x) => x.kind === 'PERIOD') : [];
+                          const underline = (() => {
+                            if (!periodItems.length) return null;
+                            let bestType = null;
+                            let bestPri = -1;
+                            for (const it of periodItems) {
+                              const t = it?.event?.type;
+                              const pri = periodPriority(t);
+                              if (pri > bestPri) {
+                                bestPri = pri;
+                                bestType = t;
+                              }
+                            }
+                            return bestType ? periodUnderlineColor(bestType) : null;
+                          })();
+                          const isSelected = Boolean(date && key === selectedDayKey);
+                          const nonPeriodCount = date ? events.filter((x) => x.kind !== 'PERIOD').length : 0;
                           return (
-                            <div key={isMy ? `de-${ev.myEventId}` : `ge-${ev.eventId}`} className={styles.dayRow}>
-                              <span className={styles.dayDot} style={{ background: tagColor(t) }} />
-                              <div className={styles.dayMain}>
-                                <div className={styles.dayTitle}>
-                                  {ev?.title || 'Событие'}
-                                  {isMy ? <span className={styles.dayPill}>моё</span> : null}
-                                </div>
-                                <div className={styles.dayMeta}>
-                                  {t}
-                                  {time ? ` • ${time}` : ''}
-                                  {ev?.subject ? ` • ${ev.subject}` : ''}
-                                </div>
-                              </div>
-                              {canDelete ? (
-                                <button
-                                  type="button"
-                                  className={styles.iconBtn}
-                                  onClick={() => deleteMy(ev.myEventId)}
-                                  disabled={busyDelete}
-                                  aria-label="Удалить событие"
-                                  title="Удалить"
+                            <div
+                              // eslint-disable-next-line react/no-array-index-key
+                              key={idx}
+                              className={`${styles.cell} ${date ? styles.cellClickable : styles.cellEmpty} ${isToday ? styles.cellToday : ''} ${isSelected ? styles.cellSelected : ''}`}
+                              role={date ? 'button' : undefined}
+                              tabIndex={date ? 0 : -1}
+                              onClick={date ? () => setSelectedDayKey(key) : undefined}
+                              onKeyDown={
+                                date
+                                  ? (e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        setSelectedDayKey(key);
+                                      }
+                                    }
+                                  : undefined
+                              }
+                            >
+                              <div className={styles.cellTop}>
+                                <div
+                                  className={`${styles.dateNum} ${underline ? styles.dateNumPeriod : ''}`}
+                                  style={underline ? { '--periodUnderline': underline } : undefined}
                                 >
-                                  {busyDelete ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
-                                </button>
-                              ) : null}
+                                  {date ? date.getDate() : ''}
+                                </div>
+                                {nonPeriodCount ? <div className={styles.count}>{nonPeriodCount}</div> : null}
+                              </div>
+
+                              {/* Intentionally no per-day cards here (minimal month view). */}
                             </div>
                           );
                         })}
                       </div>
-                    ) : (
-                      <div className={styles.emptyInline}>Нет событий на выбранный день.</div>
-                    )}
-                  </div>
-
-                  <div className={styles.sidebarBlock}>
-                    <div className={styles.sidebarTitle}>Добавить событие себе</div>
-                    <div className={styles.sidebarSub}>Личное событие видно только вам. Удаляется без подтверждений.</div>
-                    <form className={styles.createForm} onSubmit={submitCreateMy}>
-                      <label className={styles.formLabel}>
-                        Название *
-                        <input
-                          className={styles.input}
-                          value={myTitle}
-                          onChange={(e) => setMyTitle(e.target.value)}
-                          placeholder="Например: подготовка к коллоквиуму"
-                          required
-                        />
-                      </label>
-                      <label className={styles.formLabel}>
-                        Тип
-                        <select className={styles.select} value={myType} onChange={(e) => setMyType(e.target.value)}>
-                          <option value="CT">ЦТ</option>
-                          <option value="COLLOQUIUM">Коллоквиум</option>
-                          <option value="EXAM">Экзамен</option>
-                          <option value="DEADLINE">Дедлайн</option>
-                        </select>
-                      </label>
-                      <label className={styles.formLabel}>
-                        Предмет (опц.)
-                        <input
-                          className={styles.input}
-                          value={mySubject}
-                          onChange={(e) => setMySubject(e.target.value)}
-                          placeholder="Например: Анатомия"
-                        />
-                      </label>
-                      <label className={styles.formLabel}>
-                        Дата
-                        <input
-                          className={styles.input}
-                          type="date"
-                          value={myDate}
-                          onChange={(e) => setMyDate(e.target.value)}
-                          required
-                        />
-                      </label>
-                      <button type="submit" className={styles.primaryBtn} disabled={creatingMyEvent || !myTitle.trim()}>
-                        {creatingMyEvent ? <Loader2 size={16} className={styles.spinner} /> : <Plus size={16} />}
-                        Добавить
-                      </button>
-                    </form>
-                  </div>
-
-                  <div className={styles.sidebarBlock} ref={inboxRef}>
-                    <div className={styles.sidebarTitle}>Ожидают подтверждения</div>
-                    <div className={styles.sidebarSub}>
-                      {pendingInvites.length || pendingPeriodInvites.length ? 'Подтвердите, чтобы добавить в календарь.' : 'Нет новых приглашений.'}
                     </div>
+                  ) : (
+                    <div className={styles.sidebarBlock}>
+                      <div className={styles.titleRow}>
+                        <div className={styles.sidebarTitle}>
+                          {selectedDayKey
+                            ? new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' }).format(new Date(selectedDayKey))
+                            : 'День'}
+                        </div>
+                        <div className={styles.modeTabs}>
+                          <button type="button" className={styles.navBtn} onClick={() => shiftSelectedDay(-1)} aria-label="Предыдущий день">
+                            <ChevronLeft size={18} />
+                          </button>
+                          <button type="button" className={styles.navBtn} onClick={() => shiftSelectedDay(1)} aria-label="Следующий день">
+                            <ChevronRight size={18} />
+                          </button>
+                        </div>
+                      </div>
+                      <div className={styles.sidebarSub}>Режим “День”: все события выбранной даты.</div>
 
-                    {(pendingInvites.length || pendingPeriodInvites.length) ? (
-                      <div className={styles.inviteList}>
-                        {pendingPeriodInvites.map((row) => {
-                          const p = row?.period;
-                          const t = periodTypeLabel(p?.type);
-                          const when = p?.startsAt ? new Date(p.startsAt) : null;
-                          const whenLabel = when && !Number.isNaN(when.getTime())
-                            ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(when)
-                            : '';
-                          const busy = respondingInviteId === `p-${row.inviteId}`;
-                          return (
-                            <div key={`p-${row.inviteId}`} className={styles.inviteCard}>
-                              <div className={styles.inviteMain}>
-                                <div className={styles.inviteTopRow}>
-                                  <span className={styles.inviteType} style={{ background: tagColor(t) }}>
-                                    {t}
-                                  </span>
-                                  {whenLabel ? <span className={styles.inviteWhen}>{whenLabel}</span> : null}
+                      {selectedDayItems.periods.length ? (
+                        <div className={styles.dayList}>
+                          {selectedDayItems.periods.map((p) => {
+                            const label = periodTypeLabel(p?.type);
+                            return (
+                              <div key={`dp-${p.periodId}`} className={styles.dayRow}>
+                                <span className={styles.dayDot} style={{ background: tagColor(label) }} />
+                                <div className={styles.dayMain}>
+                                  <div className={styles.dayTitle}>{p?.title || label}</div>
+                                  <div className={styles.dayMeta}>
+                                    {label} • до{' '}
+                                    {p?.endsAt ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(new Date(p.endsAt)) : ''}
+                                  </div>
                                 </div>
-                                <div className={styles.inviteTitle}>{p?.title || 'Период'}</div>
-                                <div className={styles.inviteMeta}>
-                                  {p?.endsAt ? (
-                                    <span className={styles.muted}>
-                                      до {new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(new Date(p.endsAt))}
-                                    </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+
+                      {selectedDayItems.events.length ? (
+                        <div className={styles.dayList}>
+                          {selectedDayItems.events.map(({ kind, event: ev }) => {
+                            const isMy = kind === 'MY';
+                            const t = typeLabel(ev?.type);
+                            const time = ev?.allDay ? 'Весь день' : timeLabel(ev?.startsAt);
+                            return (
+                              <div key={isMy ? `de-${ev.myEventId}` : `ge-${ev.eventId}`} className={styles.dayRow}>
+                                <span className={styles.dayDot} style={{ background: tagColor(t) }} />
+                                <div
+                                  className={styles.dayMain}
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={() => setDetails({ kind: isMy ? 'MY' : 'GROUP', event: ev })}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      setDetails({ kind: isMy ? 'MY' : 'GROUP', event: ev });
+                                    }
+                                  }}
+                                >
+                                  <div className={styles.dayTitle}>
+                                    {ev?.title || 'Событие'}
+                                    {isMy ? <span className={styles.dayPill}>моё</span> : null}
+                                  </div>
+                                  <div className={styles.dayMeta}>
+                                    {t} • {time}
+                                    {ev?.subject ? ` • ${ev.subject}` : ''}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className={styles.emptyInline}>Нет событий на выбранный день.</div>
+                      )}
+                    </div>
+                  )}
+
+                  <aside className={styles.sidebar}>
+                    {view === 'month' ? (
+                      <div className={styles.sidebarBlock}>
+                        <div className={styles.sidebarTitle}>
+                          {selectedDayKey
+                            ? `События на ${new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'long' }).format(new Date(selectedDayKey))}`
+                            : 'События дня'}
+                        </div>
+                        <div className={styles.sidebarSub}>Кликните по дню в календаре, чтобы посмотреть детали.</div>
+
+                        {selectedDayItems.periods.length ? (
+                          <div className={styles.dayList}>
+                            {selectedDayItems.periods.map((p) => {
+                              const label = periodTypeLabel(p?.type);
+                              return (
+                                <div key={`dp-${p.periodId}`} className={styles.dayRow}>
+                                  <span className={styles.dayDot} style={{ background: tagColor(label) }} />
+                                  <div className={styles.dayMain}>
+                                    <div className={styles.dayTitle}>{p?.title || label}</div>
+                                    <div className={styles.dayMeta}>
+                                      {label} • до{' '}
+                                      {p?.endsAt
+                                        ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(new Date(p.endsAt))
+                                        : ''}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+
+                        {selectedDayItems.events.length ? (
+                          <div className={styles.dayList}>
+                            {selectedDayItems.events.map(({ kind, event: ev }) => {
+                              const isMy = kind === 'MY';
+                              const t = typeLabel(ev?.type);
+                              const time = ev?.allDay ? '' : timeLabel(ev?.startsAt);
+                              const canDelete = isMy && ev?.myEventId;
+                              const busyDelete = deletingMyEventId === ev?.myEventId;
+                              return (
+                                <div key={isMy ? `de-${ev.myEventId}` : `ge-${ev.eventId}`} className={styles.dayRow}>
+                                  <span className={styles.dayDot} style={{ background: tagColor(t) }} />
+                                  <div
+                                    className={styles.dayMain}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => setDetails({ kind: isMy ? 'MY' : 'GROUP', event: ev })}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        setDetails({ kind: isMy ? 'MY' : 'GROUP', event: ev });
+                                      }
+                                    }}
+                                  >
+                                    <div className={styles.dayTitle}>
+                                      {ev?.title || 'Событие'}
+                                      {isMy ? <span className={styles.dayPill}>моё</span> : null}
+                                    </div>
+                                    <div className={styles.dayMeta}>
+                                      {t}
+                                      {time ? ` • ${time}` : ''}
+                                      {ev?.subject ? ` • ${ev.subject}` : ''}
+                                    </div>
+                                  </div>
+                                  {canDelete ? (
+                                    <button
+                                      type="button"
+                                      className={styles.iconBtn}
+                                      onClick={() => deleteMy(ev.myEventId)}
+                                      disabled={busyDelete}
+                                      aria-label="Удалить событие"
+                                      title="Удалить"
+                                    >
+                                      {busyDelete ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
+                                    </button>
                                   ) : null}
                                 </div>
-                              </div>
-                              <div className={styles.inviteActions}>
-                                <button
-                                  type="button"
-                                  className={styles.btnPrimary}
-                                  onClick={() => respondPeriod(row.inviteId, 'CONFIRMED')}
-                                  disabled={busy}
-                                  title="Добавить в мой календарь"
-                                >
-                                  {busy ? <Loader2 size={16} className={styles.spinner} /> : <Check size={16} />}
-                                  Confirm
-                                </button>
-                                <button
-                                  type="button"
-                                  className={styles.btnDanger}
-                                  onClick={() => respondPeriod(row.inviteId, 'DECLINED')}
-                                  disabled={busy}
-                                  title="Отклонить"
-                                >
-                                  <X size={16} />
-                                  Decline
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {pendingInvites.map((row) => {
-                          const ev = row?.event;
-                          const t = typeLabel(ev?.type);
-                          const when = ev?.startsAt ? new Date(ev.startsAt) : null;
-                          const whenLabel = when && !Number.isNaN(when.getTime())
-                            ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(when)
-                            : '';
-                          const busy = respondingInviteId === row.inviteId;
-                          return (
-                            <div key={row.inviteId} className={styles.inviteCard}>
-                              <div className={styles.inviteMain}>
-                                <div className={styles.inviteTopRow}>
-                                  <span className={styles.inviteType} style={{ background: tagColor(t) }}>
-                                    {t}
-                                  </span>
-                                  {whenLabel ? <span className={styles.inviteWhen}>{whenLabel}</span> : null}
-                                </div>
-                                <div className={styles.inviteTitle}>{ev?.title || 'Событие'}</div>
-                                <div className={styles.inviteMeta}>
-                                  {ev?.subject ? <span className={styles.muted}>{ev.subject}</span> : null}
-                                </div>
-                              </div>
-                              <div className={styles.inviteActions}>
-                                <button
-                                  type="button"
-                                  className={styles.btnPrimary}
-                                  onClick={() => respond(row.inviteId, 'CONFIRMED')}
-                                  disabled={busy}
-                                  title="Добавить в мой календарь"
-                                >
-                                  {busy ? <Loader2 size={16} className={styles.spinner} /> : <Check size={16} />}
-                                  Confirm
-                                </button>
-                                <button
-                                  type="button"
-                                  className={styles.btnDanger}
-                                  onClick={() => respond(row.inviteId, 'DECLINED')}
-                                  disabled={busy}
-                                  title="Отклонить"
-                                >
-                                  <X size={16} />
-                                  Decline
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className={styles.emptyInline}>Нет событий на выбранный день.</div>
+                        )}
                       </div>
                     ) : null}
-                  </div>
 
-                  {loadingCalendar ? (
-                    <div className={styles.loadingInline}>
-                      <Loader2 size={16} className={styles.spinner} />
-                      <span>Загрузка...</span>
+                    <div className={styles.sidebarBlock}>
+                      <div className={styles.sidebarTitle}>Добавить событие себе</div>
+                      <div className={styles.sidebarSub}>Личное событие видно только вам. Удаляется без подтверждений.</div>
+                      <form className={styles.createForm} onSubmit={submitCreateMy}>
+                        <label className={styles.formLabel}>
+                          Название *
+                          <input
+                            className={styles.input}
+                            value={myTitle}
+                            onChange={(e) => setMyTitle(e.target.value)}
+                            placeholder="Например: подготовка к экзамену"
+                            required
+                          />
+                        </label>
+                        <div className={styles.row2}>
+                          <label className={styles.formLabel}>
+                            Тип
+                            <select className={styles.select} value={myType} onChange={(e) => setMyType(e.target.value)}>
+                              <option value="CT">ЦТ</option>
+                              <option value="EXAM">Экзамен</option>
+                              <option value="COLLOQUIUM">Коллоквиум</option>
+                              <option value="HOMEWORK">ДЗ</option>
+                              <option value="OTHER">Другое</option>
+                            </select>
+                          </label>
+                          <label className={styles.formLabel}>
+                            Дата
+                            <input className={styles.input} type="date" value={myDate} onChange={(e) => setMyDate(e.target.value)} required />
+                          </label>
+                        </div>
+                        <div className={styles.row2}>
+                          <label className={styles.formLabel}>
+                            Режим
+                            <select
+                              className={styles.select}
+                              value={myAllDay ? 'allDay' : 'time'}
+                              onChange={(e) => setMyAllDay(e.target.value === 'allDay')}
+                            >
+                              <option value="allDay">Весь день</option>
+                              <option value="time">Указать время</option>
+                            </select>
+                          </label>
+                          <label className={styles.formLabel}>
+                            Время
+                            <input
+                              className={styles.input}
+                              type="time"
+                              value={myTime}
+                              onChange={(e) => setMyTime(e.target.value)}
+                              disabled={myAllDay}
+                            />
+                          </label>
+                        </div>
+                        <label className={styles.formLabel}>
+                          Предмет (опц.)
+                          <input className={styles.input} value={mySubject} onChange={(e) => setMySubject(e.target.value)} placeholder="Например: Анатомия" />
+                        </label>
+                        <label className={styles.formLabel}>
+                          Комментарий (опц.)
+                          <textarea
+                            className={styles.textarea}
+                            value={myComment}
+                            onChange={(e) => setMyComment(e.target.value)}
+                            placeholder="Что нужно сделать/подготовить…"
+                          />
+                        </label>
+                        <label className={styles.formLabel}>
+                          Материалы (опц.)
+                          <textarea
+                            className={styles.textarea}
+                            value={myMaterialsText}
+                            onChange={(e) => setMyMaterialsText(e.target.value)}
+                            placeholder={'Ссылки, по одной на строку\nили: Название | https://...'}
+                          />
+                        </label>
+                        <button type="submit" className={styles.primaryBtn} disabled={creatingMyEvent || !myTitle.trim()}>
+                          {creatingMyEvent ? <Loader2 size={16} className={styles.spinner} /> : <Plus size={16} />}
+                          Добавить
+                        </button>
+                      </form>
                     </div>
-                  ) : null}
-                  {calendarError ? <div className={styles.error}>{calendarError}</div> : null}
-                </aside>
-              </div>
+
+                    <div className={styles.sidebarBlock} ref={inboxRef}>
+                      <div className={styles.sidebarTitle}>Ожидают подтверждения</div>
+                      <div className={styles.sidebarSub}>
+                        {pendingInvites.length || pendingPeriodInvites.length ? 'Подтвердите, чтобы добавить в календарь.' : 'Нет новых приглашений.'}
+                      </div>
+
+                      {pendingInvites.length || pendingPeriodInvites.length ? (
+                        <div className={styles.inviteList}>
+                          {pendingPeriodInvites.map((row) => {
+                            const p = row?.period;
+                            const t = periodTypeLabel(p?.type);
+                            const when = p?.startsAt ? new Date(p.startsAt) : null;
+                            const whenLabel =
+                              when && !Number.isNaN(when.getTime())
+                                ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(when)
+                                : '';
+                            const busy = respondingInviteId === `p-${row.inviteId}`;
+                            return (
+                              <div key={`p-${row.inviteId}`} className={styles.inviteCard}>
+                                <div className={styles.inviteMain}>
+                                  <div className={styles.inviteTopRow}>
+                                    <span className={styles.inviteType} style={{ background: tagColor(t) }}>
+                                      {t}
+                                    </span>
+                                    {whenLabel ? <span className={styles.inviteWhen}>{whenLabel}</span> : null}
+                                  </div>
+                                  <div className={styles.inviteTitle}>{p?.title || 'Период'}</div>
+                                  <div className={styles.inviteMeta}>
+                                    {p?.endsAt ? (
+                                      <span className={styles.muted}>
+                                        до {new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(new Date(p.endsAt))}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <div className={styles.inviteActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.btnPrimary}
+                                    onClick={() => respondPeriod(row.inviteId, 'CONFIRMED')}
+                                    disabled={busy}
+                                    title="Добавить в мой календарь"
+                                  >
+                                    {busy ? <Loader2 size={16} className={styles.spinner} /> : <Check size={16} />}
+                                    Confirm
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.btnDanger}
+                                    onClick={() => respondPeriod(row.inviteId, 'DECLINED')}
+                                    disabled={busy}
+                                    title="Отклонить"
+                                  >
+                                    <X size={16} />
+                                    Decline
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {pendingInvites.map((row) => {
+                            const ev = row?.event;
+                            const t = typeLabel(ev?.type);
+                            const when = ev?.startsAt ? new Date(ev.startsAt) : null;
+                            const whenLabel =
+                              when && !Number.isNaN(when.getTime())
+                                ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(when)
+                                : '';
+                            const busy = respondingInviteId === row.inviteId;
+                            return (
+                              <div key={row.inviteId} className={styles.inviteCard}>
+                                <div className={styles.inviteMain}>
+                                  <div className={styles.inviteTopRow}>
+                                    <span className={styles.inviteType} style={{ background: tagColor(t) }}>
+                                      {t}
+                                    </span>
+                                    {whenLabel ? <span className={styles.inviteWhen}>{whenLabel}</span> : null}
+                                  </div>
+                                  <div className={styles.inviteTitle}>{ev?.title || 'Событие'}</div>
+                                  <div className={styles.inviteMeta}>
+                                    {ev?.subject ? <span className={styles.muted}>{ev.subject}</span> : null}
+                                  </div>
+                                </div>
+                                <div className={styles.inviteActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.btnPrimary}
+                                    onClick={() => respond(row.inviteId, 'CONFIRMED')}
+                                    disabled={busy}
+                                    title="Добавить в мой календарь"
+                                  >
+                                    {busy ? <Loader2 size={16} className={styles.spinner} /> : <Check size={16} />}
+                                    Confirm
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.btnDanger}
+                                    onClick={() => respond(row.inviteId, 'DECLINED')}
+                                    disabled={busy}
+                                    title="Отклонить"
+                                  >
+                                    <X size={16} />
+                                    Decline
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {loadingCalendar ? (
+                      <div className={styles.loadingInline}>
+                        <Loader2 size={16} className={styles.spinner} />
+                        <span>Загрузка...</span>
+                      </div>
+                    ) : null}
+                    {calendarError ? <div className={styles.error}>{calendarError}</div> : null}
+                  </aside>
+                </div>
               </>
             )}
           </>
         )}
       </main>
+
+      {details?.event ? (
+        <div className={styles.modalOverlay} role="presentation" onClick={() => setDetails(null)}>
+          <div className={styles.modal} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className={styles.titleRow}>
+              <div className={styles.modalTitle}>{details.event?.title || 'Событие'}</div>
+              <button type="button" className={styles.iconBtn} onClick={() => setDetails(null)} aria-label="Закрыть">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className={styles.modalMeta}>
+              <span className={styles.tag} style={{ background: tagColor(typeLabel(details.event?.type)) }}>
+                {typeLabel(details.event?.type)}
+              </span>
+              <span className={styles.modalText}>
+                {details.event?.startsAt
+                  ? new Intl.DateTimeFormat('ru-RU', {
+                      day: '2-digit',
+                      month: 'long',
+                      year: 'numeric',
+                      ...(details.event?.allDay ? {} : { hour: '2-digit', minute: '2-digit' }),
+                    }).format(new Date(details.event.startsAt))
+                  : ''}
+                {details.event?.allDay ? ' • весь день' : ''}
+              </span>
+              {details.event?.subject ? <span className={styles.modalText}>• {details.event.subject}</span> : null}
+              {details.kind === 'MY' ? <span className={styles.dayPill}>моё</span> : null}
+            </div>
+
+            {(details.event?.comment || details.event?.description) ? (
+              <div className={styles.modalBlock}>
+                <div className={styles.label}>Комментарий</div>
+                <div className={styles.modalTextBlock}>{details.event.comment || details.event.description}</div>
+              </div>
+            ) : null}
+
+            {Array.isArray(details.event?.materials) && details.event.materials.length ? (
+              <div className={styles.modalBlock}>
+                <div className={styles.label}>Материалы</div>
+                <div className={styles.modalList}>
+                  {details.event.materials.map((m, idx) => {
+                    const url = m?.url;
+                    const title = m?.title;
+                    if (!url) return null;
+                    return (
+                      // eslint-disable-next-line react/no-array-index-key
+                      <a key={`${url}-${idx}`} className={styles.modalLink} href={url} target="_blank" rel="noreferrer">
+                        {title || url}
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {details.kind === 'MY' && details.event?.myEventId ? (
+              <div className={styles.modalActions}>
+                <button
+                  type="button"
+                  className={styles.btnDanger}
+                  onClick={async () => {
+                    await deleteMy(details.event.myEventId);
+                    setDetails(null);
+                  }}
+                  disabled={deletingMyEventId === details.event.myEventId}
+                >
+                  {deletingMyEventId === details.event.myEventId ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
+                  Удалить
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
