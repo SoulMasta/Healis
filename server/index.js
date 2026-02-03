@@ -52,11 +52,12 @@ app.use(cookieParser());
 // Health check proves frontend<->backend connectivity.
 app.get('/api/health', async (req, res) => {
   const hasDbEnv = Boolean(
-    process.env.DB_NAME &&
-      process.env.DB_USER &&
-      process.env.DB_PASSWORD &&
-      process.env.DB_HOST &&
-      process.env.DB_PORT
+    process.env.DATABASE_URL ||
+      (process.env.DB_NAME &&
+        process.env.DB_USER &&
+        process.env.DB_PASSWORD &&
+        process.env.DB_HOST &&
+        process.env.DB_PORT)
   );
 
   let db = { configured: hasDbEnv, ok: false };
