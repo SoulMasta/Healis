@@ -1,0 +1,8 @@
+{
+  "name": "healis",
+  "private": true,
+  "scripts": {
+    "build": "npm run build --prefix client"
+  }
+}
+
