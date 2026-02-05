@@ -166,7 +166,7 @@ export default function CalendarPage() {
   const [details, setDetails] = useState(null); // { kind: 'MY'|'GROUP'|'PERIOD', event }
 
   const [groups, setGroups] = useState([]);
-  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [, setLoadingGroups] = useState(false);
   const myGroup = useMemo(() => (Array.isArray(groups) && groups.length ? groups[0] : null), [groups]);
   const myGroupId = myGroup?.groupId || null;
   const canManageMyGroup = myGroup?.myRole === 'OWNER' || myGroup?.myRole === 'ADMIN';

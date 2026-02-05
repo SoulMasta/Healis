@@ -1212,6 +1212,42 @@ export default function WorkspacePage() {
     [viewStorageKey]
   );
 
+  const stopInteractions = useCallback(
+    (e) => {
+      if (e?.currentTarget && typeof e.pointerId === 'number') {
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+      }
+      selectStartRef.current = null;
+      panStartRef.current = null;
+      if (panRafRef.current != null) {
+        window.cancelAnimationFrame(panRafRef.current);
+        panRafRef.current = null;
+      }
+      if (pinchRafRef.current != null) {
+        window.cancelAnimationFrame(pinchRafRef.current);
+        pinchRafRef.current = null;
+      }
+      setSelectionRect(null);
+      setIsPanning(false);
+      if (inputDebugEnabled) {
+        pushInputDebug('stopInteractions', {
+          type: e?.type,
+          pid: typeof e?.pointerId === 'number' ? e.pointerId : null,
+          pType: e?.pointerType,
+          cancelable: Boolean(e?.cancelable),
+        });
+      }
+      // Commit the latest view offset to state once (avoid doing this in pointermove).
+      setViewOffset(viewOffsetRef.current);
+      persistViewDebounced({ offset: viewOffsetRef.current, scale: viewScaleRef.current }, { immediate: true });
+    },
+    [inputDebugEnabled, persistViewDebounced, pushInputDebug]
+  );
+
   useEffect(() => {
     persistViewDebouncedRef.current = persistViewDebounced;
   }, [persistViewDebounced]);
@@ -1250,7 +1286,7 @@ export default function WorkspacePage() {
       window.removeEventListener('pointerup', onWindowPointerUpOrCancel, true);
       window.removeEventListener('pointercancel', onWindowPointerUpOrCancel, true);
     };
-  }, [inputDebugEnabled, pushInputDebug]);
+  }, [inputDebugEnabled, pushInputDebug, stopInteractions]);
 
   useLayoutEffect(() => {
     // Initialize CSS vars without causing heavy React re-renders.
@@ -1605,39 +1641,6 @@ export default function WorkspacePage() {
     const d = `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p3.x} ${p3.y}`;
     return { d, mid, handle, p0, p3 };
   }, []);
-
-  const stopInteractions = (e) => {
-    if (e?.currentTarget && typeof e.pointerId === 'number') {
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {
-        // ignore
-      }
-    }
-    selectStartRef.current = null;
-    panStartRef.current = null;
-    if (panRafRef.current != null) {
-      window.cancelAnimationFrame(panRafRef.current);
-      panRafRef.current = null;
-    }
-    if (pinchRafRef.current != null) {
-      window.cancelAnimationFrame(pinchRafRef.current);
-      pinchRafRef.current = null;
-    }
-    setSelectionRect(null);
-    setIsPanning(false);
-    if (inputDebugEnabled) {
-      pushInputDebug('stopInteractions', {
-        type: e?.type,
-        pid: typeof e?.pointerId === 'number' ? e.pointerId : null,
-        pType: e?.pointerType,
-        cancelable: Boolean(e?.cancelable),
-      });
-    }
-    // Commit the latest view offset to state once (avoid doing this in pointermove).
-    setViewOffset(viewOffsetRef.current);
-    persistViewDebounced({ offset: viewOffsetRef.current, scale: viewScaleRef.current }, { immediate: true });
-  };
 
   const extractContent = useCallback((el) => {
     if (!el) return '';
@@ -3848,7 +3851,7 @@ export default function WorkspacePage() {
       window.removeEventListener('keydown', onKeyDown, { capture: true });
       window.removeEventListener('keyup', onKeyUp, { capture: true });
     };
-  }, [shortcuts, activeTool, selectedConnectorId, undoEv, redoEv]);
+  }, [shortcuts, activeTool, selectedConnectorId, undoEv, redoEv, isMobile]);
 
   const focusElement = (elementId) => {
     const el = elementsRef.current?.find?.((x) => x?.id === elementId) || elements.find((x) => x?.id === elementId);
