@@ -76,7 +76,9 @@ function cookieOptions() {
   return {
     httpOnly: true,
     secure: isProd,
-    sameSite: 'lax',
+    // Frontend (Vercel) and backend (Render) are different sites in production,
+    // so refresh cookie must be SameSite=None;Secure to be sent on XHR/fetch.
+    sameSite: isProd ? 'none' : 'lax',
     // Restrict cookie to auth routes.
     path: '/api/user',
     maxAge: REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,

@@ -37,6 +37,7 @@ import {
 import { getHealth } from '../http/health';
 import { getWorkspace } from '../http/workspaceAPI';
 import { getToken, refreshAuth } from '../http/userAPI';
+import { getSocketBaseUrl } from '../config/runtime';
 import {
   createElementOnDesk,
   getElementsByDesk,
@@ -3870,12 +3871,7 @@ export default function WorkspacePage() {
     const token = getToken();
     if (!deskId || !token) return () => {};
 
-    // In dev: React runs on :3000, backend on :5000. CRA proxy sometimes misses WS; prefer explicit base.
-    const inferredBase =
-      window.location.port === '3000'
-        ? `${window.location.protocol}//${window.location.hostname}:5000`
-        : window.location.origin;
-    const socketBase = process.env.REACT_APP_SOCKET_URL || inferredBase;
+    const socketBase = getSocketBaseUrl();
 
     const socket = io(socketBase, {
       auth: { token },

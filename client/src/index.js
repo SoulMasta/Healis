@@ -4,6 +4,7 @@ import App from './app/App';
 import './styles/global.css';
 import './styles/responsive.css';
 import * as serviceWorkerRegistration from './serviceWorkerRegistration';
+import './http/axiosConfig';
 
 const rootEl = document.getElementById('root');
 createRoot(rootEl).render(
