@@ -63,8 +63,8 @@ export async function denyGroupJoinRequest(groupId, userId) {
   return res.data;
 }
 
-export async function inviteToGroup(groupId, { email, userId }) {
-  const res = await axios.post(`${API_BASE}/${groupId}/invite`, { email, userId });
+export async function inviteToGroup(groupId, { username, email, userId } = {}) {
+  const res = await axios.post(`${API_BASE}/${groupId}/invite`, { username, email, userId });
   return res.data;
 }
 

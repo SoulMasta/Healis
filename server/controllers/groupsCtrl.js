@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const sequelize = require('../db');
 const { Group, GroupMember, User, Desk, Project } = require('../models/models');
 const crypto = require('crypto');
+const { createNotificationForUser } = require('../services/notificationService');
 
 function requireAuth(req, res) {
   const userId = req.user?.id;
@@ -290,7 +291,7 @@ class GroupsController {
       const where = canManageGroup(role) ? { groupId } : { groupId, status: 'ACTIVE' };
       const members = await GroupMember.findAll({
         where,
-        include: [{ model: User, attributes: ['id', 'email'] }],
+        include: [{ model: User, attributes: ['id', 'email', 'username', 'nickname'] }],
         order: [['role', 'ASC'], ['id', 'ASC']],
       });
 
@@ -301,7 +302,7 @@ class GroupsController {
           userId: m.userId,
           role: m.role,
           status: m.status,
-          user: m.user ? { id: m.user.id, email: m.user.email } : null,
+          user: m.user ? { id: m.user.id, email: m.user.email, username: m.user.username, nickname: m.user.nickname } : null,
         }))
       );
     } catch (error) {
@@ -324,7 +325,7 @@ class GroupsController {
 
       const requests = await GroupMember.findAll({
         where: { groupId, status: 'REQUESTED' },
-        include: [{ model: User, attributes: ['id', 'email'] }],
+        include: [{ model: User, attributes: ['id', 'email', 'username', 'nickname'] }],
         order: [['id', 'DESC']],
       });
 
@@ -335,7 +336,7 @@ class GroupsController {
           userId: m.userId,
           role: m.role,
           status: m.status,
-          user: m.user ? { id: m.user.id, email: m.user.email } : null,
+          user: m.user ? { id: m.user.id, email: m.user.email, username: m.user.username, nickname: m.user.nickname } : null,
         }))
       );
     } catch (error) {
@@ -421,10 +422,22 @@ class GroupsController {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
-      const { email, userId: invitedUserIdRaw } = req.body || {};
+      const { username: usernameRaw, email, userId: invitedUserIdRaw } = req.body || {};
       let invitedUser = null;
       if (invitedUserIdRaw) {
         invitedUser = await User.findByPk(invitedUserIdRaw);
+      } else if (usernameRaw) {
+        const username = String(usernameRaw || '').trim().replace(/^@/, '');
+        if (username) {
+          invitedUser = await User.findOne({ where: { username }, transaction: t });
+          if (!invitedUser) {
+            // Case-insensitive lookup for Postgres / older clients.
+            invitedUser = await User.findOne({
+              where: sequelize.where(sequelize.fn('lower', sequelize.col('username')), username.toLowerCase()),
+              transaction: t,
+            });
+          }
+        }
       } else if (email) {
         invitedUser = await User.findOne({ where: { email } });
       }
@@ -459,6 +472,26 @@ class GroupsController {
       );
 
       await t.commit();
+
+      // Push a persistent + realtime notification to invited user.
+      try {
+        const group = await Group.findByPk(groupId);
+        await createNotificationForUser({
+          userId: invitedUser.id,
+          type: 'GROUP_INVITE',
+          title: 'Приглашение в группу',
+          body: group?.name ? `Вас пригласили в группу «${group.name}».` : 'Вас пригласили в группу.',
+          payload: {
+            groupId,
+            group: group ? group.toJSON?.() || { groupId: group.groupId, name: group.name } : { groupId },
+            invitedByUserId: userId,
+          },
+          dedupeKey: `group-invite:${groupId}:${invitedUser.id}`,
+        });
+      } catch {
+        // notifications are best-effort
+      }
+
       return res.status(201).json(membership);
     } catch (error) {
       await t.rollback();

@@ -5,7 +5,7 @@ import { googleAuth, login, registration } from '../http/userAPI';
 import styles from '../styles/AuthPage.module.css';
 
 function normalizeError(err) {
-  return err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Something went wrong';
+  return err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Что-то пошло не так';
 }
 
 export default function AuthPage() {
@@ -115,15 +115,15 @@ export default function AuthPage() {
 
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
-      setError('Email is required');
+      setError('Укажите email');
       return;
     }
     if (!password) {
-      setError('Password is required');
+      setError('Укажите пароль');
       return;
     }
     if (isRegister && password !== confirm) {
-      setError('Passwords do not match');
+      setError('Пароли не совпадают');
       return;
     }
 
@@ -171,40 +171,40 @@ export default function AuthPage() {
           <div className={styles.logo}>H</div>
           <div className={styles.brandText}>
             <div className={styles.brandName}>Healis</div>
-            <div className={styles.brandSub}>{isRegister ? 'Create your account' : 'Sign in to continue'}</div>
+            <div className={styles.brandSub}>{isRegister ? 'Создайте аккаунт' : 'Войдите, чтобы продолжить'}</div>
           </div>
         </div>
         <div className={styles.headerRight}>
           <Link to="/home" className={styles.homeLink}>
             <Home size={18} />
-            <span>Home</span>
+            <span>Главная</span>
           </Link>
-          <div className={styles.pill}>Free</div>
+          <div className={styles.pill}>Бесплатно</div>
         </div>
       </header>
 
       <main className={styles.main}>
         <div className={styles.card}>
           <aside className={styles.left}>
-            <div className={styles.leftTitle}>{isRegister ? 'Welcome!' : 'Welcome back'}</div>
+            <div className={styles.leftTitle}>{isRegister ? 'Добро пожаловать!' : 'С возвращением'}</div>
             <div className={styles.leftSub}>
               {isRegister
-                ? 'Create an account to start using workspaces, calendar and settings.'
-                : 'Sign in to access your workspaces and continue where you left off.'}
+                ? 'Создайте аккаунт, чтобы пользоваться досками, календарём и настройками.'
+                : 'Войдите, чтобы открыть свои доски и продолжить работу.'}
             </div>
 
             <div className={styles.features}>
               <div className={styles.featureRow}>
                 <span className={styles.featureDot} />
-                <span>Boards & workspaces</span>
+                <span>Доски и рабочие пространства</span>
               </div>
               <div className={styles.featureRow}>
                 <span className={styles.featureDot} />
-                <span>Calendar of events</span>
+                <span>Календарь событий</span>
               </div>
               <div className={styles.featureRow}>
                 <span className={styles.featureDot} />
-                <span>Secure access with token</span>
+                <span>Безопасный доступ по токену</span>
               </div>
             </div>
 
@@ -212,12 +212,12 @@ export default function AuthPage() {
               {isRegister ? (
                 <>
                   <LogIn size={18} />
-                  I already have an account
+                  У меня уже есть аккаунт
                 </>
               ) : (
                 <>
                   <UserPlus size={18} />
-                  Create new account
+                  Создать аккаунт
                 </>
               )}
             </button>
@@ -225,9 +225,9 @@ export default function AuthPage() {
 
           <section className={styles.right}>
             <div className={styles.formTop}>
-              <div className={styles.formTitle}>{isRegister ? 'Registration' : 'Login'}</div>
+              <div className={styles.formTitle}>{isRegister ? 'Регистрация' : 'Вход'}</div>
               <div className={styles.formSub}>
-                {isRegister ? 'Create your profile and set a password.' : 'Use your email and password.'}
+                {isRegister ? 'Заполните профиль и задайте пароль.' : 'Введите email и пароль.'}
               </div>
             </div>
 
@@ -236,7 +236,7 @@ export default function AuthPage() {
                 <div className={styles.oauthBlock}>
                   <div ref={googleBtnRef} className={styles.googleBtn} />
                   <div className={styles.divider}>
-                    <span>or</span>
+                    <span>или</span>
                   </div>
                 </div>
               ) : null}
@@ -245,7 +245,7 @@ export default function AuthPage() {
                 <div className={styles.grid2}>
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel} htmlFor="username">
-                      Username
+                      Логин
                     </label>
                     <div className={styles.inputWrap}>
                       <AtSign size={18} className={styles.inputIcon} />
@@ -253,7 +253,7 @@ export default function AuthPage() {
                         id="username"
                         type="text"
                         className={styles.formInput}
-                        placeholder="username"
+                        placeholder="логин"
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
                         autoComplete="username"
@@ -264,7 +264,7 @@ export default function AuthPage() {
 
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel} htmlFor="nickname">
-                      Nickname
+                      Имя
                     </label>
                     <div className={styles.inputWrap}>
                       <User size={18} className={styles.inputIcon} />
@@ -272,7 +272,7 @@ export default function AuthPage() {
                         id="nickname"
                         type="text"
                         className={styles.formInput}
-                        placeholder="Your name"
+                        placeholder="Ваше имя"
                         value={nickname}
                         onChange={(e) => setNickname(e.target.value)}
                         autoComplete="nickname"
@@ -304,7 +304,7 @@ export default function AuthPage() {
 
               <div className={styles.formGroup}>
                 <label className={styles.formLabel} htmlFor="password">
-                  Password
+                  Пароль
                 </label>
                 <div className={styles.inputWrap}>
                   <Lock size={18} className={styles.inputIcon} />
@@ -312,7 +312,7 @@ export default function AuthPage() {
                     id="password"
                     type="password"
                     className={styles.formInput}
-                    placeholder="Enter password"
+                    placeholder="Введите пароль"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     autoComplete={isRegister ? 'new-password' : 'current-password'}
@@ -325,7 +325,7 @@ export default function AuthPage() {
                 <>
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel} htmlFor="confirm">
-                      Confirm password
+                      Повторите пароль
                     </label>
                     <div className={styles.inputWrap}>
                       <Lock size={18} className={styles.inputIcon} />
@@ -333,7 +333,7 @@ export default function AuthPage() {
                         id="confirm"
                         type="password"
                         className={styles.formInput}
-                        placeholder="Repeat password"
+                        placeholder="Повторите пароль"
                         value={confirm}
                         onChange={(e) => setConfirm(e.target.value)}
                         autoComplete="new-password"
@@ -344,19 +344,19 @@ export default function AuthPage() {
 
                   <div className={styles.optionalTitle}>
                     <GraduationCap size={16} />
-                    Optional study info
+                    Дополнительно (учеба)
                   </div>
 
                   <div className={styles.grid3}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel} htmlFor="studyGroup">
-                        Group
+                        Группа
                       </label>
                       <input
                         id="studyGroup"
                         type="text"
                         className={styles.formInput}
-                        placeholder="e.g. CS-21"
+                        placeholder="напр. ИВТ-21"
                         value={studyGroup}
                         onChange={(e) => setStudyGroup(e.target.value)}
                       />
@@ -364,13 +364,13 @@ export default function AuthPage() {
 
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel} htmlFor="faculty">
-                        Faculty
+                        Факультет
                       </label>
                       <input
                         id="faculty"
                         type="text"
                         className={styles.formInput}
-                        placeholder="e.g. Computer Science"
+                        placeholder="напр. Информатика"
                         value={faculty}
                         onChange={(e) => setFaculty(e.target.value)}
                       />
@@ -378,7 +378,7 @@ export default function AuthPage() {
 
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel} htmlFor="course">
-                        Course
+                        Курс
                       </label>
                       <input
                         id="course"
@@ -403,27 +403,27 @@ export default function AuthPage() {
 
               <div className={styles.actions}>
                 <button type="button" className={styles.secondaryBtn} onClick={() => navigate('/home')} disabled={loading}>
-                  Cancel
+                  Отмена
                 </button>
                 <button type="submit" className={styles.primaryBtn} disabled={!canSubmit || loading}>
                   {loading ? <Loader2 size={18} className={styles.spinner} /> : null}
-                  {isRegister ? 'Create account' : 'Sign in'}
+                  {isRegister ? 'Создать аккаунт' : 'Войти'}
                 </button>
               </div>
 
               <div className={styles.hint}>
                 {isRegister ? (
                   <span>
-                    Already registered?{' '}
+                    Уже зарегистрированы?{' '}
                     <button type="button" className={styles.linkBtn} onClick={switchMode} disabled={loading}>
-                      Sign in
+                      Войти
                     </button>
                   </span>
                 ) : (
                   <span>
-                    New here?{' '}
+                    Впервые здесь?{' '}
                     <button type="button" className={styles.linkBtn} onClick={switchMode} disabled={loading}>
-                      Create an account
+                      Создать аккаунт
                     </button>
                   </span>
                 )}

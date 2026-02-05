@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Loader2, Plus, Trash2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Plus, Trash2, X, Users } from 'lucide-react';
 import MobileLayout from './MobileLayout';
 import styles from './MobileCalendarPage.module.css';
 import {
@@ -477,21 +477,30 @@ export default function MobileCalendarPage() {
     }
   };
 
-  return (
-    <MobileLayout title="Календарь" padded={false}>
-      <div className={styles.wrap}>
-        {canManageMyGroup ? (
-          <Tabs
-            value={mode}
-            onChange={setMode}
-            ariaLabel="Режим"
-            options={[
-              { id: 'my', label: 'Мой' },
-              { id: 'starosta', label: 'Староста' },
-            ]}
-          />
-        ) : null}
+  const toggleStarostaMode = () => {
+    if (!canManageMyGroup) return;
+    setMode((m) => (m === 'starosta' ? 'my' : 'starosta'));
+  };
 
+  return (
+    <MobileLayout
+      title="Календарь"
+      padded={false}
+      leftSlot={
+        canManageMyGroup ? (
+          <button
+            type="button"
+            className={`${styles.iconBtn} tapTarget`}
+            onClick={toggleStarostaMode}
+            aria-label={mode === 'starosta' ? 'Выйти из режима старосты' : 'Режим старосты'}
+            title={mode === 'starosta' ? 'Выйти' : 'Староста'}
+          >
+            {mode === 'starosta' ? <X size={18} /> : <Users size={18} />}
+          </button>
+        ) : undefined
+      }
+    >
+      <div className={styles.wrap}>
         <Tabs
           value={view}
           onChange={setView}

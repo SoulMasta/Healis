@@ -11,11 +11,14 @@ import MobileCalendarPage from '../mobile/MobileCalendarPage';
 import MobileNotificationsPage from '../mobile/MobileNotificationsPage';
 import ToastHost from '../components/ToastHost';
 import { useEventReminderNotifications } from '../hooks/useEventReminderNotifications';
+import { useRealtimeNotifications } from '../hooks/useRealtimeNotifications';
 import { applyThemePreference, loadPreferences, PREFERENCES_STORAGE_KEY } from '../utils/preferences';
+import { refreshAuth } from '../http/userAPI';
 
 export default function App() {
   const { isMobile } = useBreakpoints();
   useEventReminderNotifications();
+  useRealtimeNotifications();
 
   React.useEffect(() => {
     const apply = () => applyThemePreference(loadPreferences());
@@ -28,6 +31,35 @@ export default function App() {
     return () => {
       window.removeEventListener('healis:preferences', apply);
       window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        await refreshAuth();
+      } catch {
+        // best-effort
+      }
+    };
+
+    // Refresh once on app start (helps keep auth from "falling off").
+    tick();
+
+    const intervalId = window.setInterval(() => {
+      if (cancelled) return;
+      tick();
+    }, 10 * 60 * 1000);
+
+    const onFocus = () => tick();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
 

@@ -1,12 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, Check, Users, X } from 'lucide-react';
 import MobileLayout from './MobileLayout';
 import styles from './MobileNotificationsPage.module.css';
 import { getToken } from '../http/userAPI';
-import { getMyGroupInvites, getMyGroupJoinRequests, approveGroupJoinRequest, denyGroupJoinRequest } from '../http/groupAPI';
+import {
+  acceptGroupInvite,
+  declineGroupInvite,
+  getMyGroupInvites,
+  getMyGroupJoinRequests,
+  approveGroupJoinRequest,
+  denyGroupJoinRequest,
+} from '../http/groupAPI';
 import { getMyCalendar, respondToCalendarInvite, respondToCalendarPeriodInvite } from '../http/calendarAPI';
 import { listMyNotifications, markNotificationRead } from '../http/notificationsAPI';
 import { loadNotificationFeed, NOTIFICATION_FEED_STORAGE_KEY } from '../utils/notificationFeed';
+import { toast } from '../utils/toast';
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -77,6 +85,8 @@ export default function MobileNotificationsPage() {
   const [calendarPending, setCalendarPending] = useState([]);
   const [calendarPendingPeriods, setCalendarPendingPeriods] = useState([]);
   const [busyId, setBusyId] = useState(null);
+  const invitesSeenRef = useRef(new Set());
+  const invitesInitRef = useRef(false);
 
   useEffect(() => {
     const onToken = () => setToken(getToken());
@@ -135,6 +145,44 @@ export default function MobileNotificationsPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!token) return () => {};
+    const onNew = () => load();
+    window.addEventListener('healis:notification:new', onNew);
+    return () => window.removeEventListener('healis:notification:new', onNew);
+  }, [load, token]);
+
+  useEffect(() => {
+    if (!token) {
+      invitesSeenRef.current = new Set();
+      invitesInitRef.current = false;
+      return;
+    }
+    const seen = invitesSeenRef.current || new Set();
+    const rows = Array.isArray(groupInvites) ? groupInvites : [];
+    const ids = rows.map((r) => `g:${r?.groupId || r?.id}`).filter(Boolean);
+    const next = new Set(ids);
+
+    // Avoid toast spam on first load.
+    if (!invitesInitRef.current) {
+      invitesInitRef.current = true;
+      invitesSeenRef.current = next;
+      return;
+    }
+
+    const newlyAdded = ids.filter((id) => !seen.has(id));
+    if (newlyAdded.length) {
+      const first = rows.find((r) => `g:${r?.groupId || r?.id}` === newlyAdded[0]);
+      toast({
+        kind: 'info',
+        title: 'Новое приглашение',
+        message: first?.group?.name ? `Вас пригласили в группу «${first.group.name}».` : 'Вас пригласили в группу.',
+        durationMs: 7000,
+      });
+    }
+    invitesSeenRef.current = next;
+  }, [groupInvites, token]);
+
   const items = useMemo(() => {
     const out = [];
 
@@ -177,13 +225,15 @@ export default function MobileNotificationsPage() {
     }
 
     for (const row of groupInvites) {
+      const gId = row?.groupId;
       out.push({
         kind: 'boards',
-        id: `gi-${row?.groupId || row?.id || Math.random()}`,
+        id: `gi-${gId || row?.id || Math.random()}`,
         title: 'Приглашение в группу',
         subtitle: row?.group?.name || row?.name || 'Группа',
-        meta: 'Откройте группы в настройках, чтобы принять/отклонить.',
+        meta: 'Можно принять или отклонить прямо здесь.',
         icon: <Users size={18} />,
+        actions: { groupInvite: true, groupId: gId },
       });
     }
 
@@ -279,6 +329,22 @@ export default function MobileNotificationsPage() {
     }
   };
 
+  const respondGroupInvite = async ({ groupId }, action) => {
+    if (!groupId) return;
+    const id = `gi-${groupId}`;
+    setBusyId(id);
+    try {
+      if (action === 'accept') await acceptGroupInvite(groupId);
+      else await declineGroupInvite(groupId);
+      await load();
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      alert(e?.response?.data?.error || e?.message || 'Не удалось выполнить действие');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const markServerRead = async (id) => {
     if (!id) return;
     try {
@@ -321,6 +387,27 @@ export default function MobileNotificationsPage() {
                           Одобрить
                         </button>
                         <button type="button" className={styles.actionNo} onClick={() => deny(a)} disabled={isBusy}>
+                          <X size={16} />
+                          Отклонить
+                        </button>
+                      </>
+                    ) : a?.groupInvite && a?.groupId ? (
+                      <>
+                        <button
+                          type="button"
+                          className={styles.actionOk}
+                          onClick={() => respondGroupInvite(a, 'accept')}
+                          disabled={isBusy}
+                        >
+                          <Check size={16} />
+                          Принять
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.actionNo}
+                          onClick={() => respondGroupInvite(a, 'decline')}
+                          disabled={isBusy}
+                        >
                           <X size={16} />
                           Отклонить
                         </button>

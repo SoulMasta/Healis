@@ -283,7 +283,7 @@ export default function HomePage() {
   const [groupMembers, setGroupMembers] = useState([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [memberSearch, setMemberSearch] = useState('');
-  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteUsername, setInviteUsername] = useState('');
   const [groupRequests, setGroupRequests] = useState([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [savingGroup, setSavingGroup] = useState(false);
@@ -715,11 +715,11 @@ export default function HomePage() {
   };
 
   const inviteMember = async () => {
-    const email = inviteEmail.trim();
-    if (!selectedGroupId || !email) return;
+    const username = inviteUsername.trim().replace(/^@/, '');
+    if (!selectedGroupId || !username) return;
     try {
-      await inviteToGroup(selectedGroupId, { email });
-      setInviteEmail('');
+      await inviteToGroup(selectedGroupId, { username });
+      setInviteUsername('');
       await loadMembers();
     } catch (err) {
       // eslint-disable-next-line no-alert
@@ -741,7 +741,8 @@ export default function HomePage() {
 
   const removeMember = async (m) => {
     if (!selectedGroupId || !m?.userId) return;
-    const ok = window.confirm(`Удалить участника ${m?.user?.email || m.userId} из группы?`);
+    const label = m?.user?.username ? `@${m.user.username}` : m?.user?.email || m.userId;
+    const ok = window.confirm(`Удалить участника ${label} из группы?`);
     if (!ok) return;
     try {
       await removeGroupMember(selectedGroupId, m.userId);
@@ -1332,8 +1333,8 @@ export default function HomePage() {
                 <div className={styles.gBody}>
                   <div className={styles.gRowTop}>
                     <div className={styles.gSectionTitle}>Участники группы</div>
-                    <button type="button" className={styles.linkBtn} onClick={inviteMember} disabled={!inviteEmail.trim()}>
-                      Пригласить участников
+                    <button type="button" className={styles.linkBtn} onClick={inviteMember} disabled={!inviteUsername.trim()}>
+                      Пригласить
                     </button>
                   </div>
                   <div className={styles.searchMembers}>
@@ -1341,7 +1342,12 @@ export default function HomePage() {
                     <input className={styles.search} placeholder="Поиск" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
                   </div>
                   <div className={styles.inviteRow}>
-                    <input className={styles.input} placeholder="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} />
+                    <input
+                      className={styles.input}
+                      placeholder="username (например: ivanov)"
+                      value={inviteUsername}
+                      onChange={(e) => setInviteUsername(e.target.value)}
+                    />
                   </div>
                   {loadingMembers ? (
                     <div className={styles.loadingState}><Loader2 size={18} className={styles.spinner} />Загрузка…</div>
@@ -1355,14 +1361,23 @@ export default function HomePage() {
                         .filter((m) => {
                           const q = memberSearch.trim().toLowerCase();
                           if (!q) return true;
-                          return String(m?.user?.email || '').toLowerCase().includes(q);
+                          const u = m?.user || {};
+                          return (
+                            String(u?.username || '').toLowerCase().includes(q) ||
+                            String(u?.email || '').toLowerCase().includes(q)
+                          );
                         })
                         .map((m) => (
                           <div key={m.id} className={styles.memberRow2}>
                             <div className={styles.memberCell}>
                               <div className={styles.avatarStub}>{String(m?.user?.email || 'U').charAt(0).toUpperCase()}</div>
                               <div>
-                                <div className={styles.memberEmail}>{m?.user?.email || `User #${m.userId}`}</div>
+                                <div className={styles.memberEmail}>
+                                  {m?.user?.username ? `@${m.user.username}` : m?.user?.email || `User #${m.userId}`}
+                                </div>
+                                {m?.user?.username && m?.user?.email ? (
+                                  <div className={styles.gMutedSmall}>{m.user.email}</div>
+                                ) : null}
                                 <div className={styles.gMutedSmall}>{m.status}</div>
                               </div>
                             </div>

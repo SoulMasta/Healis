@@ -28,6 +28,7 @@ import styles from './MobileHomePage.module.css';
 import { getAllWorkspaces, createWorkspace, deleteWorkspace, duplicateWorkspace, updateWorkspace } from '../http/workspaceAPI';
 import {
   approveGroupJoinRequest,
+  createGroup,
   createGroupDesk,
   deleteGroup,
   denyGroupJoinRequest,
@@ -253,6 +254,78 @@ function CreateBoardSheet({ open, groups, mode, fixedGroupId, onClose, onCreated
   );
 }
 
+function CreateGroupSheet({ open, onClose, onCreated }) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setName('');
+      setDescription('');
+      setBusy(false);
+    }
+  }, [open]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      await createGroup({ name: name.trim(), description: description.trim() || null });
+      onCreated?.();
+      onClose?.();
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      alert(err?.response?.data?.error || err?.message || 'Не удалось создать группу');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className={styles.sheetOverlay} onClick={onClose} role="presentation">
+      <div className={styles.sheet} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <div className={styles.sheetHandle} aria-hidden="true" />
+        <div className={styles.sheetTitle}>Создать группу</div>
+        <form className={styles.sheetForm} onSubmit={submit}>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Название *</div>
+            <input
+              className={styles.input}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Например: ИС-21"
+              autoFocus
+            />
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Описание</div>
+            <input
+              className={styles.input}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Опционально"
+            />
+          </label>
+
+          <div className={styles.sheetActions}>
+            <button type="button" className={styles.btnGhost} onClick={onClose} disabled={busy}>
+              Отмена
+            </button>
+            <button type="submit" className={styles.btnPrimary} disabled={busy || !name.trim()}>
+              {busy ? <Loader2 size={16} className={styles.spinner} /> : <Plus size={16} />}
+              Создать
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function GroupSettingsSheet({
   open,
   group,
@@ -266,7 +339,7 @@ function GroupSettingsSheet({
   const [members, setMembers] = useState([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [memberSearch, setMemberSearch] = useState('');
-  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteUsername, setInviteUsername] = useState('');
   const [requests, setRequests] = useState([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [regeneratingInvite, setRegeneratingInvite] = useState(false);
@@ -280,7 +353,7 @@ function GroupSettingsSheet({
     setDraftName(String(group?.name || ''));
     setMembers([]);
     setRequests([]);
-    setInviteEmail('');
+    setInviteUsername('');
     setMemberSearch('');
     setSaving(false);
     setLoadingMembers(false);
@@ -354,11 +427,11 @@ function GroupSettingsSheet({
 
   const inviteMember = async () => {
     if (!group?.groupId) return;
-    const email = inviteEmail.trim();
-    if (!email) return;
+    const username = inviteUsername.trim().replace(/^@/, '');
+    if (!username) return;
     try {
-      await inviteToGroup(group.groupId, { email });
-      setInviteEmail('');
+      await inviteToGroup(group.groupId, { username });
+      setInviteUsername('');
       await loadMembers();
     } catch (err) {
       // eslint-disable-next-line no-alert
@@ -383,7 +456,8 @@ function GroupSettingsSheet({
     if (!group?.groupId || !m?.userId) return;
     if (!canManage || m.role === 'OWNER') return;
     // eslint-disable-next-line no-alert
-    const ok = window.confirm(`Удалить участника ${m?.user?.email || m.userId} из группы?`);
+    const label = m?.user?.username ? `@${m.user.username}` : m?.user?.email || m.userId;
+    const ok = window.confirm(`Удалить участника ${label} из группы?`);
     if (!ok) return;
     try {
       await removeGroupMember(group.groupId, m.userId);
@@ -507,12 +581,22 @@ function GroupSettingsSheet({
 
             <div className={styles.searchMembers}>
               <Search size={16} className={styles.searchIcon} aria-hidden="true" />
-              <input className={styles.search} placeholder="Поиск по email" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
+              <input
+                className={styles.search}
+                placeholder="Поиск по username или email"
+                value={memberSearch}
+                onChange={(e) => setMemberSearch(e.target.value)}
+              />
             </div>
 
             <div className={styles.inviteRowMobile}>
-              <input className={styles.input} placeholder="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} />
-              <button type="button" className={styles.btnGhost} onClick={inviteMember} disabled={!inviteEmail.trim()}>
+              <input
+                className={styles.input}
+                placeholder="username (например: ivanov)"
+                value={inviteUsername}
+                onChange={(e) => setInviteUsername(e.target.value)}
+              />
+              <button type="button" className={styles.btnGhost} onClick={inviteMember} disabled={!inviteUsername.trim()}>
                 Пригласить
               </button>
             </div>
@@ -527,12 +611,21 @@ function GroupSettingsSheet({
                   .filter((m) => {
                     const q = memberSearch.trim().toLowerCase();
                     if (!q) return true;
-                    return String(m?.user?.email || '').toLowerCase().includes(q);
+                    const u = m?.user || {};
+                    return (
+                      String(u?.username || '').toLowerCase().includes(q) ||
+                      String(u?.email || '').toLowerCase().includes(q)
+                    );
                   })
                   .map((m) => (
                     <div key={m.id} className={styles.memberRowMobile}>
                       <div className={styles.memberMain}>
-                        <div className={styles.memberEmail}>{m?.user?.email || `User #${m.userId}`}</div>
+                        <div className={styles.memberEmail}>
+                          {m?.user?.username ? `@${m.user.username}` : m?.user?.email || `User #${m.userId}`}
+                        </div>
+                        {m?.user?.username && m?.user?.email ? (
+                          <div className={styles.gMutedSmall}>{m.user.email}</div>
+                        ) : null}
                         <div className={styles.gMutedSmall}>{m.role === 'OWNER' ? 'Владелец' : m.role === 'ADMIN' ? 'Админ' : 'Участник'}</div>
                       </div>
                       <div className={styles.memberActionsMobile}>
@@ -841,6 +934,7 @@ export default function MobileHomePage() {
   const [groupDesks, setGroupDesks] = useState(new Map()); // groupId -> desks[]
   const [createMode, setCreateMode] = useState(null); // 'personal' | 'group' | null
   const [createGroupId, setCreateGroupId] = useState(null);
+  const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const [groupSettingsId, setGroupSettingsId] = useState(null);
   const [boardSettings, setBoardSettings] = useState(null); // { id, name, groupName?, updatedAt? }
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1305,7 +1399,17 @@ export default function MobileHomePage() {
                 />
                 <div className={styles.sectionTitle}>Групповые доски</div>
               </div>
-              <div className={styles.sectionHeaderActions} />
+              <div className={styles.sectionHeaderActions}>
+                <button
+                  type="button"
+                  className={`${styles.sectionAction} tapTarget`}
+                  onClick={() => setCreateGroupOpen(true)}
+                  aria-label="Создать группу"
+                  title="Создать группу"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
             </div>
             {collapsed.groupBoards ? null : (
               <div className={styles.groupList}>
@@ -1402,6 +1506,14 @@ export default function MobileHomePage() {
         onCreated={() => {
           load();
           loadUpcoming();
+        }}
+      />
+
+      <CreateGroupSheet
+        open={Boolean(createGroupOpen)}
+        onClose={() => setCreateGroupOpen(false)}
+        onCreated={() => {
+          load();
         }}
       />
 

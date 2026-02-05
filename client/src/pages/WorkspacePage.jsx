@@ -37,7 +37,7 @@ import {
 import { getHealth } from '../http/health';
 import { getWorkspace } from '../http/workspaceAPI';
 import { getToken, refreshAuth } from '../http/userAPI';
-import { getSocketBaseUrl } from '../config/runtime';
+import { getApiBaseUrl, getSocketBaseUrl } from '../config/runtime';
 import {
   createElementOnDesk,
   getElementsByDesk,
@@ -58,6 +58,40 @@ import { buildManualBoardSearchIndex, makeSnippet, runManualBoardSearch } from '
 
 const TEXT_PREVIEW_EXTS = new Set(['txt', 'md', 'csv', 'rtf']);
 const MAX_PREVIEW_CHARS = 2200;
+
+function isAbsoluteUrl(url) {
+  return /^https?:\/\//i.test(String(url || ''));
+}
+
+function resolvePublicFileUrl(urlRaw, apiBaseUrl) {
+  const url = String(urlRaw || '').trim();
+  if (!url) return '';
+  if (isAbsoluteUrl(url) || url.startsWith('data:') || url.startsWith('blob:')) return url;
+  if (url.startsWith('/uploads/') && apiBaseUrl) return `${String(apiBaseUrl).replace(/\/+$/, '')}${url}`;
+  return url;
+}
+
+async function fetchTextPreview(urlRaw, { timeoutMs = 8000 } = {}) {
+  const url = String(urlRaw || '').trim();
+  if (!url) return '';
+  const controller = new AbortController();
+  const t = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    // Prefer a small range read for speed on large files.
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Range: 'bytes=0-8191' },
+      signal: controller.signal,
+      credentials: 'include',
+    });
+    const text = await res.text();
+    return String(text || '').replace(/\r\n/g, '\n').slice(0, MAX_PREVIEW_CHARS);
+  } catch {
+    return '';
+  } finally {
+    window.clearTimeout(t);
+  }
+}
 
 const BRUSH_COLORS = ['#0f172a', '#ef4444', '#22c55e', '#3b82f6', '#f59e0b', '#a855f7', '#ffffff'];
 const DEFAULT_BRUSH_COLOR = '#0f172a';
@@ -594,6 +628,17 @@ const ConnectorsLayer = React.memo(function ConnectorsLayer({
 
         return (
           <g key={el.id} className={selected ? styles.connectorSelected : ''}>
+            {selected ? (
+              <path
+                d={d}
+                fill="none"
+                stroke="rgba(43, 108, 255, 0.55)"
+                strokeWidth={Math.max(8, w + 8)}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                pointerEvents="none"
+              />
+            ) : null}
             <path
               d={d}
               fill="none"
@@ -821,7 +866,7 @@ function downloadBlob(blob, filename) {
 }
 
 async function fetchFileBlob(url) {
-  const res = await axios.get(url, { responseType: 'blob' });
+  const res = await axios.get(url, { responseType: 'blob', timeout: 20_000 });
   return res.data;
 }
 
@@ -829,6 +874,7 @@ export default function WorkspacePage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { isMobile } = useBreakpoints();
+  const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const linkInputRef = useRef(null);
@@ -874,6 +920,8 @@ export default function WorkspacePage() {
   const [mobileLinkOpen, setMobileLinkOpen] = useState(false);
   const [aiSheetDragY, setAiSheetDragY] = useState(0);
   const [aiSheetDragging, setAiSheetDragging] = useState(false);
+  const [commentsSheetDragY, setCommentsSheetDragY] = useState(0);
+  const [commentsSheetDragging, setCommentsSheetDragging] = useState(false);
 
   // Safety net: reconcile duplicates only when list size changes (avoid per-frame work during drag).
   useEffect(() => {
@@ -970,6 +1018,8 @@ export default function WorkspacePage() {
   const mobileSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
   const aiSheetRef = useRef(null);
   const aiSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
+  const commentsSheetRef = useRef(null);
+  const commentsSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
   const mobileLongPressRef = useRef({ timerId: null, pointerId: null, elementId: null });
   const mobilePinchRef = useRef({
     active: false,
@@ -1812,6 +1862,31 @@ export default function WorkspacePage() {
     if (vm.link == null && vm.Link != null) vm.link = vm.Link;
     if (vm.drawing == null && vm.Drawing != null) vm.drawing = vm.Drawing;
     if (vm.connector == null && vm.Connector != null) vm.connector = vm.Connector;
+
+    // Resolve /uploads URLs to the API origin when frontend is hosted separately.
+    if (vm.type === 'document') {
+      const doc = vm.document ?? vm.Document ?? null;
+      if (doc?.url) {
+        const resolved = resolvePublicFileUrl(doc.url, apiBaseUrl);
+        if (resolved && resolved !== doc.url) {
+          const nextDoc = { ...(doc || {}), url: resolved };
+          vm.document = nextDoc;
+          vm.Document = nextDoc;
+        }
+      }
+    }
+    if (vm.type === 'link') {
+      const link = vm.link ?? vm.Link ?? null;
+      if (link?.previewImageUrl) {
+        const resolved = resolvePublicFileUrl(link.previewImageUrl, apiBaseUrl);
+        if (resolved && resolved !== link.previewImageUrl) {
+          const nextLink = { ...(link || {}), previewImageUrl: resolved };
+          vm.link = nextLink;
+          vm.Link = nextLink;
+        }
+      }
+    }
+
     // Normalize connector endpoints to numeric IDs when possible.
     if (vm.type === 'connector') {
       const child = vm.connector ?? vm.Connector ?? null;
@@ -1820,7 +1895,7 @@ export default function WorkspacePage() {
       if (data?.to?.elementId != null) data.to.elementId = normalizeElementId(data.to.elementId);
     }
     return vm;
-  }, [extractContent, normalizeReactions]);
+  }, [extractContent, normalizeReactions, apiBaseUrl]);
 
   const openReactionPicker = (elementId, x, y) => {
     if (!elementId) return;
@@ -2566,6 +2641,13 @@ export default function WorkspacePage() {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to open document:', err?.response?.data || err);
+      // Fallback: try opening the URL directly (browser may handle it better).
+      try {
+        window.open(docUrl, '_blank', 'noopener,noreferrer');
+        return;
+      } catch {
+        // ignore
+      }
       setActionError(err?.response?.data?.error || err?.message || 'Failed to open file');
       window.setTimeout(() => setActionError(null), 4000);
     }
@@ -2876,9 +2958,8 @@ export default function WorkspacePage() {
   };
 
   const elementsRef = useRef(elements);
-  useEffect(() => {
-    elementsRef.current = elements;
-  }, [elements]);
+  // Keep ref in sync immediately (ConnectorsLayer reads it during render).
+  elementsRef.current = elements;
 
   const registerElementNode = useCallback((elementId, node) => {
     const k = idKey(elementId);
@@ -4176,11 +4257,8 @@ export default function WorkspacePage() {
       for (const d of need.slice(0, 6)) {
         fetchingPreviewsRef.current.add(d.url);
         try {
-          const res = await axios.get(d.url, { responseType: 'text' });
+          const text = await fetchTextPreview(d.url);
           if (cancelled) return;
-          const text = String(res.data ?? '')
-            .replace(/\r\n/g, '\n')
-            .slice(0, MAX_PREVIEW_CHARS);
           setDocTextPreview((prev) => ({ ...prev, [d.url]: text }));
         } catch {
           if (cancelled) return;
@@ -4242,6 +4320,51 @@ export default function WorkspacePage() {
     setAiSheetDragY(0);
     setAiPanelOpen(false);
   }, []);
+
+  const closeCommentsPanel = useCallback(() => {
+    commentsSheetDragRef.current.active = false;
+    commentsSheetDragRef.current.pointerId = null;
+    setCommentsSheetDragging(false);
+    setCommentsSheetDragY(0);
+    setCommentsPanel(null);
+  }, []);
+
+  const onCommentsSheetDragStart = useCallback((ev) => {
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    commentsSheetDragRef.current.active = true;
+    commentsSheetDragRef.current.pointerId = ev.pointerId;
+    commentsSheetDragRef.current.startY = ev.clientY;
+    commentsSheetDragRef.current.lastY = ev.clientY;
+    setCommentsSheetDragging(true);
+    try {
+      (commentsSheetRef.current || ev.currentTarget)?.setPointerCapture?.(ev.pointerId);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const onCommentsSheetDragMove = useCallback((ev) => {
+    const d = commentsSheetDragRef.current;
+    if (!d.active || d.pointerId !== ev.pointerId) return;
+    const dy = Math.max(0, ev.clientY - d.startY);
+    d.lastY = ev.clientY;
+    setCommentsSheetDragY(dy);
+  }, []);
+
+  const onCommentsSheetDragEnd = useCallback((ev) => {
+    const d = commentsSheetDragRef.current;
+    if (!d.active || d.pointerId !== ev.pointerId) return;
+    d.active = false;
+    d.pointerId = null;
+    setCommentsSheetDragging(false);
+    const dy = Math.max(0, ev.clientY - d.startY);
+    const shouldClose = dy > 90;
+    if (shouldClose) {
+      closeCommentsPanel();
+      return;
+    }
+    setCommentsSheetDragY(0);
+  }, [closeCommentsPanel]);
 
   const onAiSheetDragStart = useCallback((ev) => {
     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
@@ -4696,6 +4819,26 @@ export default function WorkspacePage() {
           <>
             {!mobileToolsOpen && !mobileBrushBarOpen ? (
               <div className={styles.mobileFabWrap}>
+                {selectedConnectorId ? (
+                  <button
+                    type="button"
+                    className={styles.mobileFabBtn}
+                    aria-label="Удалить линию"
+                    title="Удалить"
+                    onClick={() => {
+                      const idToDelete = selectedConnectorId;
+                      if (!idToDelete) return;
+                      setSelectedConnectorId(null);
+                      deleteElement(idToDelete)
+                        .then(() => setElements((prev) => prev.filter((x) => !sameId(x.id, idToDelete))))
+                        .catch(() => {
+                          // ignore
+                        });
+                    }}
+                  >
+                    <Trash2 size={22} />
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={`${styles.mobileFabBtn} ${aiPanelOpen ? styles.mobileFabBtnActive : ''}`}
@@ -4825,15 +4968,13 @@ export default function WorkspacePage() {
                   />
 
                   <div className={styles.mobileToolGrid}>
-                    {TOOLS.filter(({ id: toolId }) => toolId !== 'hand' && toolId !== 'select').map(({ id: toolId, label, Icon }) => {
-                      const disabled = toolId === 'connector';
+                    {TOOLS.filter(({ id: toolId }) => toolId !== 'hand' && toolId !== 'select' && toolId !== 'connector').map(({ id: toolId, label, Icon }) => {
                       return (
                         <button
                           key={toolId}
                           type="button"
-                          className={`${styles.mobileToolItem} ${disabled ? styles.mobileToolItemDisabled : ''}`}
+                          className={styles.mobileToolItem}
                           aria-label={label}
-                          disabled={disabled}
                           onClick={() => {
                             if (toolId === 'attach') {
                               openAttachDialog();
@@ -5746,77 +5887,169 @@ export default function WorkspacePage() {
       </div>
 
       {commentsEnabled && commentsPanel ? (
-        <div
-          className={styles.commentsPanel}
-          role="dialog"
-          aria-label="Comments"
-          onPointerDown={(ev) => ev.stopPropagation()}
-        >
-          <div className={styles.commentsPanelHeader}>
-            <div className={styles.commentsPanelTitle}>Комментарии</div>
-            <button
-              type="button"
-              className={styles.commentsPanelClose}
-              onClick={() => setCommentsPanel(null)}
-              aria-label="Close comments"
-              title="Закрыть"
+        isMobile ? (
+          <div
+            className={styles.commentsSheetOverlay}
+            role="presentation"
+            onPointerDown={() => {
+              closeCommentsPanel();
+            }}
+          >
+            <div
+              ref={commentsSheetRef}
+              className={`${styles.commentsSheet} ${commentsSheetDragging ? styles.commentsSheetDragging : ''}`}
+              role="dialog"
+              aria-label="Комментарии"
+              onPointerDown={(ev) => ev.stopPropagation()}
+              onPointerMove={onCommentsSheetDragMove}
+              onPointerUp={onCommentsSheetDragEnd}
+              onPointerCancel={onCommentsSheetDragEnd}
+              style={{ transform: `translateY(${commentsSheetDragY}px)` }}
             >
-              <X size={18} />
-            </button>
-          </div>
+              <div
+                className={styles.commentsSheetHandle}
+                aria-hidden="true"
+                onPointerDown={onCommentsSheetDragStart}
+              />
+              <div className={styles.commentsPanelHeader}>
+                <div className={styles.commentsPanelTitle}>Комментарии</div>
+                <button
+                  type="button"
+                  className={styles.commentsPanelClose}
+                  onClick={() => closeCommentsPanel()}
+                  aria-label="Закрыть комментарии"
+                  title="Закрыть"
+                >
+                  <X size={18} />
+                </button>
+              </div>
 
-          <div className={styles.commentsPanelMeta}>
-            Элемент #{commentsPanel.elementId}
-            {commentsLoading[commentsPanel.elementId] ? ' · загрузка…' : ''}
-          </div>
+              <div className={styles.commentsPanelMeta}>
+                Элемент #{commentsPanel.elementId}
+                {commentsLoading[commentsPanel.elementId] ? ' · загрузка…' : ''}
+              </div>
 
-          <div ref={commentsListRef} className={styles.commentsList} aria-label="Comments list">
-            {(commentsByElement[commentsPanel.elementId] || []).length ? (
-              (commentsByElement[commentsPanel.elementId] || []).map((c) => (
-                <div key={c.id} className={styles.commentItem}>
-                  <div className={styles.commentTop}>
-                    <span className={styles.commentAuthor}>{c?.user?.email || c?.User?.email || 'User'}</span>
-                    <span className={styles.commentTime}>
-                      {c?.createdAt ? new Date(c.createdAt).toLocaleString() : ''}
-                    </span>
+              <div ref={commentsListRef} className={styles.commentsList} aria-label="Comments list">
+                {(commentsByElement[commentsPanel.elementId] || []).length ? (
+                  (commentsByElement[commentsPanel.elementId] || []).map((c) => (
+                    <div key={c.id} className={styles.commentItem}>
+                      <div className={styles.commentTop}>
+                        <span className={styles.commentAuthor}>{c?.user?.email || c?.User?.email || 'User'}</span>
+                        <span className={styles.commentTime}>
+                          {c?.createdAt ? new Date(c.createdAt).toLocaleString() : ''}
+                        </span>
+                      </div>
+                      <div className={styles.commentText}>{String(c?.text ?? '')}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className={styles.commentsEmpty}>Пока нет комментариев — напишите первый.</div>
+                )}
+              </div>
+
+              <div className={styles.commentComposer}>
+                <textarea
+                  ref={commentInputRef}
+                  className={styles.commentInput}
+                  value={commentDraft}
+                  placeholder="Написать комментарий…"
+                  onChange={(ev) => setCommentDraft(ev.target.value)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === 'Escape') {
+                      ev.preventDefault();
+                      closeCommentsPanel();
+                      return;
+                    }
+                    if (ev.key === 'Enter' && !ev.shiftKey) {
+                      ev.preventDefault();
+                      submitComment();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className={styles.commentSendBtn}
+                  onClick={submitComment}
+                  disabled={!String(commentDraft || '').trim()}
+                >
+                  Отправить
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div
+            className={styles.commentsPanel}
+            role="dialog"
+            aria-label="Comments"
+            onPointerDown={(ev) => ev.stopPropagation()}
+          >
+            <div className={styles.commentsPanelHeader}>
+              <div className={styles.commentsPanelTitle}>Комментарии</div>
+              <button
+                type="button"
+                className={styles.commentsPanelClose}
+                onClick={() => closeCommentsPanel()}
+                aria-label="Close comments"
+                title="Закрыть"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className={styles.commentsPanelMeta}>
+              Элемент #{commentsPanel.elementId}
+              {commentsLoading[commentsPanel.elementId] ? ' · загрузка…' : ''}
+            </div>
+
+            <div ref={commentsListRef} className={styles.commentsList} aria-label="Comments list">
+              {(commentsByElement[commentsPanel.elementId] || []).length ? (
+                (commentsByElement[commentsPanel.elementId] || []).map((c) => (
+                  <div key={c.id} className={styles.commentItem}>
+                    <div className={styles.commentTop}>
+                      <span className={styles.commentAuthor}>{c?.user?.email || c?.User?.email || 'User'}</span>
+                      <span className={styles.commentTime}>
+                        {c?.createdAt ? new Date(c.createdAt).toLocaleString() : ''}
+                      </span>
+                    </div>
+                    <div className={styles.commentText}>{String(c?.text ?? '')}</div>
                   </div>
-                  <div className={styles.commentText}>{String(c?.text ?? '')}</div>
-                </div>
-              ))
-            ) : (
-              <div className={styles.commentsEmpty}>Пока нет комментариев — напишите первый.</div>
-            )}
-          </div>
+                ))
+              ) : (
+                <div className={styles.commentsEmpty}>Пока нет комментариев — напишите первый.</div>
+              )}
+            </div>
 
-          <div className={styles.commentComposer}>
-            <textarea
-              ref={commentInputRef}
-              className={styles.commentInput}
-              value={commentDraft}
-              placeholder="Написать комментарий…"
-              onChange={(ev) => setCommentDraft(ev.target.value)}
-              onKeyDown={(ev) => {
-                if (ev.key === 'Escape') {
-                  ev.preventDefault();
-                  setCommentsPanel(null);
-                  return;
-                }
-                if (ev.key === 'Enter' && !ev.shiftKey) {
-                  ev.preventDefault();
-                  submitComment();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className={styles.commentSendBtn}
-              onClick={submitComment}
-              disabled={!String(commentDraft || '').trim()}
-            >
-              Отправить
-            </button>
+            <div className={styles.commentComposer}>
+              <textarea
+                ref={commentInputRef}
+                className={styles.commentInput}
+                value={commentDraft}
+                placeholder="Написать комментарий…"
+                onChange={(ev) => setCommentDraft(ev.target.value)}
+                onKeyDown={(ev) => {
+                  if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    closeCommentsPanel();
+                    return;
+                  }
+                  if (ev.key === 'Enter' && !ev.shiftKey) {
+                    ev.preventDefault();
+                    submitComment();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className={styles.commentSendBtn}
+                onClick={submitComment}
+                disabled={!String(commentDraft || '').trim()}
+              >
+                Отправить
+              </button>
+            </div>
           </div>
-        </div>
+        )
       ) : null}
 
       {aiPanelOpen ? (
