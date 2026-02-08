@@ -126,11 +126,42 @@ const uploadAvatar = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
+// Upload for material card attachments (path: userId/card/cardId)
+const cardStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    try {
+      const userId = req.user?.id;
+      const cardId = req.params?.cardId;
+      const uploadsRoot = path.join(__dirname, '..', 'uploads');
+      const dest = path.join(uploadsRoot, String(userId || 'anon'), 'card', String(cardId || '0'));
+      fs.mkdirSync(dest, { recursive: true });
+      cb(null, dest);
+    } catch (e) {
+      cb(e);
+    }
+  },
+  filename(req, file, cb) {
+    const fixedOriginal = fixMojibakeName(file.originalname || '');
+    const ext = path.extname(fixedOriginal || '').toLowerCase();
+    const token = crypto.randomBytes(8).toString('hex');
+    const ts = Date.now();
+    const base = safeName(path.basename(fixedOriginal || 'file', ext));
+    cb(null, `${ts}-${token}-${base}${ext || ''}`);
+  },
+});
+
+const uploadCardFile = multer({
+  storage: cardStorage,
+  fileFilter,
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
 module.exports = {
   upload,
   ALLOWED_EXTENSIONS,
   uploadAvatar,
   ALLOWED_AVATAR_EXTENSIONS,
+  uploadCardFile,
 };
 
 

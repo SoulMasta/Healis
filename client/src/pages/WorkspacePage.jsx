@@ -1,35 +1,22 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import {
   ArrowUp,
   ArrowLeft,
   Bell,
-  File,
-  FileArchive,
-  FileImage,
-  FileSpreadsheet,
-  FileText,
   Eraser,
-  Hand,
   Home,
-  Link2,
   MoreVertical,
   Share2,
   Spline,
   MessageCircle,
-  MousePointer2,
-  Paperclip,
   Plus,
   PenLine,
   Search,
   Square,
-  Type,
   Loader2,
   Trash2,
-  Download,
-  ExternalLink,
   Undo2,
   Redo2,
   X,
@@ -40,12 +27,18 @@ import { getToken, refreshAuth } from '../http/userAPI';
 import { getApiBaseUrl, getSocketBaseUrl } from '../config/runtime';
 import {
   createElementOnDesk,
-  getElementsByDesk,
   updateElement,
   deleteElement,
   uploadFileToDesk,
   getLinkPreview,
 } from '../http/elementsAPI';
+import {
+  getMaterialBlocksByDesk,
+  createMaterialBlock,
+  updateMaterialBlock,
+  deleteMaterialBlock,
+} from '../http/materialBlocksAPI';
+import { MaterialBlockModal } from '../components/materialBlock';
 import { createElementComment, getElementComments } from '../http/commentsAPI';
 import { chatWithDesk, getAiStatus } from '../http/aiAPI';
 import UserMenu from '../components/UserMenu';
@@ -55,830 +48,45 @@ import styles from '../styles/WorkspacePage.module.css';
 import note2Img from '../static/note2.png';
 import { DEFAULT_SHORTCUTS, formatShortcut, loadShortcuts, matchShortcut } from '../utils/shortcuts';
 import { buildManualBoardSearchIndex, makeSnippet, runManualBoardSearch } from '../utils/boardSearch';
-
-const TEXT_PREVIEW_EXTS = new Set(['txt', 'md', 'csv', 'rtf']);
-const MAX_PREVIEW_CHARS = 2200;
-
-function isAbsoluteUrl(url) {
-  return /^https?:\/\//i.test(String(url || ''));
-}
-
-function resolvePublicFileUrl(urlRaw, apiBaseUrl) {
-  const url = String(urlRaw || '').trim();
-  if (!url) return '';
-  if (isAbsoluteUrl(url) || url.startsWith('data:') || url.startsWith('blob:')) return url;
-  if (url.startsWith('/uploads/') && apiBaseUrl) return `${String(apiBaseUrl).replace(/\/+$/, '')}${url}`;
-  return url;
-}
-
-async function fetchTextPreview(urlRaw, { timeoutMs = 8000 } = {}) {
-  const url = String(urlRaw || '').trim();
-  if (!url) return '';
-  const controller = new AbortController();
-  const t = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    // Prefer a small range read for speed on large files.
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { Range: 'bytes=0-8191' },
-      signal: controller.signal,
-      credentials: 'include',
-    });
-    const text = await res.text();
-    return String(text || '').replace(/\r\n/g, '\n').slice(0, MAX_PREVIEW_CHARS);
-  } catch {
-    return '';
-  } finally {
-    window.clearTimeout(t);
-  }
-}
-
-const BRUSH_COLORS = ['#0f172a', '#ef4444', '#22c55e', '#3b82f6', '#f59e0b', '#a855f7', '#ffffff'];
-const DEFAULT_BRUSH_COLOR = '#0f172a';
-const DEFAULT_BRUSH_WIDTH = 4;
-
-const QUICK_REACTIONS = ['😍', '😢', '😁', '🤣', '😌', '😎'];
-
-const AI_PROMPT_SUGGESTIONS = [
-  {
-    label: 'Суммаризация',
-    prompt: 'Сделай краткую суммаризацию контента доски и выдели ключевые темы.',
-  },
-  {
-    label: 'Задачи',
-    prompt: 'Предложи actionable список задач по содержимому доски. Коротко, по пунктам.',
-  },
-  {
-    label: 'План',
-    prompt: 'Составь пошаговый план действий на основе содержимого доски.',
-  },
-  {
-    label: 'Идеи',
-    prompt: 'Предложи 5 идей/улучшений по содержимому доски.',
-  },
-];
-
-const VIEW_SCALE_MIN = 0.2;
-const VIEW_SCALE_MAX = 3;
-// Baseline board scale. We intentionally render boards slightly smaller to increase field of view.
-// UI "100%" corresponds to this baseline.
-const VIEW_SCALE_BASE = 0.88;
-
-function clampNumber(v, min, max) {
-  return Math.min(max, Math.max(min, v));
-}
-
-function clampViewScale(s) {
-  return clampNumber(Number(s) || 1, VIEW_SCALE_MIN, VIEW_SCALE_MAX);
-}
-
-function formatViewScalePct(s) {
-  const eff = clampViewScale(s);
-  const pct = (eff / VIEW_SCALE_BASE) * 100;
-  return `${Math.round(pct)}%`;
-}
-
-function escapeRegExp(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// Stable callback wrapper: keeps function identity stable while always calling the latest implementation.
-function useEvent(handler) {
-  const handlerRef = useRef(handler);
-  useLayoutEffect(() => {
-    handlerRef.current = handler;
-  });
-  return useCallback((...args) => handlerRef.current?.(...args), []);
-}
-
-function renderHighlightedText(text, query, markClassName) {
-  const s = String(text ?? '');
-  const q = String(query ?? '').trim();
-  if (!q) return s;
-
-  // Case-insensitive highlight, without allowing regex injection.
-  const re = new RegExp(escapeRegExp(q), 'ig');
-  const nodes = [];
-  let last = 0;
-  let m = null;
-  let key = 0;
-  while ((m = re.exec(s))) {
-    const start = m.index;
-    const end = start + m[0].length;
-    if (start > last) nodes.push(<React.Fragment key={`t-${key++}`}>{s.slice(last, start)}</React.Fragment>);
-    nodes.push(
-      <mark key={`m-${key++}`} className={markClassName}>
-        {s.slice(start, end)}
-      </mark>
-    );
-    last = end;
-    if (end === start) re.lastIndex++; // safety
-  }
-  if (last < s.length) nodes.push(<React.Fragment key={`t-${key++}`}>{s.slice(last)}</React.Fragment>);
-  return nodes.length ? nodes : s;
-}
-
-function normalizeElementId(raw) {
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : raw;
-}
-
-function idKey(raw) {
-  return raw == null ? null : String(raw);
-}
-
-function sameId(a, b) {
-  const ka = idKey(a);
-  const kb = idKey(b);
-  return ka != null && kb != null && ka === kb;
-}
-
-function upsertById(list, item) {
-  if (!Array.isArray(list)) return Array.isArray(item) ? item : [];
-  if (!item || item.id == null) return list;
-  const idx = list.findIndex((x) => sameId(x?.id, item.id));
-  if (idx < 0) return [...list, item];
-  const next = list.slice();
-  next[idx] = { ...next[idx], ...item };
-  return next;
-}
-
-function dedupeMergeById(list) {
-  if (!Array.isArray(list) || list.length <= 1) return list;
-  const indexById = new Map();
-  const out = [];
-  let changed = false;
-  for (const el of list) {
-    const k = idKey(el?.id);
-    if (!k) {
-      out.push(el);
-      continue;
-    }
-    const idx = indexById.get(k);
-    if (idx == null) {
-      indexById.set(k, out.length);
-      out.push(el);
-      continue;
-    }
-    changed = true;
-    out[idx] = { ...out[idx], ...el };
-  }
-  return changed ? out : list;
-}
-
-let __fitMeasurerEl = null;
-function getFitMeasurerEl() {
-  if (typeof document === 'undefined') return null;
-  if (__fitMeasurerEl && document.body?.contains(__fitMeasurerEl)) return __fitMeasurerEl;
-  const m = document.createElement('div');
-  m.setAttribute('data-fit-measurer', 'true');
-  Object.assign(m.style, {
-    position: 'fixed',
-    left: '-99999px',
-    top: '-99999px',
-    visibility: 'hidden',
-    pointerEvents: 'none',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    overflowWrap: 'break-word',
-    padding: '0',
-    margin: '0',
-    border: '0',
-    boxSizing: 'border-box',
-  });
-  document.body.appendChild(m);
-  __fitMeasurerEl = m;
-  return m;
-}
-
-function IconBtn({ label, title, children, onClick, disabled, buttonRef, className }) {
-  return (
-    <button
-      type="button"
-      className={`${styles.iconBtn} ${className || ''}`}
-      ref={buttonRef}
-      onClick={onClick}
-      aria-label={label}
-      title={title || label}
-      disabled={disabled}
-    >
-      {children}
-    </button>
-  );
-}
-
-const NoteTextElement = React.memo(function NoteTextElement({
-  el,
-  isMobile,
-  isSelected,
-  isEditing,
-  dragX,
-  dragY,
-  commentsEnabled,
-  deletingElementId,
-  searchQuery,
-  isSearchHit,
-  activeTool,
-  connectorHoverElementId,
-  connectorFromElementId,
-  connectorToHoverElementId,
-  registerNode,
-  actions,
-}) {
-  const elementId = el?.id;
-  const content = el?.content;
-  const [draft, setDraft] = React.useState(String(content ?? ''));
-  const textElRef = React.useRef(null);
-  const [fitStyle, setFitStyle] = React.useState(() => ({
-    fontSizePx: 14,
-    padY: 18,
-  }));
-
-  React.useEffect(() => {
-    // When entering edit mode, initialize draft from current content.
-    if (!elementId) return;
-    if (isEditing) setDraft(String(content ?? ''));
-  }, [isEditing, elementId, content]);
-
-  React.useLayoutEffect(() => {
-    const node = textElRef.current;
-    const measurer = getFitMeasurerEl();
-    if (!node || !measurer) return;
-
-    const boxW = Math.max(0, Math.floor(node.clientWidth || 0));
-    const boxH = Math.max(0, Math.floor(node.clientHeight || 0));
-    if (boxW <= 0 || boxH <= 0) return;
-
-    const cs = window.getComputedStyle(node);
-    // Preserve typography; keep wrapping/line-height consistent with our inline style.
-    const lineHeight = 1.15;
-    measurer.style.fontFamily = cs.fontFamily;
-    measurer.style.fontWeight = cs.fontWeight;
-    measurer.style.letterSpacing = cs.letterSpacing;
-    measurer.style.lineHeight = String(lineHeight);
-    measurer.style.whiteSpace = 'pre-wrap';
-    measurer.style.wordBreak = 'break-word';
-    measurer.style.overflowWrap = 'break-word';
-    measurer.style.width = `${boxW}px`;
-
-    const rawText = String(isEditing ? draft : (el?.content ?? ''));
-    // Use a non-empty string to keep a stable "empty" caret baseline.
-    const measureText = rawText.trim().length ? rawText : 'A';
-    measurer.textContent = measureText;
-
-    const minFont = 10;
-    const maxFont = Math.min(72, Math.max(18, Math.floor(boxH * 0.6)));
-    // Keep some horizontal breathing room; vertical padding will be computed dynamically below.
-    const padX = el?.type === 'note' ? 22 : 18;
-    const minPadY = 8;
-    const availW = Math.max(0, boxW - padX * 2);
-    const availH = Math.max(0, boxH - minPadY * 2);
-    if (availW <= 0 || availH <= 0) return;
-
-    measurer.style.width = `${availW}px`;
-
-    const fits = () => measurer.scrollHeight <= availH + 0.5 && measurer.scrollWidth <= availW + 0.5;
-
-    let lo = minFont;
-    let hi = maxFont;
-    // Binary search the largest fitting font size.
-    for (let i = 0; i < 10; i += 1) {
-      const mid = Math.floor((lo + hi + 1) / 2);
-      measurer.style.fontSize = `${mid}px`;
-      if (fits()) lo = mid;
-      else hi = mid - 1;
-      if (hi <= lo) break;
-    }
-    const fontSizePx = Math.max(minFont, Math.min(maxFont, lo));
-
-    // Compute vertical centering padding using the chosen font size.
-    measurer.style.fontSize = `${fontSizePx}px`;
-    const textH = Math.max(0, Math.ceil(measurer.scrollHeight || 0));
-    const padY = Math.max(minPadY, Math.floor((boxH - textH) / 2));
-
-    setFitStyle((prev) => {
-      if (prev.fontSizePx === fontSizePx && prev.padY === padY) return prev;
-      return { fontSizePx, padY };
-    });
-  }, [draft, isEditing, el?.content, el?.width, el?.height, el?.type]);
-
-  if (!elementId) return null;
-
-  const showConnectorEndpoints =
-    isSelected ||
-    (activeTool === 'connector' && connectorHoverElementId === elementId) ||
-    connectorFromElementId === elementId ||
-    connectorToHoverElementId === elementId;
-
-  const innerClass =
-    el.type === 'note' ? `${styles.elementInner} ${styles.noteInner}` : `${styles.elementInner} ${styles.textInner}`;
-  const displayTextClass = el.type === 'note' ? `${styles.displayText} ${styles.notePad}` : styles.displayText;
-  const editorClass = el.type === 'note' ? `${styles.editor} ${styles.noteEditorPad}` : styles.editor;
-  const padX = el.type === 'note' ? 22 : 18;
-  const fitInlineStyle = {
-    fontSize: `${fitStyle.fontSizePx}px`,
-    lineHeight: 1.15,
-    paddingTop: `${fitStyle.padY}px`,
-    paddingBottom: `${fitStyle.padY}px`,
-    paddingLeft: `${padX}px`,
-    paddingRight: `${padX}px`,
-    textAlign: 'center',
-  };
-
-  const reactionBubbles = actions.layoutReactionBubbles(elementId, el.reactions);
-  // If a render happens mid-drag (e.g. due to external state updates), keep the dragged element stable.
-  const ex = Number(dragX != null ? dragX : (el.x ?? 0));
-  const ey = Number(dragY != null ? dragY : (el.y ?? 0));
-
-  return (
-    <div
-      data-element-id={elementId}
-      className={styles.element}
-      ref={(node) => registerNode?.(elementId, node)}
-      style={{
-        left: 0,
-        top: 0,
-        width: el.width ?? 240,
-        height: el.height ?? 160,
-        zIndex: el.zIndex ?? 0,
-        transform: `translate3d(${ex}px, ${ey}px, 0) rotate(${el.rotation ?? 0}deg)`,
-      }}
-      onPointerDown={(ev) => actions.onElementPointerDown(elementId, ev)}
-      onPointerUp={(ev) => actions.maybeEnterEditOnPointerUp(elementId, ev)}
-      onClick={(ev) => actions.onElementClick(elementId, ev)}
-      onContextMenu={(ev) => {
-        if (isMobile) return;
-        if (activeTool === 'pen' || activeTool === 'eraser') return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        actions.openReactionPicker(elementId, ev.clientX, ev.clientY);
-      }}
-      onDoubleClick={() => {
-        if (activeTool === 'pen' || activeTool === 'eraser') return;
-        actions.beginEditing(elementId);
-      }}
-    >
-      {commentsEnabled ? (
-        <button
-          type="button"
-          className={styles.commentBtn}
-          onPointerDown={(ev) => ev.stopPropagation()}
-          onClick={(ev) => {
-            ev.stopPropagation();
-            actions.openComments(elementId);
-          }}
-          aria-label="Comments"
-          title="Комментарии"
-        >
-          <MessageCircle size={16} />
-        </button>
-      ) : null}
-      <div className={`${innerClass} ${isSearchHit ? styles.elementSearchHit : ''}`}>
-        {isEditing ? (
-          <textarea
-            className={editorClass}
-            value={draft}
-            ref={textElRef}
-            style={fitInlineStyle}
-            autoFocus
-            onPointerDown={(ev) => ev.stopPropagation()}
-            onBlur={(ev) => {
-              // Exit edit mode when focus leaves the element entirely (e.g. clicking toolbar).
-              const next = ev.relatedTarget;
-              if (next && next.closest?.(`[data-element-id="${elementId}"]`)) return;
-              actions.endEditing?.();
-            }}
-            onChange={(ev) => {
-              const next = ev.target.value;
-              setDraft(next);
-              // Keep the latest content in the mutable ref, so endEditing() persists the newest value,
-              // without rerendering the whole board on every keystroke.
-              actions.mutateElementRef(elementId, { content: next });
-              if (el.type === 'note') actions.queueNoteEdit(elementId, next);
-            }}
-            onKeyDown={async (ev) => {
-              if (ev.key === 'Escape') {
-                ev.preventDefault();
-                ev.stopPropagation();
-                await actions.endEditing();
-                return;
-              }
-              if (ev.key === 'Enter' && !ev.shiftKey) {
-                ev.preventDefault();
-                await actions.endEditing();
-              }
-            }}
-          />
-        ) : (
-          <div ref={textElRef} className={displayTextClass} style={fitInlineStyle}>
-            {renderHighlightedText(el.content ?? '', searchQuery, styles.searchMark)}
-          </div>
-        )}
-      </div>
-
-      {showConnectorEndpoints ? (
-        <div className={styles.connectorEndpointsBox} aria-hidden="true">
-          <div
-            className={`${styles.connectorEndpoint} ${styles.epTop}`}
-            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'top', ev)}
-          />
-          <div
-            className={`${styles.connectorEndpoint} ${styles.epRight}`}
-            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'right', ev)}
-          />
-          <div
-            className={`${styles.connectorEndpoint} ${styles.epBottom}`}
-            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'bottom', ev)}
-          />
-          <div
-            className={`${styles.connectorEndpoint} ${styles.epLeft}`}
-            onPointerDown={(ev) => actions.startConnectorDrag(elementId, 'left', ev)}
-          />
-        </div>
-      ) : null}
-
-      {reactionBubbles.length ? (
-        <div className={styles.reactionsLayer} aria-label="Reactions">
-          {reactionBubbles.map((b) => (
-            <button
-              key={b.emoji}
-              type="button"
-              className={`${styles.reactionBubble} ${b.count === 1 ? styles.reactionSolo : ''}`}
-              data-side={b.side}
-              style={{
-                left: `${b.xPct}%`,
-                top: `${b.yPct}%`,
-              }}
-              onPointerDown={(ev) => ev.stopPropagation()}
-              onClick={(ev) => {
-                ev.stopPropagation();
-                actions.toggleReaction(elementId, b.emoji);
-              }}
-              title={b.count > 1 ? `${b.emoji} · ${b.count}` : b.emoji}
-              aria-label={b.count > 1 ? `${b.emoji} ${b.count}` : b.emoji}
-            >
-              <span className={styles.reactionEmoji}>{b.emoji}</span>
-              {b.count > 1 ? <span className={styles.reactionCount}>{b.count}</span> : null}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {isSelected ? (
-        <div className={styles.transformBox}>
-          <div className={styles.elementActions}>
-            <button
-              type="button"
-              className={styles.deleteElementBtn}
-              onPointerDown={(ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                actions.handleDeleteElement(el);
-              }}
-              disabled={sameId(deletingElementId, elementId)}
-              aria-label="Delete element"
-              title="Delete element"
-            >
-              {sameId(deletingElementId, elementId) ? (
-                <Loader2 size={16} className={styles.spinner} />
-              ) : (
-                <Trash2 size={16} />
-              )}
-            </button>
-          </div>
-          <div className={`${styles.resizeHandle} ${styles.hNW}`} onPointerDown={(ev) => actions.startResize(elementId, 'nw', ev)} />
-          {el.type !== 'note' ? (
-            <div className={`${styles.resizeHandle} ${styles.hN}`} onPointerDown={(ev) => actions.startResize(elementId, 'n', ev)} />
-          ) : null}
-          <div className={`${styles.resizeHandle} ${styles.hNE}`} onPointerDown={(ev) => actions.startResize(elementId, 'ne', ev)} />
-          {el.type !== 'note' ? (
-            <div className={`${styles.resizeHandle} ${styles.hE}`} onPointerDown={(ev) => actions.startResize(elementId, 'e', ev)} />
-          ) : null}
-          <div className={`${styles.resizeHandle} ${styles.hSE}`} onPointerDown={(ev) => actions.startResize(elementId, 'se', ev)} />
-          {el.type !== 'note' ? (
-            <div className={`${styles.resizeHandle} ${styles.hS}`} onPointerDown={(ev) => actions.startResize(elementId, 's', ev)} />
-          ) : null}
-          <div className={`${styles.resizeHandle} ${styles.hSW}`} onPointerDown={(ev) => actions.startResize(elementId, 'sw', ev)} />
-          {el.type !== 'note' ? (
-            <div className={`${styles.resizeHandle} ${styles.hW}`} onPointerDown={(ev) => actions.startResize(elementId, 'w', ev)} />
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-});
-
-const ConnectorsLayer = React.memo(function ConnectorsLayer({
-  connectors,
-  connectorDraft,
-  selectedConnectorId,
-  onSelectConnector,
-  startConnectorBendDrag,
-  computeConnectorPathFromAnchors,
-  getAnchorPoint,
-  active,
-}) {
-  // During drag, elements may move via compositor transforms; keep connectors attached by re-rendering at ~60fps.
-  const [, forceTick] = React.useState(0);
-  React.useEffect(() => {
-    if (!active) return () => {};
-    let raf = null;
-    const loop = () => {
-      forceTick((t) => (t + 1) % 1_000_000);
-      raf = window.requestAnimationFrame(loop);
-    };
-    raf = window.requestAnimationFrame(loop);
-    return () => {
-      if (raf != null) window.cancelAnimationFrame(raf);
-    };
-  }, [active]);
-
-  return (
-    <svg className={styles.connectorsLayer} aria-hidden="true">
-      <defs>
-        <marker
-          id="connector-arrow"
-          viewBox="0 0 10 10"
-          refX="9"
-          refY="5"
-          markerWidth="6"
-          markerHeight="6"
-          orient="auto-start-reverse"
-        >
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
-        </marker>
-      </defs>
-
-      {(Array.isArray(connectors) ? connectors : []).map((el) => {
-        const data = el?.connector?.data || el?.Connector?.data || {};
-        const from = data?.from || {};
-        const to = data?.to || {};
-        if (!from?.elementId || !to?.elementId) return null;
-
-        const a0 = getAnchorPoint?.(from.elementId, from.side);
-        const a1 = getAnchorPoint?.(to.elementId, to.side);
-        if (!a0 || !a1) return null;
-
-        const bend = data?.bend || { x: 0, y: 0 };
-        const { d, handle } = computeConnectorPathFromAnchors(a0, a1, bend);
-        const color = String(data?.style?.color || 'rgba(15,23,42,0.75)');
-        const w = Math.max(1, Number(data?.style?.width ?? 2));
-        const selected = sameId(selectedConnectorId, el.id);
-        const arrow = data?.style?.arrowEnd !== false;
-
-        return (
-          <g key={el.id} className={selected ? styles.connectorSelected : ''}>
-            {selected ? (
-              <path
-                d={d}
-                fill="none"
-                stroke="rgba(43, 108, 255, 0.55)"
-                strokeWidth={Math.max(8, w + 8)}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                pointerEvents="none"
-              />
-            ) : null}
-            <path
-              d={d}
-              fill="none"
-              stroke={color}
-              strokeWidth={selected ? Math.max(2, w + 0.75) : w}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ color }}
-              markerEnd={arrow ? 'url(#connector-arrow)' : undefined}
-            />
-            <path
-              d={d}
-              fill="none"
-              stroke="transparent"
-              strokeWidth={Math.max(10, w + 10)}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              onPointerDown={(ev) => {
-                ev.stopPropagation();
-                ev.preventDefault();
-                onSelectConnector?.(el.id);
-              }}
-            />
-            {selected ? (
-              <circle
-                cx={handle.x}
-                cy={handle.y}
-                r={7}
-                className={styles.connectorBendHandle}
-                onPointerDown={(ev) => startConnectorBendDrag?.(el.id, ev)}
-              />
-            ) : null}
-          </g>
-        );
-      })}
-
-      {connectorDraft?.from?.elementId ? (
-        (() => {
-          const a0 = getAnchorPoint?.(connectorDraft.from.elementId, connectorDraft.from.side);
-          if (!a0) return null;
-
-          let a1 = null;
-          if (connectorDraft?.toHover?.elementId && connectorDraft?.toHover?.side) {
-            a1 = getAnchorPoint?.(connectorDraft.toHover.elementId, connectorDraft.toHover.side);
-          }
-          if (!a1) {
-            const p3 = connectorDraft.cursor || { x: a0.x + 1, y: a0.y + 1 };
-            const dx = Number(p3.x) - a0.x;
-            const dy = Number(p3.y) - a0.y;
-            const ax = Math.abs(dx);
-            const ay = Math.abs(dy);
-            const dir = ax >= ay ? { x: dx >= 0 ? -1 : 1, y: 0 } : { x: 0, y: dy >= 0 ? -1 : 1 };
-            a1 = { x: Number(p3.x), y: Number(p3.y), dir };
-          }
-
-          const { d } = computeConnectorPathFromAnchors(a0, a1, { x: 0, y: 0 });
-          return (
-            <path
-              d={d}
-              fill="none"
-              stroke="rgba(15,23,42,0.55)"
-              strokeWidth={2}
-              strokeDasharray="6 6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              markerEnd="url(#connector-arrow)"
-            />
-          );
-        })()
-      ) : null}
-    </svg>
-  );
-});
-
-const TOOLS = [
-  { id: 'select', label: 'Select', Icon: MousePointer2, hotspot: [2, 2], fallbackCursor: 'default' },
-  { id: 'hand', label: 'Hand', Icon: Hand, hotspot: [12, 12], fallbackCursor: 'grab' },
-  { id: 'connector', label: 'Соединительные линии', Icon: Spline, hotspot: [4, 4], fallbackCursor: 'crosshair' },
-  { id: 'note', label: 'Note', Icon: Square, hotspot: [12, 12], fallbackCursor: 'copy' },
-  { id: 'text', label: 'Text', Icon: Type, hotspot: [8, 18], fallbackCursor: 'text' },
-  { id: 'pen', label: 'Pen', Icon: PenLine, hotspot: [2, 20], fallbackCursor: 'crosshair' },
-  { id: 'eraser', label: 'Eraser', Icon: Eraser, hotspot: [2, 20], fallbackCursor: 'crosshair' },
-  { id: 'attach', label: 'Attach file', Icon: Paperclip, hotspot: [2, 2], fallbackCursor: 'pointer' },
-  { id: 'link', label: 'Link', Icon: Link2, hotspot: [2, 2], fallbackCursor: 'pointer' },
-];
-
-function distToSegmentSquared(p, a, b) {
-  const abx = b.x - a.x;
-  const aby = b.y - a.y;
-  const apx = p.x - a.x;
-  const apy = p.y - a.y;
-  const abLen2 = abx * abx + aby * aby;
-  if (abLen2 <= 1e-9) return apx * apx + apy * apy;
-  let t = (apx * abx + apy * aby) / abLen2;
-  t = Math.max(0, Math.min(1, t));
-  const cx = a.x + t * abx;
-  const cy = a.y + t * aby;
-  const dx = p.x - cx;
-  const dy = p.y - cy;
-  return dx * dx + dy * dy;
-}
-
-function pointsToSvgPath(points = []) {
-  if (!Array.isArray(points) || points.length === 0) return '';
-  if (points.length === 1) {
-    const p = points[0];
-    return `M ${p.x} ${p.y} L ${p.x + 0.01} ${p.y + 0.01}`;
-  }
-  const [p0, ...rest] = points;
-  return `M ${p0.x} ${p0.y} ${rest.map((p) => `L ${p.x} ${p.y}`).join(' ')}`;
-}
-
-function nodeToAttrs(attrs) {
-  return Object.entries(attrs)
-    .map(([k, v]) => `${k}="${String(v).replace(/"/g, '&quot;')}"`)
-    .join(' ');
-}
-
-function iconToCursorValue(IconComponent, hotspot = [2, 2], fallbackCursor = 'auto') {
-  const iconNode = IconComponent?.iconNode;
-  if (!Array.isArray(iconNode)) return fallbackCursor;
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(15,23,42,0.95)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconNode
-    .map(([tag, attrs]) => `<${tag} ${nodeToAttrs(attrs)} />`)
-    .join('')}</svg>`;
-
-  const encoded = encodeURIComponent(svg).replace(/'/g, '%27');
-  const [hx, hy] = hotspot;
-  return `url("data:image/svg+xml,${encoded}") ${hx} ${hy}, ${fallbackCursor}`;
-}
-
-function getExt(nameOrUrl) {
-  const s = String(nameOrUrl || '').split('?')[0].split('#')[0];
-  const m = s.match(/\.([a-z0-9]+)$/i);
-  return (m?.[1] || '').toLowerCase();
-}
-
-function isPhotoExt(ext) {
-  const e = String(ext || '').toLowerCase();
-  return e === 'png' || e === 'jpg' || e === 'jpeg';
-}
-
-function readImageSizeFromFile(file) {
-  return new Promise((resolve, reject) => {
-    try {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        try {
-          URL.revokeObjectURL(url);
-        } catch {
-          // ignore
-        }
-        resolve({
-          width: Number(img.naturalWidth || img.width || 0),
-          height: Number(img.naturalHeight || img.height || 0),
-        });
-      };
-      img.onerror = () => {
-        try {
-          URL.revokeObjectURL(url);
-        } catch {
-          // ignore
-        }
-        reject(new Error('Failed to read image'));
-      };
-      img.src = url;
-    } catch (e) {
-      reject(e);
-    }
-  });
-}
-
-function normalizeUrlClient(input) {
-  const raw = String(input || '').trim();
-  if (!raw) return '';
-  const withProto = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) ? raw : `https://${raw}`;
-  try {
-    const u = new URL(withProto);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return raw;
-    return u.toString();
-  } catch {
-    return raw;
-  }
-}
-
-function safeHostname(inputUrl) {
-  try {
-    const u = new URL(normalizeUrlClient(inputUrl));
-    return u.hostname;
-  } catch {
-    return '';
-  }
-}
-
-function fixMojibakeNameClient(name) {
-  const s = String(name || '');
-  const looksMojibake = /[ÐÑ]/.test(s) && !/[А-Яа-яЁё]/.test(s);
-  if (!looksMojibake) return s;
-  try {
-    const bytes = Uint8Array.from(Array.from(s, (ch) => ch.charCodeAt(0)));
-    return new TextDecoder('utf-8').decode(bytes);
-  } catch {
-    return s;
-  }
-}
-
-function pickDocIcon(ext) {
-  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(ext)) return FileImage;
-  if (['xls', 'xlsx', 'csv'].includes(ext)) return FileSpreadsheet;
-  if (['zip', 'rar', '7z'].includes(ext)) return FileArchive;
-  if (!ext) return File;
-  return FileText;
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename || 'file';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
-
-async function fetchFileBlob(url) {
-  const res = await axios.get(url, { responseType: 'blob', timeout: 20_000 });
-  return res.data;
-}
+import { useWorkspace, idKey, sameId, normalizeElementId, upsertById } from '../workspace/useWorkspace';
+import { useCanvasViewportState } from '../workspace/Canvas';
+import { useElementFrame } from '../components/board/useElementFrame';
+import { useBlockFrame } from '../components/board/useBlockFrame';
+import { ElementRenderer } from '../components/board/ElementRenderer';
+import {
+  pointsToSvgPath,
+  getExt,
+  isPhotoExt,
+  safeHostname,
+  normalizeUrlClient,
+  renderHighlightedText,
+  TEXT_PREVIEW_EXTS,
+} from '../utils/boardRenderUtils';
+import { resolvePublicFileUrl, fetchTextPreview } from '../utils/urlUtils';
+import { readImageSizeFromFile, downloadBlob, fetchFileBlob } from '../utils/fileUtils';
+import { useEvent } from '../hooks/useEvent';
+import IconBtn from '../components/ui/IconBtn';
+import { TOOLS, BRUSH_COLORS, QUICK_REACTIONS, AI_PROMPT_SUGGESTIONS } from '../constants/workspace';
+import {
+  useWorkspaceSearch,
+  useReactions,
+  useCommentsPanel,
+  useAiPanel,
+  useWorkspaceHistory,
+  useConnectors,
+} from '../workspace/hooks';
+import { useToolManager } from '../workspace/toolbar/useToolManager';
+import Toolbar from '../components/toolbar/Toolbar';
+
+// NoteTextElement and ConnectorsLayer moved to ElementRenderer.jsx
 
 export default function WorkspacePage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { isMobile } = useBreakpoints();
   const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
-  const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const linkInputRef = useRef(null);
-  const zoomPctRef = useRef(null);
   const socketRef = useRef(null);
   const noteVersionsRef = useRef(new Map()); // elementId -> version
   const noteEditTimersRef = useRef(new Map()); // elementId -> timeoutId
@@ -890,60 +98,38 @@ export default function WorkspacePage() {
   const [uploading, setUploading] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
   const [linkDraftUrl, setLinkDraftUrl] = useState('');
-  const [activeTool, setActiveTool] = useState(() => (isMobile ? 'hand' : TOOLS[0].id));
-  const [, setViewOffset] = useState({ x: 0, y: 0 });
-  const [selectionRect, setSelectionRect] = useState(null);
-  const [isPanning, setIsPanning] = useState(false);
-  const [elements, setElements] = useState([]);
+  const connectorsRef = useRef(null);
+  const createNoteOrTextAtDeskPointRef = useRef(null);
+  const endEditingRef = useRef(null);
+  const workspaceState = useWorkspace();
+  const { elements, editingElementId, setEditingElementId, setElements, load: loadElements, dedupe: dedupeElements } =
+    workspaceState;
   const [selectedElementIds, setSelectedElementIds] = useState(() => new Set()); // Set<string(idKey)>
-  const [editingElementId, setEditingElementId] = useState(null);
   const [deletingElementId, setDeletingElementId] = useState(null); // stored as string key
   const [docTextPreview, setDocTextPreview] = useState({});
   const [presentUserIds, setPresentUserIds] = useState([]);
   const [shortcuts, setShortcuts] = useState(() => loadShortcuts());
-  const [historyMeta, setHistoryMeta] = useState({ canUndo: false, canRedo: false });
-  const [brushColor, setBrushColor] = useState(DEFAULT_BRUSH_COLOR);
-  const [brushWidth, setBrushWidth] = useState(DEFAULT_BRUSH_WIDTH);
-  const [liveStroke, setLiveStroke] = useState(null); // { points:[{x,y}], color, width }
-  const [connectorHoverElementId, setConnectorHoverElementId] = useState(null);
-  const [connectorDraft, setConnectorDraft] = useState(null); // { from:{elementId,side}, toHover:{elementId,side|null}, cursor:{x,y} }
-  const [selectedConnectorId, setSelectedConnectorId] = useState(null);
-  const [connectorsFollowDuringDrag, setConnectorsFollowDuringDrag] = useState(false);
-  const [reactionPicker, setReactionPicker] = useState(null); // { elementId, x, y }
-  const [reactionCustomEmoji, setReactionCustomEmoji] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   const [mobileSheetDragY, setMobileSheetDragY] = useState(0);
   const [mobileSheetDragging, setMobileSheetDragging] = useState(false);
   const [mobileBrushBarOpen, setMobileBrushBarOpen] = useState(false);
   const [mobileLinkOpen, setMobileLinkOpen] = useState(false);
-  const [aiSheetDragY, setAiSheetDragY] = useState(0);
-  const [aiSheetDragging, setAiSheetDragging] = useState(false);
-  const [commentsSheetDragY, setCommentsSheetDragY] = useState(0);
-  const [commentsSheetDragging, setCommentsSheetDragging] = useState(false);
+
+  const [materialBlocks, setMaterialBlocks] = useState([]);
+  const [materialBlockModal, setMaterialBlockModal] = useState(null);
+  const [selectedMaterialBlockId, setSelectedMaterialBlockId] = useState(null);
+  const [materialBlockDragOffset, setMaterialBlockDragOffset] = useState({});
+  const [elementResizeOffset, setElementResizeOffset] = useState({});
+  const materialBlockInteractionRef = useRef(null);
+  const materialBlocksRef = useRef(materialBlocks);
+  materialBlocksRef.current = materialBlocks;
 
   // Safety net: reconcile duplicates only when list size changes (avoid per-frame work during drag).
   useEffect(() => {
-    setElements((prev) => {
-      const seen = new Set();
-      for (const el of prev) {
-        const k = idKey(el?.id);
-        if (!k) continue;
-        if (seen.has(k)) return dedupeMergeById(prev);
-        seen.add(k);
-      }
-      return prev;
-    });
-  }, [elements.length]);
+    dedupeElements();
+  }, [elements.length, dedupeElements]);
 
   const commentsEnabled = Boolean(workspace?.groupId);
-  const [commentsPanel, setCommentsPanel] = useState(null); // { elementId }
-  const [commentDraft, setCommentDraft] = useState('');
-  const [commentsByElement, setCommentsByElement] = useState({}); // elementId -> Comment[]
-  const [commentsLoading, setCommentsLoading] = useState({}); // elementId -> boolean
-  const commentInputRef = useRef(null);
-  const commentsListRef = useRef(null);
 
   const deskIdKey = useMemo(() => idKey(workspace?.id ?? workspace?.deskId ?? id), [workspace?.id, workspace?.deskId, id]);
   const deskIdNum = useMemo(() => {
@@ -951,14 +137,105 @@ export default function WorkspacePage() {
     return Number.isFinite(n) ? n : null;
   }, [workspace?.id, workspace?.deskId, id]);
 
-  const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  const [aiStatus, setAiStatus] = useState(null);
-  const [aiMessages, setAiMessages] = useState([]); // [{ id, role: 'user'|'assistant', content, ts }]
-  const [aiDraft, setAiDraft] = useState('');
-  const [aiSending, setAiSending] = useState(false);
-  const [aiError, setAiError] = useState(null);
-  const aiInputRef = useRef(null);
-  const aiListRef = useRef(null);
+  const viewport = useCanvasViewportState(deskIdKey, deskIdNum, loading);
+  const canvasRef = viewport.canvasRef;
+  const zoomPctRef = viewport.zoomPctRef;
+  const viewOffsetRef = viewport.viewOffsetRef;
+  const viewScaleRef = viewport.viewScaleRef;
+  const getCanvasPoint = viewport.getCanvasPoint;
+  const getDeskPointFromClient = viewport.getDeskPointFromClient;
+  const scheduleApplyViewVars = viewport.scheduleApplyViewVars;
+  const persistViewDebounced = viewport.persistViewDebounced;
+  const setViewOffset = viewport.setViewOffset;
+  const isPanning = viewport.isPanning;
+  const setIsPanning = viewport.setIsPanning;
+  const panStartRef = viewport.panStartRef;
+  const ensurePanRaf = viewport.ensurePanRaf;
+  const mobilePinchRef = viewport.mobilePinchRef;
+  const ensurePinchRaf = viewport.ensurePinchRaf;
+  const pinchRafRef = viewport.pinchRafRef;
+
+  const {
+    searchOpen,
+    setSearchOpen,
+    searchQuery,
+    setSearchQuery,
+    hasSearchQuery,
+    manualSearchIndex,
+    manualSearchHits,
+    manualSearchHitIds,
+    manualSearchResults,
+    searchBtnRef,
+    searchPopoverRef,
+    searchInputRef,
+    mobileSearchBarRef,
+  } = useWorkspaceSearch({ elements, isMobile });
+
+  const {
+    reactionPicker,
+    setReactionPicker,
+    reactionCustomEmoji,
+    setReactionCustomEmoji,
+    reactionPickerRef,
+    normalizeReactions,
+    layoutReactionBubbles,
+    openReactionPicker,
+    toggleReaction,
+  } = useReactions({
+    setElements,
+    socketRef,
+    workspace,
+    deskIdParam: id,
+    setActionError,
+    sameId,
+  });
+
+  const {
+    commentsPanel,
+    setCommentsPanel,
+    commentDraft,
+    setCommentDraft,
+    commentsByElement,
+    setCommentsByElement,
+    commentsLoading,
+    commentInputRef,
+    commentsListRef,
+    commentsSheetRef,
+    commentsSheetDragRef,
+    commentsSheetDragY,
+    setCommentsSheetDragY,
+    commentsSheetDragging,
+    openComments,
+    submitComment,
+    closeCommentsPanel,
+    onCommentsSheetDragStart,
+    onCommentsSheetDragMove,
+    onCommentsSheetDragEnd,
+  } = useCommentsPanel({ commentsEnabled, setActionError });
+
+  const {
+    aiPanelOpen,
+    setAiPanelOpen,
+    aiStatus,
+    aiMessages,
+    setAiMessages,
+    aiDraft,
+    setAiDraft,
+    aiSending,
+    aiError,
+    aiInputRef,
+    aiListRef,
+    aiSheetRef,
+    aiSheetDragY,
+    setAiSheetDragY,
+    aiSheetDragging,
+    setAiError,
+    sendAiMessage,
+    closeAiPanel,
+    onAiSheetDragStart,
+    onAiSheetDragMove,
+    onAiSheetDragEnd,
+  } = useAiPanel({ deskIdNum, setActionError });
 
   const inputDebugEnabled = useMemo(() => {
     try {
@@ -977,90 +254,30 @@ export default function WorkspacePage() {
   const inputDebugLastFlushRef = useRef(0);
   const inputDebugLastMoveLogRef = useRef(new Map()); // pointerId -> ts
 
-  const selectStartRef = useRef(null);
-  const selectRafRef = useRef(null);
-  const selectPendingEndRef = useRef(null);
-  const panStartRef = useRef(null);
-  const panRafRef = useRef(null);
   const interactionRef = useRef(null);
-  const viewOffsetRef = useRef({ x: 0, y: 0 });
-  const viewScaleRef = useRef(VIEW_SCALE_BASE);
-  const viewApplyRafRef = useRef(null);
-  const viewPendingRef = useRef(null); // { offset:{x,y}, scale:number }
-  const viewSaveTimerRef = useRef(null);
-  const persistViewDebouncedRef = useRef(null);
-  const didRestoreViewRef = useRef(false);
   const suppressNextElementClickRef = useRef(new Set());
   const mobileSuppressDragPointerIdRef = useRef(null);
   const fetchingPreviewsRef = useRef(new Set());
-  const historyRef = useRef({ past: [], future: [] });
-  const createdElementIdsRef = useRef(new Set()); // elementIds created in this session (used for delete undo)
-  const applyingHistoryRef = useRef(false);
   const editStartSnapRef = useRef(new Map()); // elementId -> snapshot
   const endingEditRef = useRef(false);
   const editingElementIdRef = useRef(null);
   const elementNodeCacheRef = useRef(new Map()); // idKey(elementId) -> HTMLElement
-  // Perf: during element drag we update the dragged node's transform imperatively (rAF),
-  // and commit to React state once on pointerup. This avoids re-rendering the entire board each frame.
-  const dragVisualPendingRef = useRef(null); // { elementKey, x, y, rotation }
-  const dragVisualRafRef = useRef(null);
-  const handHoldRef = useRef({ active: false, previousTool: null });
-  const liveStrokeRef = useRef(null);
-  const eraseStateRef = useRef({ active: false, erasedIds: new Set(), lastTs: 0 });
-  const connectorDraftRef = useRef(null);
-  const connectorDraftRafRef = useRef(null);
-  const reactionPickerRef = useRef(null);
-  const searchBtnRef = useRef(null);
-  const searchPopoverRef = useRef(null);
-  const searchInputRef = useRef(null);
-  const mobileSearchBarRef = useRef(null);
+  const elementsRef = useRef(elements);
+  elementsRef.current = elements;
+  const materialBlockNodeRef = useRef(new Map()); // blockId -> HTMLElement
+  const updateLocalElementRef = useRef(null);
   const mobileSheetRef = useRef(null);
   const mobileSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
-  const aiSheetRef = useRef(null);
-  const aiSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
-  const commentsSheetRef = useRef(null);
-  const commentsSheetDragRef = useRef({ active: false, pointerId: null, startY: 0, lastY: 0 });
   const mobileLongPressRef = useRef({ timerId: null, pointerId: null, elementId: null });
-  const mobilePinchRef = useRef({
-    active: false,
-    pointers: new Map(), // pointerId -> { x, y }
-    startDist: 0,
-    startScale: 1,
-    startOffset: { x: 0, y: 0 },
-    deskMid: { x: 0, y: 0 },
-    rect: { left: 0, top: 0 },
-  });
 
   useEffect(() => {
     if (!isMobile) setMobileToolsOpen(false);
   }, [isMobile]);
 
-  useEffect(() => {
-    if (!isMobile) {
-      setMobileBrushBarOpen(false);
-      setMobileLinkOpen(false);
-      return;
-    }
-    // Mobile UX: Hand is the default mode; other tools should not "stick" (except transient brush/eraser).
-    if (activeTool !== 'hand' && activeTool !== 'pen' && activeTool !== 'eraser') {
-      setActiveTool('hand');
-    }
-    // Disable box-select visuals on mobile completely.
-    selectStartRef.current = null;
-    setSelectionRect(null);
-  }, [isMobile, activeTool]);
+
 
   useEffect(() => {
     if (!isMobile) return;
-    // If the brush UI is closed, always return to Hand.
-    if (!mobileBrushBarOpen && (activeTool === 'pen' || activeTool === 'eraser')) {
-      setActiveTool('hand');
-    }
-  }, [isMobile, mobileBrushBarOpen, activeTool]);
-
-  useEffect(() => {
-    if (!isMobile) return;
-    // Keep the mobile UI focused: tools sheet and search shouldn't overlap.
     if (mobileToolsOpen) setSearchOpen(false);
   }, [isMobile, mobileToolsOpen]);
 
@@ -1069,69 +286,10 @@ export default function WorkspacePage() {
     if (searchOpen) setMobileToolsOpen(false);
   }, [isMobile, searchOpen]);
 
-  const activeToolDef = TOOLS.find((t) => t.id === activeTool) || TOOLS[0];
-  const canvasCursor = iconToCursorValue(
-    activeToolDef.Icon,
-    activeToolDef.hotspot,
-    activeToolDef.fallbackCursor
-  );
-  const effectiveCursor = activeTool === 'hand' && isPanning ? 'grabbing' : canvasCursor;
 
   useEffect(() => {
     editingElementIdRef.current = editingElementId;
   }, [editingElementId]);
-
-  const viewStorageKey = useMemo(() => {
-    if (!deskIdKey) return null;
-    return `healis.boardView.v2:${deskIdKey}`;
-  }, [deskIdKey]);
-
-  const applyViewVarsNow = useCallback((next) => {
-    const node = canvasRef.current;
-    if (!node) return;
-    const off = next?.offset || viewOffsetRef.current;
-    const s = clampViewScale(next?.scale != null ? next.scale : viewScaleRef.current);
-
-    // Keep refs authoritative.
-    viewOffsetRef.current = { x: Number(off?.x || 0), y: Number(off?.y || 0) };
-    viewScaleRef.current = s;
-
-    node.style.setProperty('--grid-offset-x', `${viewOffsetRef.current.x}px`);
-    node.style.setProperty('--grid-offset-y', `${viewOffsetRef.current.y}px`);
-    node.style.setProperty('--view-offset-x', `${viewOffsetRef.current.x}px`);
-    node.style.setProperty('--view-offset-y', `${viewOffsetRef.current.y}px`);
-    node.style.setProperty('--view-scale', String(s));
-
-    if (zoomPctRef.current) zoomPctRef.current.textContent = formatViewScalePct(s);
-  }, []);
-
-  const scheduleApplyViewVars = useCallback(
-    (next) => {
-      // Update refs immediately so subsequent events (wheel/move) use latest values,
-      // but batch DOM writes to rAF for smoothness.
-      const off = next?.offset || viewOffsetRef.current;
-      const s = clampViewScale(next?.scale != null ? next.scale : viewScaleRef.current);
-      viewOffsetRef.current = { x: Number(off?.x || 0), y: Number(off?.y || 0) };
-      viewScaleRef.current = s;
-
-      // Persist view (debounced). This covers panning too, not only wheel/zoom buttons.
-      try {
-        persistViewDebouncedRef.current?.({ offset: viewOffsetRef.current, scale: s });
-      } catch {
-        // ignore
-      }
-
-      viewPendingRef.current = { offset: viewOffsetRef.current, scale: s };
-      if (viewApplyRafRef.current != null) return;
-      viewApplyRafRef.current = window.requestAnimationFrame(() => {
-        viewApplyRafRef.current = null;
-        const pending = viewPendingRef.current;
-        viewPendingRef.current = null;
-        applyViewVarsNow(pending);
-      });
-    },
-    [applyViewVarsNow]
-  );
 
   const pushInputDebug = useCallback(
     (tag, data = null) => {
@@ -1163,535 +321,6 @@ export default function WorkspacePage() {
     [inputDebugEnabled]
   );
 
-  const runPanFrame = useCallback(() => {
-    panRafRef.current = null;
-    const pan = panStartRef.current;
-    if (!pan) return;
-    if (inputDebugEnabled) {
-      const dt = Math.round(performance.now() - (pan.lastRafTs || performance.now()));
-      pan.lastRafTs = performance.now();
-      pushInputDebug('raf.pan', { dt, pid: pan.pointerId, lx: pan.lastClientX, ly: pan.lastClientY });
-    }
-    const dx = Number((pan.lastClientX ?? pan.startClientX) - pan.startClientX);
-    const dy = Number((pan.lastClientY ?? pan.startClientY) - pan.startClientY);
-    const startOffset = pan.startOffset || viewOffsetRef.current;
-    applyViewVarsNow({ offset: { x: startOffset.x + dx, y: startOffset.y + dy } });
-    // Keep running while pan gesture is active.
-    if (panStartRef.current) panRafRef.current = window.requestAnimationFrame(runPanFrame);
-  }, [applyViewVarsNow, inputDebugEnabled, pushInputDebug]);
-
-  const ensurePanRaf = useCallback(() => {
-    if (panRafRef.current != null) return;
-    panRafRef.current = window.requestAnimationFrame(runPanFrame);
-  }, [runPanFrame]);
-
-  const pinchRafRef = useRef(null);
-  const runPinchFrame = useCallback(() => {
-    pinchRafRef.current = null;
-    const pinch = mobilePinchRef.current;
-    if (!pinch?.active) return;
-    if (!pinch.pointers || pinch.pointers.size < 2) return;
-    const pts = Array.from(pinch.pointers.values());
-    const a = pts[0];
-    const b = pts[1];
-    const dx = Number(b.x - a.x);
-    const dy = Number(b.y - a.y);
-    const dist = Math.hypot(dx, dy) || 1;
-    const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    const mid = { x: midClient.x - (pinch.rect?.left ?? 0), y: midClient.y - (pinch.rect?.top ?? 0) };
-
-    const ratio = dist / (pinch.startDist || 1);
-    const nextScale = clampViewScale((pinch.startScale || 1) * ratio);
-    const nextOffset = {
-      x: mid.x - pinch.deskMid.x * nextScale,
-      y: mid.y - pinch.deskMid.y * nextScale,
-    };
-    applyViewVarsNow({ offset: nextOffset, scale: nextScale });
-    if (inputDebugEnabled) {
-      pushInputDebug('raf.pinch', {
-        scale: Number(nextScale.toFixed(4)),
-        off: { x: Math.round(nextOffset.x), y: Math.round(nextOffset.y) },
-        pCount: pinch.pointers.size,
-      });
-    }
-    if (pinch.active) pinchRafRef.current = window.requestAnimationFrame(runPinchFrame);
-  }, [applyViewVarsNow, inputDebugEnabled, pushInputDebug]);
-
-  const ensurePinchRaf = useCallback(() => {
-    if (pinchRafRef.current != null) return;
-    pinchRafRef.current = window.requestAnimationFrame(runPinchFrame);
-  }, [runPinchFrame]);
-
-  const persistViewDebounced = useCallback(
-    (next, opts = {}) => {
-      if (!viewStorageKey) return;
-      const immediate = Boolean(opts.immediate);
-      if (viewSaveTimerRef.current) {
-        window.clearTimeout(viewSaveTimerRef.current);
-        viewSaveTimerRef.current = null;
-      }
-
-      const run = () => {
-        const off = next?.offset || viewOffsetRef.current;
-        const scale = clampViewScale(next?.scale != null ? next.scale : viewScaleRef.current);
-        const storedScale = Number(((scale || VIEW_SCALE_BASE) / VIEW_SCALE_BASE).toFixed(4));
-        try {
-          window.localStorage.setItem(
-            viewStorageKey,
-            JSON.stringify({
-              v: 2,
-              offset: { x: Number(off?.x ?? 0), y: Number(off?.y ?? 0) },
-              // Store scale relative to the baseline so UI "100%" is stable across boards.
-              scale: storedScale,
-            })
-          );
-        } catch {
-          // ignore (storage disabled/quota)
-        }
-      };
-
-      if (immediate) {
-        run();
-        return;
-      }
-      viewSaveTimerRef.current = window.setTimeout(() => {
-        viewSaveTimerRef.current = null;
-        run();
-      }, 160);
-    },
-    [viewStorageKey]
-  );
-
-  const stopInteractions = useCallback(
-    (e) => {
-      if (e?.currentTarget && typeof e.pointerId === 'number') {
-        try {
-          e.currentTarget.releasePointerCapture(e.pointerId);
-        } catch {
-          // ignore
-        }
-      }
-      selectStartRef.current = null;
-      panStartRef.current = null;
-      if (panRafRef.current != null) {
-        window.cancelAnimationFrame(panRafRef.current);
-        panRafRef.current = null;
-      }
-      if (pinchRafRef.current != null) {
-        window.cancelAnimationFrame(pinchRafRef.current);
-        pinchRafRef.current = null;
-      }
-      setSelectionRect(null);
-      setIsPanning(false);
-      if (inputDebugEnabled) {
-        pushInputDebug('stopInteractions', {
-          type: e?.type,
-          pid: typeof e?.pointerId === 'number' ? e.pointerId : null,
-          pType: e?.pointerType,
-          cancelable: Boolean(e?.cancelable),
-        });
-      }
-      // Commit the latest view offset to state once (avoid doing this in pointermove).
-      setViewOffset(viewOffsetRef.current);
-      persistViewDebounced({ offset: viewOffsetRef.current, scale: viewScaleRef.current }, { immediate: true });
-    },
-    [inputDebugEnabled, persistViewDebounced, pushInputDebug]
-  );
-
-  useEffect(() => {
-    persistViewDebouncedRef.current = persistViewDebounced;
-  }, [persistViewDebounced]);
-
-  useEffect(() => {
-    // Robust mobile handling: don't rely on React's element-level leave/up ordering.
-    // Some real devices emit pointerleave mid-gesture; we must not treat it as gesture end.
-    const onWindowPointerUpOrCancel = (e) => {
-      const isTouch = e?.pointerType === 'touch';
-      if (!isTouch) return;
-
-      const panActive = Boolean(panStartRef.current);
-      const pinchActive = Boolean(mobilePinchRef.current?.active);
-      const drawActive = Boolean(liveStrokeRef.current);
-      const eraseActive = Boolean(eraseStateRef.current?.active);
-      const boxSelectActive = Boolean(selectStartRef.current);
-      if (!panActive && !pinchActive && !drawActive && !eraseActive && !boxSelectActive) return;
-
-      // Only act if this pointer is part of an active gesture.
-      const pid = typeof e?.pointerId === 'number' ? e.pointerId : null;
-      const panPid = panStartRef.current?.pointerId ?? null;
-      const pinchHas = pid != null ? mobilePinchRef.current?.pointers?.has?.(pid) : false;
-      if (pid != null && panPid != null && pid !== panPid && !pinchHas && !drawActive && !eraseActive) return;
-
-      if (inputDebugEnabled) {
-        pushInputDebug('window.end', { type: e.type, pid, panActive, pinchActive, drawActive, eraseActive, boxSelectActive });
-      }
-
-      // Ensure state is finalized even if canvas didn't receive the up/cancel.
-      stopInteractions(e);
-    };
-
-    window.addEventListener('pointerup', onWindowPointerUpOrCancel, true);
-    window.addEventListener('pointercancel', onWindowPointerUpOrCancel, true);
-    return () => {
-      window.removeEventListener('pointerup', onWindowPointerUpOrCancel, true);
-      window.removeEventListener('pointercancel', onWindowPointerUpOrCancel, true);
-    };
-  }, [inputDebugEnabled, pushInputDebug, stopInteractions]);
-
-  useLayoutEffect(() => {
-    // Initialize CSS vars without causing heavy React re-renders.
-    applyViewVarsNow({ offset: viewOffsetRef.current, scale: viewScaleRef.current });
-    return () => {
-      if (viewApplyRafRef.current != null) {
-        window.cancelAnimationFrame(viewApplyRafRef.current);
-        viewApplyRafRef.current = null;
-      }
-      if (panRafRef.current != null) {
-        window.cancelAnimationFrame(panRafRef.current);
-        panRafRef.current = null;
-      }
-      if (pinchRafRef.current != null) {
-        window.cancelAnimationFrame(pinchRafRef.current);
-        pinchRafRef.current = null;
-      }
-      if (inputDebugFlushRafRef.current != null) {
-        window.cancelAnimationFrame(inputDebugFlushRafRef.current);
-        inputDebugFlushRafRef.current = null;
-      }
-      viewPendingRef.current = null;
-      if (viewSaveTimerRef.current) {
-        window.clearTimeout(viewSaveTimerRef.current);
-        viewSaveTimerRef.current = null;
-      }
-      // Best-effort: persist the latest view on unmount.
-      try {
-        persistViewDebouncedRef.current?.(
-          { offset: viewOffsetRef.current, scale: viewScaleRef.current },
-          { immediate: true }
-        );
-      } catch {
-        // ignore
-      }
-    };
-  }, [applyViewVarsNow]);
-
-  useLayoutEffect(() => {
-    if (didRestoreViewRef.current) return;
-    if (!viewStorageKey) return;
-    if (loading) return;
-    const node = canvasRef.current;
-    if (!node) return;
-
-    let saved = null;
-    try {
-      const legacyKeys = [];
-      // Backward compatibility with older experiments/versions.
-      legacyKeys.push(viewStorageKey);
-      if (deskIdKey) legacyKeys.push(`healis.boardView.v1:${deskIdKey}`);
-      if (deskIdNum != null) legacyKeys.push(`healis.boardView.v1:${deskIdNum}`);
-
-      let raw = null;
-      for (const k of legacyKeys) {
-        raw = window.localStorage.getItem(k);
-        if (raw) break;
-      }
-      saved = raw ? JSON.parse(raw) : null;
-    } catch {
-      saved = null;
-    }
-    if (!saved) return;
-
-    const apply = (offset, scale) => {
-      const nextOffset = { x: Number(offset?.x ?? 0), y: Number(offset?.y ?? 0) };
-      // Stored scale is relative to VIEW_SCALE_BASE (UI "100%").
-      const nextScale = clampViewScale((scale ?? 1) * VIEW_SCALE_BASE);
-      scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
-      setViewOffset(nextOffset);
-    };
-
-    // v2: offset + scale (preferred)
-    if (saved.v === 2 && saved.offset) {
-      didRestoreViewRef.current = true;
-      apply(saved.offset, saved.scale);
-      return;
-    }
-
-    // v1 (legacy): center + scale
-    if (saved.v === 1 && saved.center) {
-      const rect = node.getBoundingClientRect();
-      const p = { x: rect.width / 2, y: rect.height / 2 };
-      const storedScale = Number(saved?.scale ?? 1);
-      const scale = clampViewScale(storedScale * VIEW_SCALE_BASE);
-      const center = saved?.center || null;
-      if (!center || !Number.isFinite(Number(center.x)) || !Number.isFinite(Number(center.y))) return;
-      const nextOffset = { x: p.x - Number(center.x) * scale, y: p.y - Number(center.y) * scale };
-      didRestoreViewRef.current = true;
-      scheduleApplyViewVars({ offset: nextOffset, scale });
-      setViewOffset(nextOffset);
-    }
-  }, [viewStorageKey, scheduleApplyViewVars, loading, deskIdKey, deskIdNum]);
-
-  useEffect(() => {
-    if (activeTool !== 'link') return;
-    // Let the popover render first, then focus.
-    window.setTimeout(() => linkInputRef.current?.focus?.(), 0);
-  }, [activeTool]);
-
-  useEffect(() => {
-    if (activeTool === 'connector') return () => {};
-    setConnectorHoverElementId(null);
-    return () => {};
-  }, [activeTool]);
-
-  useEffect(() => {
-    let mounted = true;
-    getAiStatus()
-      .then((s) => mounted && setAiStatus(s))
-      .catch(() => mounted && setAiStatus({ enabled: false, provider: null, model: null }));
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!aiPanelOpen) return () => {};
-    window.setTimeout(() => aiInputRef.current?.focus?.(), 0);
-  }, [aiPanelOpen]);
-
-  useEffect(() => {
-    if (!aiPanelOpen) return;
-    const node = aiListRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [aiPanelOpen, aiMessages]);
-
-  const sendAiMessage = async (raw) => {
-    const message = String(raw ?? aiDraft ?? '').trim();
-    if (!message || !deskIdNum || aiSending) return;
-
-    setAiError(null);
-    const userMsg = { id: `u-${Date.now()}-${Math.random().toString(16).slice(2)}`, role: 'user', content: message, ts: Date.now() };
-    const history = aiMessages
-      .filter((m) => m?.role === 'user' || m?.role === 'assistant')
-      .slice(-16)
-      .map((m) => ({ role: m.role, content: m.content }));
-
-    setAiMessages((prev) => [...prev, userMsg]);
-    setAiDraft('');
-    setAiSending(true);
-
-    try {
-      const data = await chatWithDesk(deskIdNum, { message, history });
-      const reply = String(data?.reply ?? '').trim();
-      const assistantMsg = {
-        id: `a-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        role: 'assistant',
-        content: reply || '…',
-        ts: Date.now(),
-      };
-      setAiMessages((prev) => [...prev, assistantMsg]);
-      if (data?.provider || data?.model) {
-        setAiStatus((cur) => cur || { enabled: true, provider: data.provider || null, model: data.model || null });
-      }
-    } catch (e) {
-      const msg = e?.response?.data?.error || e?.message || 'AI request failed';
-      const hint = e?.response?.data?.hint || null;
-      setAiError(hint ? `${msg}\n${hint}` : msg);
-    } finally {
-      setAiSending(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!reactionPicker) return () => {};
-    const onPointerDown = (ev) => {
-      const node = reactionPickerRef.current;
-      if (node && !node.contains(ev.target)) setReactionPicker(null);
-    };
-    const onKeyDown = (ev) => {
-      if (ev.key === 'Escape') setReactionPicker(null);
-    };
-    window.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [reactionPicker]);
-
-  // Perf: building the search index is O(n) over all elements and was happening even when search query was empty,
-  // which is disastrous during drag (elements change every rAF). Only build it when actually searching.
-  const hasSearchQuery = Boolean(String(searchQuery || '').trim());
-  const manualSearchIndex = useMemo(
-    () => (hasSearchQuery ? buildManualBoardSearchIndex(elements) : []),
-    [hasSearchQuery, elements]
-  );
-  const manualSearchHits = useMemo(() => {
-    if (!hasSearchQuery) return [];
-    return runManualBoardSearch(manualSearchIndex, searchQuery, { limit: 60 });
-  }, [hasSearchQuery, manualSearchIndex, searchQuery]);
-
-  const manualSearchHitIds = useMemo(() => {
-    const ids = new Set();
-    for (const h of manualSearchHits) ids.add(h.elementId);
-    return ids;
-  }, [manualSearchHits]);
-
-  const manualSearchResults = useMemo(() => {
-    const byId = new Map();
-    for (const h of manualSearchHits) {
-      if (!h?.elementId) continue;
-      const cur = byId.get(h.elementId) || { elementId: h.elementId, elementType: h.elementType, hits: [] };
-      cur.hits.push(h);
-      byId.set(h.elementId, cur);
-    }
-    return Array.from(byId.values());
-  }, [manualSearchHits]);
-
-  useEffect(() => {
-    if (!searchOpen) return () => {};
-    window.setTimeout(() => searchInputRef.current?.focus?.(), 0);
-
-    const onPointerDown = (ev) => {
-      if (isMobile) {
-        const bar = mobileSearchBarRef.current;
-        const btn = searchBtnRef.current;
-        if (bar && bar.contains(ev.target)) return;
-        if (btn && btn.contains(ev.target)) return;
-        setSearchOpen(false);
-        return;
-      }
-
-      const pop = searchPopoverRef.current;
-      const btn = searchBtnRef.current;
-      if (pop && pop.contains(ev.target)) return;
-      if (btn && btn.contains(ev.target)) return;
-      setSearchOpen(false);
-    };
-    window.addEventListener('pointerdown', onPointerDown);
-    return () => window.removeEventListener('pointerdown', onPointerDown);
-  }, [searchOpen, isMobile]);
-
-  const getCanvasPoint = (e) => {
-    const el = canvasRef.current;
-    if (!el) return { x: 0, y: 0 };
-    const rect = el.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  };
-
-  const rectFromPoints = (a, b) => {
-    const left = Math.min(a.x, b.x);
-    const top = Math.min(a.y, b.y);
-    const width = Math.abs(a.x - b.x);
-    const height = Math.abs(a.y - b.y);
-    return { left, top, width, height };
-  };
-
-  const getDeskPointFromClient = useCallback((clientX, clientY) => {
-    const el = canvasRef.current;
-    if (!el) return { x: 0, y: 0 };
-    const rect = el.getBoundingClientRect();
-    const off = viewOffsetRef.current;
-    const s = viewScaleRef.current || 1;
-    return { x: (clientX - rect.left - off.x) / s, y: (clientY - rect.top - off.y) / s };
-  }, []);
-
-  const isConnectableElement = (el) => Boolean(el?.id) && Boolean(el?.type) && el.type !== 'connector';
-
-  const getAnchorPoint = useCallback((el, side) => {
-    // Outset ensures the arrowhead doesn't get hidden under the target element
-    // because connectors are rendered beneath elements (z-index).
-    const OUTSET = 10;
-    const x = Number(el?.x ?? 0);
-    const y = Number(el?.y ?? 0);
-    const w = Number(el?.width ?? 240);
-    const h = Number(el?.height ?? 160);
-    const s = String(side || 'right');
-    let p = { x: x + w, y: y + h / 2 };
-    let dir = { x: 1, y: 0 };
-    if (s === 'top') {
-      p = { x: x + w / 2, y };
-      dir = { x: 0, y: -1 };
-    } else if (s === 'bottom') {
-      p = { x: x + w / 2, y: y + h };
-      dir = { x: 0, y: 1 };
-    } else if (s === 'left') {
-      p = { x, y: y + h / 2 };
-      dir = { x: -1, y: 0 };
-    }
-
-    return { x: p.x + dir.x * OUTSET, y: p.y + dir.y * OUTSET, dir };
-  }, []);
-
-  const pickHoverElementId = (deskP, threshold = 15) => {
-    const px = Number(deskP?.x ?? 0);
-    const py = Number(deskP?.y ?? 0);
-    const t = Math.max(0, Number(threshold ?? 0));
-    let bestId = null;
-    let bestD2 = Infinity;
-
-    const list = elementsRef.current || [];
-    for (const el of list) {
-      if (!isConnectableElement(el)) continue;
-      const x = Number(el.x ?? 0);
-      const y = Number(el.y ?? 0);
-      const w = Number(el.width ?? 0);
-      const h = Number(el.height ?? 0);
-      if (px < x - t || px > x + w + t || py < y - t || py > y + h + t) continue;
-
-      const dx = px < x ? x - px : px > x + w ? px - (x + w) : 0;
-      const dy = py < y ? y - py : py > y + h ? py - (y + h) : 0;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD2) {
-        bestD2 = d2;
-        bestId = el.id;
-      }
-    }
-    return bestId;
-  };
-
-  const pickSideAtPoint = (el, deskP, radius = 14) => {
-    if (!el?.id) return null;
-    const px = Number(deskP?.x ?? 0);
-    const py = Number(deskP?.y ?? 0);
-    const r = Math.max(0, Number(radius ?? 0));
-    const r2 = r * r;
-    const sides = ['top', 'right', 'bottom', 'left'];
-    let best = null;
-    let bestD2 = Infinity;
-    for (const side of sides) {
-      const a = getAnchorPoint(el, side);
-      const dx = px - a.x;
-      const dy = py - a.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 <= r2 && d2 < bestD2) {
-        bestD2 = d2;
-        best = side;
-      }
-    }
-    return best;
-  };
-
-  const computeConnectorPathFromAnchors = useCallback((fromAnchor, toAnchor, bend) => {
-    const p0 = { x: Number(fromAnchor?.x ?? 0), y: Number(fromAnchor?.y ?? 0) };
-    const p3 = { x: Number(toAnchor?.x ?? 0), y: Number(toAnchor?.y ?? 0) };
-    const d0 = fromAnchor?.dir || { x: 1, y: 0 };
-    const d3 = toAnchor?.dir || { x: -1, y: 0 };
-    const dx = p3.x - p0.x;
-    const dy = p3.y - p0.y;
-    const dist = Math.hypot(dx, dy);
-    const len = Math.max(40, Math.min(240, dist * 0.35));
-    const bx = Number(bend?.x ?? 0);
-    const by = Number(bend?.y ?? 0);
-    const mid = { x: (p0.x + p3.x) / 2, y: (p0.y + p3.y) / 2 };
-    const c1 = { x: p0.x + Number(d0.x ?? 0) * len + bx * 0.5, y: p0.y + Number(d0.y ?? 0) * len + by * 0.5 };
-    // NOTE: d3 is an "outward" direction at the target; control point should be placed outward too,
-    // so the curve approaches the element from outside (instead of bending under it).
-    const c2 = { x: p3.x + Number(d3.x ?? 0) * len + bx * 0.5, y: p3.y + Number(d3.y ?? 0) * len + by * 0.5 };
-    const handle = { x: mid.x + bx, y: mid.y + by };
-    const d = `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p3.x} ${p3.y}`;
-    return { d, mid, handle, p0, p3 };
-  }, []);
-
   const extractContent = useCallback((el) => {
     if (!el) return '';
     if (el.type === 'note') return el.note?.text ?? el.Note?.text ?? '';
@@ -1708,7 +337,7 @@ export default function WorkspacePage() {
     return false;
   };
 
-  const elementToPayload = (el) => {
+  const elementToPayload = useCallback((el) => {
     if (!el) return undefined;
     const doc = el.type === 'document' ? el.document ?? el.Document : null;
     const link = el.type === 'link' ? el.link ?? el.Link : null;
@@ -1721,22 +350,25 @@ export default function WorkspacePage() {
     if (el.type === 'drawing') return { data: drawing?.data };
     if (el.type === 'connector') return { data: connector?.data };
     return undefined;
-  };
+  }, []);
 
-  const snapshotForHistory = (el) => {
-    if (!el?.id) return null;
-    return {
-      elementId: el.id,
-      type: el.type,
-      x: Math.round(el.x ?? 0),
-      y: Math.round(el.y ?? 0),
-      width: Math.max(40, Math.round(el.width ?? 0)),
-      height: Math.max(30, Math.round(el.height ?? 0)),
-      rotation: el.rotation ?? 0,
-      zIndex: el.zIndex ?? 0,
-      payload: elementToPayload(el),
-    };
-  };
+  const snapshotForHistory = useCallback(
+    (el) => {
+      if (!el?.id) return null;
+      return {
+        elementId: el.id,
+        type: el.type,
+        x: Math.round(el.x ?? 0),
+        y: Math.round(el.y ?? 0),
+        width: Math.max(40, Math.round(el.width ?? 0)),
+        height: Math.max(30, Math.round(el.height ?? 0)),
+        rotation: el.rotation ?? 0,
+        zIndex: el.zIndex ?? 0,
+        payload: elementToPayload(el),
+      };
+    },
+    [elementToPayload]
+  );
 
   const snapshotEquals = (a, b) => {
     if (!a || !b) return false;
@@ -1751,99 +383,6 @@ export default function WorkspacePage() {
       a.zIndex === b.zIndex &&
       JSON.stringify(a.payload ?? null) === JSON.stringify(b.payload ?? null)
     );
-  };
-
-  const updateHistoryMeta = () => {
-    const { past, future } = historyRef.current;
-    setHistoryMeta({ canUndo: past.length > 0, canRedo: future.length > 0 });
-  };
-
-  const pushHistory = (entry) => {
-    if (!entry) return;
-    const store = historyRef.current;
-    store.past.push(entry);
-    if (store.past.length > 120) store.past.splice(0, store.past.length - 120);
-    store.future = [];
-    updateHistoryMeta();
-  };
-
-  const normalizeReactions = useCallback((reactions) => {
-    if (!reactions || typeof reactions !== 'object') return {};
-    const out = {};
-    for (const [emoji, users] of Object.entries(reactions)) {
-      const e = String(emoji || '').trim();
-      if (!e) continue;
-      if (!Array.isArray(users)) continue;
-      const ids = users
-        .map((x) => Number(x))
-        .filter((x) => Number.isFinite(x))
-        .map((x) => Math.trunc(x));
-      const uniq = Array.from(new Set(ids));
-      if (uniq.length) out[e] = uniq;
-    }
-    return out;
-  }, []);
-
-  const reactionSlotsRef = useRef(new Map()); // elementId -> Map(emoji -> slotIndex)
-
-  // Fixed slots around the element (to match the desired "frame" layout):
-  // first 6: 3 top + 3 bottom, then sides.
-  const REACTION_SLOTS = [
-    { xPct: 18, yPct: 0, side: 'top' },
-    { xPct: 50, yPct: 0, side: 'top' },
-    { xPct: 82, yPct: 0, side: 'top' },
-    { xPct: 18, yPct: 100, side: 'bottom' },
-    { xPct: 50, yPct: 100, side: 'bottom' },
-    { xPct: 82, yPct: 100, side: 'bottom' },
-    { xPct: 0, yPct: 50, side: 'left' },
-    { xPct: 100, yPct: 50, side: 'right' },
-    { xPct: 0, yPct: 25, side: 'left' },
-    { xPct: 0, yPct: 75, side: 'left' },
-    { xPct: 100, yPct: 25, side: 'right' },
-    { xPct: 100, yPct: 75, side: 'right' },
-  ];
-
-  const layoutReactionBubbles = (elementId, reactions) => {
-    const r = normalizeReactions(reactions);
-    const base = Object.entries(r)
-      .filter(([, users]) => Array.isArray(users) && users.length > 0)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([emoji, users]) => ({ emoji, count: users.length }));
-
-    if (!base.length) return base;
-
-    const id = String(elementId ?? '');
-    if (!reactionSlotsRef.current.has(id)) reactionSlotsRef.current.set(id, new Map());
-    const slots = reactionSlotsRef.current.get(id);
-
-    // Drop removed emojis so their slots become available again.
-    const current = new Set(base.map((b) => b.emoji));
-    for (const e of Array.from(slots.keys())) {
-      if (!current.has(e)) slots.delete(e);
-    }
-
-    const used = new Set(slots.values());
-    const claimNextFreeSlot = () => {
-      for (let i = 0; i < REACTION_SLOTS.length; i += 1) {
-        if (!used.has(i)) return i;
-      }
-      return null;
-    };
-
-    // Assign new emojis to the next free fixed slot. Existing ones keep their slot => no jumping.
-    for (const b of base) {
-      if (slots.has(b.emoji)) continue;
-      const idx = claimNextFreeSlot();
-      if (idx == null) break;
-      slots.set(b.emoji, idx);
-      used.add(idx);
-    }
-
-    return base.map((b) => {
-      const slotIndex = slots.get(b.emoji);
-      const pos = slotIndex != null ? REACTION_SLOTS[slotIndex] : null;
-      return pos ? { ...b, ...pos, slotIndex } : { ...b, xPct: 50, yPct: 100, side: 'bottom' };
-    });
   };
 
   const elementToVm = useCallback((el) => {
@@ -1897,27 +436,200 @@ export default function WorkspacePage() {
     return vm;
   }, [extractContent, normalizeReactions, apiBaseUrl]);
 
-  const openReactionPicker = (elementId, x, y) => {
-    if (!elementId) return;
-    setReactionCustomEmoji('');
-    setReactionPicker({ elementId, x: Number(x) || 0, y: Number(y) || 0 });
-  };
+  const {
+    historyMeta,
+    pushHistory,
+    undo,
+    redo,
+    applyingHistoryRef,
+    createdElementIdsRef,
+  } = useWorkspaceHistory({
+    setElements,
+    setEditingElementId,
+    setSelectedElementIds,
+    elementToVm,
+    snapshotForHistory,
+    snapshotEquals,
+    workspace,
+    deskIdParam: id,
+    setActionError,
+    idKey,
+    sameId,
+    upsertById,
+  });
 
-  const toggleReaction = (elementId, emojiRaw) => {
-    const emoji = String(emojiRaw ?? '').trim();
-    const socket = socketRef.current;
-    const deskId = workspace?.id ?? workspace?.deskId ?? id;
-    if (!socket || !deskId || !elementId || !emoji) return;
-    socket.emit('reaction:toggle', { deskId, elementId, emoji }, (ack = {}) => {
-      if (!ack?.ok) {
-        setActionError(String(ack?.error || 'Reaction failed'));
-        window.setTimeout(() => setActionError(null), 4500);
-        return;
+  const getElementByIdFromRef = useCallback((elementId) => {
+    const k = idKey(elementId);
+    if (!k) return null;
+    const list = elementsRef.current || [];
+    for (const el of list) {
+      if (sameId(el?.id, elementId)) return el;
+    }
+    return null;
+  }, []);
+
+  const toolManager = useToolManager({
+    connectorsRef,
+    isMobile,
+    workspace,
+    deskIdParam: id,
+    viewport,
+    elementsRef,
+    getDeskPointFromClient,
+    setElements,
+    setEditingElementId,
+    setSelectedElementIds,
+    setSelectedMaterialBlockId,
+    setMaterialBlocks,
+    pushHistory,
+    applyingHistoryRef,
+    createdElementIdsRef,
+    elementToVm,
+    snapshotForHistory,
+    upsertById,
+    sameId,
+    idKey,
+    setActionError,
+    interactionRef,
+    materialBlockInteractionRef,
+    createNoteOrTextAtDeskPointRef,
+    inputDebugEnabled,
+    pushInputDebug,
+    endEditingRef,
+    inputDebugLastMoveLogRef,
+  });
+
+  const connectors = useConnectors({
+    activeTool: toolManager.activeTool,
+    elementsRef,
+    materialBlocksRef,
+    elements,
+    getDeskPointFromClient,
+    setElements,
+    workspace,
+    deskIdParam: id,
+    setActionError,
+    elementToVm,
+    snapshotForHistory,
+    snapshotEquals,
+    pushHistory,
+    applyingHistoryRef,
+    createdElementIdsRef,
+    isMobile,
+    updateElement,
+    updateLocalElementRef,
+    canvasRef,
+    elementNodeCacheRef,
+    materialBlockNodeRef,
+    getElementByIdFromRef,
+    sameId,
+    idKey,
+    upsertById,
+    setEditingElementId,
+  });
+  const {
+    connectorHoverElementId,
+    setConnectorHoverElementId,
+    connectorDraft,
+    setConnectorDraft,
+    selectedConnectorId,
+    setSelectedConnectorId,
+    connectorsFollowDuringDrag,
+    setConnectorsFollowDuringDrag,
+    connectorHoverBlockId,
+    setConnectorHoverBlockId,
+    flushConnectorDraft,
+    setConnectorDraftNext,
+    cancelConnectorDraft,
+    createConnectorOnDesk,
+    startConnectorDrag,
+    startConnectorDragFromBlock,
+    startConnectorBendDrag,
+    getAnchorPoint,
+    pickHoverElementId,
+    pickSideAtPoint,
+    pickHoverBlockId,
+    pickSideAtPointForBlock,
+    computeConnectorPathFromAnchors,
+    isConnectableElement,
+    getLiveAnchorPoint,
+    connectorElements,
+    onSelectConnector,
+    connectorDraftRef,
+    connectorDraftRafRef,
+  } = connectors;
+  connectorsRef.current = connectors;
+
+  const stopInteractions = useCallback(
+    (e) => {
+      toolManager.cancelTools();
+      viewport.stopViewportInteractions(e);
+      if (inputDebugEnabled) {
+        pushInputDebug('stopInteractions', {
+          type: e?.type,
+          pid: typeof e?.pointerId === 'number' ? e.pointerId : null,
+          pType: e?.pointerType,
+          cancelable: Boolean(e?.cancelable),
+        });
       }
-      const next = normalizeReactions(ack?.reactions);
-      setElements((prev) => prev.map((el) => (sameId(el.id, elementId) ? { ...el, reactions: next } : el)));
-    });
-  };
+    },
+    [inputDebugEnabled, pushInputDebug, viewport, toolManager]
+  );
+
+  useEffect(() => {
+    const onWindowPointerUpOrCancel = (e) => {
+      const isTouch = e?.pointerType === 'touch';
+      if (!isTouch) return;
+
+      const panActive = Boolean(panStartRef.current);
+      const pinchActive = Boolean(mobilePinchRef.current?.active);
+      const drawActive = Boolean(toolManager.liveStrokeRef?.current);
+      const eraseActive = Boolean(toolManager.eraseStateRef?.current?.active);
+      const boxSelectActive = Boolean(toolManager.selectStartRef?.current);
+      if (!panActive && !pinchActive && !drawActive && !eraseActive && !boxSelectActive) return;
+
+      const pid = typeof e?.pointerId === 'number' ? e.pointerId : null;
+      const panPid = panStartRef.current?.pointerId ?? null;
+      const pinchHas = pid != null ? mobilePinchRef.current?.pointers?.has?.(pid) : false;
+      if (pid != null && panPid != null && pid !== panPid && !pinchHas && !drawActive && !eraseActive) return;
+
+      if (inputDebugEnabled) {
+        pushInputDebug('window.end', { type: e.type, pid, panActive, pinchActive, drawActive, eraseActive, boxSelectActive });
+      }
+      stopInteractions(e);
+    };
+
+    window.addEventListener('pointerup', onWindowPointerUpOrCancel, true);
+    window.addEventListener('pointercancel', onWindowPointerUpOrCancel, true);
+    return () => {
+      window.removeEventListener('pointerup', onWindowPointerUpOrCancel, true);
+      window.removeEventListener('pointercancel', onWindowPointerUpOrCancel, true);
+    };
+  }, [inputDebugEnabled, pushInputDebug, stopInteractions, toolManager]);
+
+  useEffect(() => {
+    if (toolManager.activeTool !== 'link') return;
+    window.setTimeout(() => linkInputRef.current?.focus?.(), 0);
+  }, [toolManager.activeTool]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileBrushBarOpen(false);
+      setMobileLinkOpen(false);
+      return;
+    }
+    if (toolManager.activeTool !== 'hand' && toolManager.activeTool !== 'pen' && toolManager.activeTool !== 'eraser') {
+      toolManager.setActiveTool('hand');
+    }
+    toolManager.cancelTools();
+  }, [isMobile, toolManager.activeTool]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    if (!mobileBrushBarOpen && (toolManager.activeTool === 'pen' || toolManager.activeTool === 'eraser')) {
+      toolManager.setActiveTool('hand');
+    }
+  }, [isMobile, mobileBrushBarOpen, toolManager.activeTool]);
 
   const persistElement = async (el, opts = {}) => {
     if (!el?.id) return;
@@ -1959,206 +671,11 @@ export default function WorkspacePage() {
     }
   };
 
-  const flushConnectorDraft = () => {
-    connectorDraftRafRef.current = null;
-    const cur = connectorDraftRef.current;
-    setConnectorDraft(cur ? { ...cur, from: { ...cur.from }, toHover: { ...cur.toHover }, cursor: { ...cur.cursor } } : null);
-  };
-
-  const setConnectorDraftNext = (next) => {
-    connectorDraftRef.current = next;
-    if (connectorDraftRafRef.current == null) {
-      connectorDraftRafRef.current = window.requestAnimationFrame(flushConnectorDraft);
-    }
-  };
-
-  const cancelConnectorDraft = () => {
-    connectorDraftRef.current = null;
-    setConnectorDraft(null);
-    setConnectorHoverElementId(null);
-  };
-
-  const createConnectorOnDesk = async ({ fromElementId, fromSide, toElementId, toSide, bend }) => {
-    const deskId = workspace?.id ?? workspace?.deskId ?? id;
-    if (!deskId || !fromElementId || !toElementId || !fromSide || !toSide) return;
-    if (Number(fromElementId) === Number(toElementId)) return;
-
-    setActionError(null);
-    try {
-      const payload = {
-        data: {
-          v: 1,
-          kind: 'connector',
-          from: { elementId: Number(fromElementId), side: String(fromSide) },
-          to: { elementId: Number(toElementId), side: String(toSide) },
-          bend: { x: Number(bend?.x ?? 0), y: Number(bend?.y ?? 0) },
-          style: { color: '#0f172a', width: 2, arrowEnd: true },
-        },
-      };
-
-      const created = await createElementOnDesk(deskId, {
-        type: 'connector',
-        x: 0,
-        y: 0,
-        width: 1,
-        height: 1,
-        zIndex: 0,
-        payload,
-      });
-      const vm = elementToVm(created);
-      if (vm?.id) createdElementIdsRef.current.add(vm.id);
-      setElements((prev) => upsertById(prev, vm));
-      setSelectedConnectorId(vm?.id ?? null);
-
-      if (!applyingHistoryRef.current) {
-        const snap = snapshotForHistory(vm);
-        if (deskId && snap) {
-          pushHistory({
-            kind: 'create-element',
-            deskId,
-            elementId: vm.id,
-            snapshot: snap,
-          });
-        }
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to create connector:', err?.response?.data || err);
-      setActionError(err?.response?.data?.error || err?.message || 'Failed to create connector');
-      window.setTimeout(() => setActionError(null), 4500);
-    }
-  };
-
-  const startConnectorDrag = (fromElementId, fromSide, e) => {
-    if (!fromElementId || !fromSide) return;
-    e.stopPropagation();
-    e.preventDefault();
-
-    setSelectedConnectorId(null);
-
-    const pointerId = e.pointerId;
-    const startDeskP = getDeskPointFromClient(e.clientX, e.clientY);
-    const initial = {
-      from: { elementId: fromElementId, side: String(fromSide) },
-      toHover: { elementId: null, side: null },
-      cursor: startDeskP,
-    };
-    setConnectorDraftNext(initial);
-    setConnectorHoverElementId(fromElementId);
-
-    const cleanup = (onMove, onUp) => {
-      window.removeEventListener('pointermove', onMove, true);
-      window.removeEventListener('pointerup', onUp, true);
-    };
-
-    const onMove = (ev) => {
-      if (ev.pointerId !== pointerId) return;
-      const deskP = getDeskPointFromClient(ev.clientX, ev.clientY);
-      const hoverId = pickHoverElementId(deskP, isMobile ? 24 : 15);
-      const hoverEl = hoverId ? (elementsRef.current || []).find((x) => x?.id === hoverId) : null;
-      const hoverSide = hoverEl ? pickSideAtPoint(hoverEl, deskP, isMobile ? 26 : 18) : null;
-      setConnectorDraftNext({
-        from: initial.from,
-        toHover: { elementId: hoverId, side: hoverSide },
-        cursor: deskP,
-      });
-      setConnectorHoverElementId(hoverId || null);
-    };
-
-    const onUp = async (ev) => {
-      if (ev.pointerId !== pointerId) return;
-      cleanup(onMove, onUp);
-      const cur = connectorDraftRef.current;
-      cancelConnectorDraft();
-      if (!cur?.from?.elementId || !cur?.from?.side) return;
-      const toId = cur?.toHover?.elementId;
-      const toSide = cur?.toHover?.side;
-      if (!toId || !toSide) return;
-      await createConnectorOnDesk({
-        fromElementId: cur.from.elementId,
-        fromSide: cur.from.side,
-        toElementId: toId,
-        toSide,
-        bend: { x: 0, y: 0 },
-      });
-    };
-
-    window.addEventListener('pointermove', onMove, true);
-    window.addEventListener('pointerup', onUp, true);
-  };
-
-  const startConnectorBendDrag = (connectorId, e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    setConnectorsFollowDuringDrag(true);
-    const idNum = connectorId;
-    const el = elementsRef.current?.find?.((x) => x?.id === idNum) || elements.find((x) => x?.id === idNum);
-    if (!el) return;
-
-    const before = snapshotForHistory(el);
-    const pointerId = e.pointerId;
-
-    const cleanup = (onMove, onUp) => {
-      window.removeEventListener('pointermove', onMove, true);
-      window.removeEventListener('pointerup', onUp, true);
-    };
-
-    const onMove = (ev) => {
-      if (ev.pointerId !== pointerId) return;
-      const curEl = elementsRef.current?.find?.((x) => x?.id === idNum) || el;
-      const data = curEl?.connector?.data || curEl?.Connector?.data || {};
-      const from = data?.from || {};
-      const to = data?.to || {};
-      const list = elementsRef.current || [];
-      const fromEl = list.find((x) => x?.id === from.elementId);
-      const toEl = list.find((x) => x?.id === to.elementId);
-      if (!fromEl || !toEl) return;
-      const a0 = getAnchorPoint(fromEl, from.side);
-      const a1 = getAnchorPoint(toEl, to.side);
-      const { mid } = computeConnectorPathFromAnchors(a0, a1, data?.bend);
-      const deskP = getDeskPointFromClient(ev.clientX, ev.clientY);
-      const nextBend = { x: deskP.x - mid.x, y: deskP.y - mid.y };
-      const nextData = { ...data, bend: nextBend };
-      const child = curEl?.connector ?? curEl?.Connector ?? {};
-      const nextChild = { ...child, data: nextData };
-      updateLocalElement(idNum, { connector: nextChild, Connector: nextChild });
-    };
-
-    const onUp = async (ev) => {
-      if (ev.pointerId !== pointerId) return;
-      cleanup(onMove, onUp);
-      setConnectorsFollowDuringDrag(false);
-      const curEl = elementsRef.current?.find?.((x) => x?.id === idNum) || el;
-      const data = curEl?.connector?.data || curEl?.Connector?.data || {};
-      try {
-        const updated = await updateElement(idNum, { payload: { data } });
-        const vm = elementToVm(updated);
-        setElements((prev) => prev.map((x) => (sameId(x.id, vm.id) ? { ...x, ...vm } : x)));
-
-        if (!applyingHistoryRef.current && before) {
-          const afterSnap = snapshotForHistory(vm);
-          if (afterSnap && !snapshotEquals(before, afterSnap)) {
-            pushHistory({
-              kind: 'update-element',
-              elementId: idNum,
-              before,
-              after: afterSnap,
-            });
-          }
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    window.addEventListener('pointermove', onMove, true);
-    window.addEventListener('pointerup', onUp, true);
-  };
-
   const beginEditing = (elementId, explicitBeforeSnap) => {
     if (!elementId) return;
     // Selecting an element implies it's the only active selection.
     setSelectedElementIds(new Set([idKey(elementId)]));
+    setSelectedMaterialBlockId(null);
     // Enforce a single active editor: switching elements should commit the previous one.
     if (editingElementId && editingElementId !== elementId) {
       endEditing();
@@ -2198,168 +715,45 @@ export default function WorkspacePage() {
       // ignore
     });
   };
+  endEditingRef.current = endEditing;
 
-  const flushDragVisual = () => {
-    dragVisualRafRef.current = null;
-    const pending = dragVisualPendingRef.current;
-    if (!pending?.elementKey) return;
-    const node = elementNodeCacheRef.current.get(pending.elementKey);
-    if (!node) return;
-    node.style.transform = `translate3d(${pending.x}px, ${pending.y}px, 0) rotate(${pending.rotation ?? 0}deg)`;
-  };
+  const blockFrame = useBlockFrame({
+    setMaterialBlocks,
+    setMaterialBlockDragOffset,
+    setSelectedMaterialBlockId,
+    materialBlockNodeRef,
+    materialBlockInteractionRef,
+    viewScaleRef,
+    updateMaterialBlock,
+  });
+  const { startBlockDrag, startBlockResize } = blockFrame;
 
-  const scheduleDragVisual = (elementKey, x, y, rotation) => {
-    if (!elementKey) return;
-    dragVisualPendingRef.current = { elementKey, x, y, rotation: Number(rotation ?? 0) };
-    if (dragVisualRafRef.current == null) {
-      dragVisualRafRef.current = window.requestAnimationFrame(flushDragVisual);
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      if (dragVisualRafRef.current != null) {
-        window.cancelAnimationFrame(dragVisualRafRef.current);
-        dragVisualRafRef.current = null;
-      }
-      dragVisualPendingRef.current = null;
-    };
-  }, []);
-
-  const maybeStartElementDrag = (elementId, pointerDownEvent) => {
-    // For touch/pen pointer events, `button` can be -1; still allow dragging.
-    if (pointerDownEvent.pointerType === 'mouse' && pointerDownEvent.button !== 0) return;
-    if (interactionRef.current) return; // already dragging/resizing
-
-    const el = elementsRef.current.find((x) => sameId(x.id, elementId));
-    if (!el) return;
-
-    const before = snapshotForHistory(el);
-    const startX = pointerDownEvent.clientX;
-    const startY = pointerDownEvent.clientY;
-    const pointerId = pointerDownEvent.pointerId;
-
-    // Higher threshold avoids accidental drags on click (touchpad jitter -> click is treated as drag).
-    const threshold = 10; // px
-
-    const cleanup = (onMove, onUp) => {
-      window.removeEventListener('pointermove', onMove, true);
-      window.removeEventListener('pointerup', onUp, true);
-    };
-
-    const beginDragNow = () => {
-      // Suppress the click that will fire after a drag, so it doesn't enter edit mode.
-      suppressNextElementClickRef.current.add(elementId);
-      setConnectorsFollowDuringDrag(true);
-
-      const elementKey = idKey(elementId);
-      const node = elementKey ? elementNodeCacheRef.current.get(elementKey) : null;
-      if (node) node.style.willChange = 'transform';
-
-      interactionRef.current = {
-        kind: 'drag',
-        elementId,
-        elementKey,
-        hasDomNode: Boolean(node),
-        startX,
-        startY,
-        origin: { x: el.x, y: el.y },
-        latest: { x: el.x, y: el.y },
-        rotation: Number(el.rotation ?? 0),
-        pointerId,
-      };
-
-      const onDragMove = (ev) => {
-        const cur = interactionRef.current;
-        if (!cur || cur.kind !== 'drag' || cur.elementId !== elementId) return;
-        if (cur.pointerId != null && ev.pointerId != null && ev.pointerId !== cur.pointerId) return;
-
-        // Elements are positioned in desk coordinates inside a scaled container.
-        // Convert screen delta -> desk delta for consistent movement at any zoom.
-        const s = Number(viewScaleRef.current || 1) || 1;
-        const dx = (ev.clientX - cur.startX) / s;
-        const dy = (ev.clientY - cur.startY) / s;
-        const nextX = cur.origin.x + dx;
-        const nextY = cur.origin.y + dy;
-
-        cur.latest = { x: nextX, y: nextY };
-        // Perf: update only the dragged node's transform during drag; commit state on pointerup.
-        if (cur.hasDomNode) scheduleDragVisual(cur.elementKey, nextX, nextY, cur.rotation);
-        else updateLocalElement(elementId, { x: nextX, y: nextY });
-      };
-
-      const onDragUp = async () => {
-        window.removeEventListener('pointermove', onDragMove);
-        window.removeEventListener('pointerup', onDragUp);
-        const cur = interactionRef.current;
-        interactionRef.current = null;
-        setConnectorsFollowDuringDrag(false);
-        const latestPos = cur?.kind === 'drag' && cur?.elementId === elementId ? cur.latest : null;
-        const latestBase = elementsRef.current.find((x) => sameId(x.id, elementId)) || el;
-        if (latestBase && latestPos) {
-          try {
-            // Clear the transient perf hint.
-            if (cur?.elementKey) {
-              const node = elementNodeCacheRef.current.get(cur.elementKey);
-              if (node) node.style.willChange = '';
-            }
-
-            // Ensure the final coords are visible before committing state.
-            if (dragVisualRafRef.current != null) {
-              window.cancelAnimationFrame(dragVisualRafRef.current);
-              dragVisualRafRef.current = null;
-            }
-            dragVisualPendingRef.current = cur?.elementKey
-              ? { elementKey: cur.elementKey, x: latestPos.x, y: latestPos.y, rotation: cur?.rotation ?? 0 }
-              : null;
-            flushDragVisual();
-            dragVisualPendingRef.current = null;
-
-            // Commit coords to state once (avoids per-frame full board work).
-            setElements((prev) =>
-              prev.map((xEl) => (sameId(xEl?.id, elementId) ? { ...xEl, x: latestPos.x, y: latestPos.y } : xEl))
-            );
-            await persistElement({ ...latestBase, x: latestPos.x, y: latestPos.y }, { historyBefore: before });
-          } catch {
-            // ignore
-          }
-        }
-      };
-
-      window.addEventListener('pointermove', onDragMove);
-      window.addEventListener('pointerup', onDragUp, { once: true });
-    };
-
-    const onMove = (ev) => {
-      if (ev.pointerId !== pointerId) return;
-      // If a mobile long-press consumed this pointer, do not start dragging.
-      if (isMobile && mobileSuppressDragPointerIdRef.current === pointerId) {
-        cleanup(onMove, onUp);
-        return;
-      }
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      if (dx * dx + dy * dy < threshold * threshold) return;
-      cleanup(onMove, onUp);
-      beginDragNow();
-    };
-
-    const onUp = (ev) => {
-      if (ev.pointerId !== pointerId) return;
-      cleanup(onMove, onUp);
-      if (isMobile && mobileSuppressDragPointerIdRef.current === pointerId) {
-        mobileSuppressDragPointerIdRef.current = null;
-      }
-    };
-
-    window.addEventListener('pointermove', onMove, true);
-    window.addEventListener('pointerup', onUp, true);
-  };
+  const elementFrame = useElementFrame({
+    elementsRef,
+    setElements,
+    persistElement,
+    viewScaleRef,
+    elementNodeCacheRef,
+    interactionRef,
+    setConnectorsFollowDuringDrag,
+    suppressNextElementClickRef,
+    snapshotForHistory,
+    canvasRef,
+    scheduleApplyViewVars,
+    setViewOffset,
+    persistViewDebounced,
+    elements,
+    isMobile,
+    mobileSuppressDragPointerIdRef,
+    setElementResizeOffset,
+  });
+  const { maybeStartElementDrag, startResize, updateLocalElement, focusElement, getNextZIndex } = elementFrame;
+  updateLocalElementRef.current = updateLocalElement;
 
   const onElementPointerDown = (elementId, e) => {
     // Hand tool on mobile should still allow interacting with elements (move/edit/long-press),
     // while keeping panning for empty canvas.
-    if (activeTool === 'hand') {
+    if (toolManager.activeTool === 'hand') {
       if (!isMobile || e.pointerType !== 'touch') return;
 
       // Prevent the canvas from capturing this pointer for pan.
@@ -2370,6 +764,7 @@ export default function WorkspacePage() {
 
       setSelectedElementIds(new Set([idKey(elementId)]));
       setEditingElementId(null);
+      setSelectedMaterialBlockId(null);
 
       // Long-press -> reaction picker (more stable than mobile context menu).
       if (!isEditableTarget(e.target) && !e.target?.closest?.('button')) {
@@ -2430,8 +825,8 @@ export default function WorkspacePage() {
       return;
     }
     // Allow drawing tools to work over elements (don't stop bubbling to the canvas).
-    if (activeTool === 'pen' || activeTool === 'eraser') return;
-    if (activeTool === 'connector') {
+    if (toolManager.activeTool === 'pen' || toolManager.activeTool === 'eraser') return;
+    if (toolManager.activeTool === 'connector') {
       // Connector tool interacts only with endpoints; don't start drag/edit on body click.
       e.stopPropagation();
       return;
@@ -2469,7 +864,7 @@ export default function WorkspacePage() {
       return;
     }
 
-    if (isMobile && activeTool === 'hand') {
+    if (isMobile && toolManager.activeTool === 'hand') {
       ev.stopPropagation();
       const el = elementsRef.current?.find?.((x) => sameId(x?.id, elementId)) || null;
       if (el?.type === 'note' || el?.type === 'text') {
@@ -2481,56 +876,11 @@ export default function WorkspacePage() {
       return;
     }
 
-    if (activeTool === 'hand' || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'connector') return;
+    if (toolManager.activeTool === 'hand' || toolManager.activeTool === 'pen' || toolManager.activeTool === 'eraser' || toolManager.activeTool === 'connector') return;
     ev.stopPropagation();
     if (editingElementId === elementId) return;
     beginEditing(elementId);
   };
-
-  // Avoid UI freezes: pointermove can fire hundreds of times/sec; batching keeps us to ~60fps.
-  const pendingLocalElementPatchesRef = useRef(new Map());
-  const localElementPatchRafRef = useRef(null);
-
-  const flushLocalElementPatches = () => {
-    localElementPatchRafRef.current = null;
-    const patches = pendingLocalElementPatchesRef.current;
-    if (!patches.size) return;
-
-    // Apply all pending patches in one state update.
-    setElements((prev) => {
-      let didChange = false;
-      const next = prev.map((el) => {
-        const patch = patches.get(el.id);
-        if (!patch) return el;
-        didChange = true;
-        return { ...el, ...patch };
-      });
-      return didChange ? next : prev;
-    });
-
-    patches.clear();
-  };
-
-  const updateLocalElement = (elementId, patch) => {
-    if (!elementId || !patch) return;
-    const patches = pendingLocalElementPatchesRef.current;
-    const prev = patches.get(elementId);
-    patches.set(elementId, prev ? { ...prev, ...patch } : patch);
-    if (localElementPatchRafRef.current == null) {
-      localElementPatchRafRef.current = window.requestAnimationFrame(flushLocalElementPatches);
-    }
-  };
-
-  useEffect(() => {
-    const pendingPatches = pendingLocalElementPatchesRef.current;
-    return () => {
-      if (localElementPatchRafRef.current != null) {
-        window.cancelAnimationFrame(localElementPatchRafRef.current);
-        localElementPatchRafRef.current = null;
-      }
-      pendingPatches.clear();
-    };
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -2717,7 +1067,7 @@ export default function WorkspacePage() {
     const s = viewScaleRef.current || 1;
     const x = Math.round((canvasW / 2 - off.x) / s - width / 2);
     const y = Math.round((canvasH / 2 - off.y) / s - height / 2);
-    const zIndex = Math.round(elementsRef.current.reduce((m, el) => Math.max(m, el.zIndex ?? 0), 0) + 1);
+    const zIndex = getNextZIndex();
 
     setUploading(true);
     setActionError(null);
@@ -2748,7 +1098,7 @@ export default function WorkspacePage() {
       }
       beginEditing(vm.id, snapshotForHistory(vm));
       // Mobile UX: adding a document is a one-shot action.
-      if (isMobile) setActiveTool('hand');
+      if (isMobile) toolManager.setActiveTool('hand');
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to upload/create document:', err?.response?.data || err);
@@ -2775,7 +1125,7 @@ export default function WorkspacePage() {
     const s = viewScaleRef.current || 1;
     const x = Math.round((canvasW / 2 - off.x) / s - width / 2);
     const y = Math.round((canvasH / 2 - off.y) / s - height / 2);
-    const zIndex = Math.round(elementsRef.current.reduce((m, el) => Math.max(m, el.zIndex ?? 0), 0) + 1);
+    const zIndex = getNextZIndex();
 
     setCreatingLink(true);
     setActionError(null);
@@ -2817,7 +1167,7 @@ export default function WorkspacePage() {
       }
       beginEditing(vm.id, snapshotForHistory(vm));
       setLinkDraftUrl('');
-      if (isMobile) setActiveTool('hand');
+      if (isMobile) toolManager.setActiveTool('hand');
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Failed to create link:', err?.response?.data || err);
@@ -2828,139 +1178,6 @@ export default function WorkspacePage() {
     }
   };
 
-  const startResize = (elementId, handle, e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    setConnectorsFollowDuringDrag(true);
-    const el = elements.find((x) => sameId(x.id, elementId));
-    if (!el) return;
-    const before = snapshotForHistory(el);
-
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const originW = Number(el.width ?? 0);
-    const originH = Number(el.height ?? 0);
-    const lockAspect = el.type === 'note';
-    const aspect = lockAspect && originW > 0 && originH > 0 ? originW / originH : 1;
-    interactionRef.current = {
-      kind: 'resize',
-      elementId,
-      handle,
-      startX,
-      startY,
-      origin: { x: el.x, y: el.y, width: originW, height: originH },
-      lockAspect,
-      aspect,
-    };
-
-    const minW = 120;
-    const minH = el.type === 'text' ? 50 : 80;
-
-    const onMove = (ev) => {
-      const cur = interactionRef.current;
-      if (!cur || cur.kind !== 'resize' || cur.elementId !== elementId) return;
-      const dx = ev.clientX - cur.startX;
-      const dy = ev.clientY - cur.startY;
-      let { x, y, width, height } = cur.origin;
-
-      const leftHandles = ['nw', 'w', 'sw'];
-      const rightHandles = ['ne', 'e', 'se'];
-      const topHandles = ['nw', 'n', 'ne'];
-      const bottomHandles = ['sw', 's', 'se'];
-
-      const isLeft = leftHandles.includes(cur.handle);
-      const isRight = rightHandles.includes(cur.handle);
-      const isTop = topHandles.includes(cur.handle);
-      const isBottom = bottomHandles.includes(cur.handle);
-
-      if (cur.lockAspect) {
-        const r = Number(cur.aspect) > 0 ? Number(cur.aspect) : 1;
-        const deltaW = isRight ? dx : isLeft ? -dx : 0;
-        const deltaH = isBottom ? dy : isTop ? -dy : 0;
-
-        const baseW = Math.max(1, Number(cur.origin.width ?? 0));
-        const baseH = Math.max(1, Number(cur.origin.height ?? 0));
-        const relW = Math.abs(deltaW) / baseW;
-        const relH = Math.abs(deltaH) / baseH;
-
-        const clampSize = (w, h) => {
-          let nextW = Number(w);
-          let nextH = Number(h);
-          if (!Number.isFinite(nextW) || !Number.isFinite(nextH)) {
-            nextW = baseW;
-            nextH = baseH;
-          }
-
-          // Enforce mins while preserving ratio (iterate a couple times for stability).
-          for (let i = 0; i < 2; i += 1) {
-            if (nextW < minW) {
-              nextW = minW;
-              nextH = nextW / r;
-            }
-            if (nextH < minH) {
-              nextH = minH;
-              nextW = nextH * r;
-            }
-          }
-
-          return { nextW, nextH };
-        };
-
-        if (relW >= relH) {
-          const desiredW = cur.origin.width + deltaW;
-          const { nextW, nextH } = clampSize(desiredW, desiredW / r);
-          width = nextW;
-          height = nextH;
-        } else {
-          const desiredH = cur.origin.height + deltaH;
-          const { nextW, nextH } = clampSize(desiredH * r, desiredH);
-          width = nextW;
-          height = nextH;
-        }
-
-        if (isLeft) x = cur.origin.x + (cur.origin.width - width);
-        if (isTop) y = cur.origin.y + (cur.origin.height - height);
-      } else {
-        if (isRight) width = Math.max(minW, cur.origin.width + dx);
-        if (isBottom) height = Math.max(minH, cur.origin.height + dy);
-        if (isLeft) {
-          const nextW = Math.max(minW, cur.origin.width - dx);
-          x = cur.origin.x + (cur.origin.width - nextW);
-          width = nextW;
-        }
-        if (isTop) {
-          const nextH = Math.max(minH, cur.origin.height - dy);
-          y = cur.origin.y + (cur.origin.height - nextH);
-          height = nextH;
-        }
-      }
-
-      updateLocalElement(elementId, { x, y, width, height });
-    };
-
-    const onUp = async () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      interactionRef.current = null;
-      setConnectorsFollowDuringDrag(false);
-      const latest = elementsRef.current.find((x) => sameId(x.id, elementId));
-      if (latest) {
-        try {
-          await persistElement(latest, { historyBefore: before });
-        } catch {
-          // ignore
-        }
-      }
-    };
-
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp, { once: true });
-  };
-
-  const elementsRef = useRef(elements);
-  // Keep ref in sync immediately (ConnectorsLayer reads it during render).
-  elementsRef.current = elements;
-
   const registerElementNode = useCallback((elementId, node) => {
     const k = idKey(elementId);
     if (!k) return;
@@ -2969,192 +1186,6 @@ export default function WorkspacePage() {
     else m.delete(k);
   }, []);
 
-  const getElementByIdFromRef = useCallback((elementId) => {
-    const k = idKey(elementId);
-    if (!k) return null;
-    const list = elementsRef.current || [];
-    for (const el of list) {
-      if (sameId(el?.id, elementId)) return el;
-    }
-    return null;
-  }, []);
-
-  const getLiveAnchorPoint = useCallback(
-    (elementId, side) => {
-      const k = idKey(elementId);
-      if (!k) return null;
-      const node = elementNodeCacheRef.current.get(k);
-      if (node && canvasRef.current) {
-        const r = node.getBoundingClientRect();
-        const s = String(side || 'right');
-        let ax = r.right;
-        let ay = r.top + r.height / 2;
-        let dir = { x: 1, y: 0 };
-        if (s === 'top') {
-          ax = r.left + r.width / 2;
-          ay = r.top;
-          dir = { x: 0, y: -1 };
-        } else if (s === 'bottom') {
-          ax = r.left + r.width / 2;
-          ay = r.bottom;
-          dir = { x: 0, y: 1 };
-        } else if (s === 'left') {
-          ax = r.left;
-          ay = r.top + r.height / 2;
-          dir = { x: -1, y: 0 };
-        }
-
-        const deskP = getDeskPointFromClient(ax, ay);
-        const OUTSET = 10;
-        return { x: Number(deskP.x) + dir.x * OUTSET, y: Number(deskP.y) + dir.y * OUTSET, dir };
-      }
-
-      const el = getElementByIdFromRef(elementId);
-      if (!el) return null;
-      return getAnchorPoint(el, side);
-    },
-    [getDeskPointFromClient, getElementByIdFromRef, getAnchorPoint]
-  );
-
-  // Keep connector list stable across drag frames so the memoized connectors layer isn't forced to rerender.
-  const stableConnectorsRef = useRef([]);
-  const connectorElements = useMemo(() => {
-    const next = (Array.isArray(elements) ? elements : []).filter((el) => el?.type === 'connector');
-    const prev = stableConnectorsRef.current;
-    if (prev.length === next.length && prev.every((x, i) => x === next[i])) return prev;
-    stableConnectorsRef.current = next;
-    return next;
-  }, [elements]);
-
-  const onSelectConnector = useCallback((connectorId) => {
-    setEditingElementId(null);
-    setSelectedConnectorId(connectorId);
-  }, []);
-
-  const applySnapshot = async (snap) => {
-    if (!snap?.elementId) return;
-    applyingHistoryRef.current = true;
-    setActionError(null);
-    try {
-      const updated = await updateElement(snap.elementId, {
-        x: snap.x,
-        y: snap.y,
-        width: snap.width,
-        height: snap.height,
-        rotation: snap.rotation,
-        zIndex: snap.zIndex,
-        payload: snap.payload,
-      });
-      const vm = elementToVm(updated);
-      setElements((prev) => prev.map((x) => (sameId(x.id, vm.id) ? { ...x, ...vm, content: vm.content ?? x.content } : x)));
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to apply history snapshot:', err?.response?.data || err);
-      setActionError(err?.response?.data?.error || err?.message || 'Failed to apply history change');
-      window.setTimeout(() => setActionError(null), 4500);
-    } finally {
-      applyingHistoryRef.current = false;
-    }
-  };
-
-  const restoreDeletedElement = async (entry) => {
-    const snap = entry?.snapshot;
-    const deskId = entry?.deskId ?? (workspace?.id ?? workspace?.deskId ?? id);
-    if (!deskId || !snap?.type) return;
-    applyingHistoryRef.current = true;
-    setActionError(null);
-    try {
-      const created = await createElementOnDesk(deskId, {
-        type: snap.type,
-        x: snap.x,
-        y: snap.y,
-        width: snap.width,
-        height: snap.height,
-        rotation: snap.rotation ?? 0,
-        zIndex: snap.zIndex ?? 0,
-        payload: snap.payload,
-      });
-      const vm = elementToVm(created);
-      if (vm?.id) {
-        // Backend generates new ids; keep the history entry pointing at the restored element for redo.
-        entry.elementId = vm.id;
-        entry.snapshot = { ...snap, elementId: vm.id };
-        setElements((prev) => upsertById(prev, vm));
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to restore deleted element:', err?.response?.data || err);
-      setActionError(err?.response?.data?.error || err?.message || 'Failed to restore deleted element');
-      window.setTimeout(() => setActionError(null), 4500);
-    } finally {
-      applyingHistoryRef.current = false;
-    }
-  };
-
-  const deleteElementFromHistory = async (entry, opts = {}) => {
-    const elementId = entry?.elementId;
-    if (!elementId) return;
-    applyingHistoryRef.current = true;
-    setActionError(null);
-    try {
-      await deleteElement(elementId);
-      setEditingElementId((cur) => (cur === elementId ? null : cur));
-      setSelectedElementIds((cur) => {
-        const k = idKey(elementId);
-        if (!k || !cur?.has?.(k)) return cur;
-        const next = new Set(cur);
-        next.delete(k);
-        return next;
-      });
-      setElements((prev) => prev.filter((x) => !sameId(x.id, elementId)));
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to delete element from history:', err?.response?.data || err);
-      setActionError(err?.response?.data?.error || err?.message || opts.errorMessage || 'Failed to apply history delete');
-      window.setTimeout(() => setActionError(null), 4500);
-    } finally {
-      applyingHistoryRef.current = false;
-    }
-  };
-
-  const undo = async () => {
-    const store = historyRef.current;
-    const entry = store.past.pop();
-    if (!entry) return;
-    store.future.push(entry);
-    updateHistoryMeta();
-    if (entry.kind === 'update-element') {
-      await applySnapshot(entry.before);
-      return;
-    }
-    if (entry.kind === 'delete-element') {
-      await restoreDeletedElement(entry);
-      return;
-    }
-    if (entry.kind === 'create-element') {
-      await deleteElementFromHistory(entry, { errorMessage: 'Failed to undo create' });
-    }
-  };
-
-  const redo = async () => {
-    const store = historyRef.current;
-    const entry = store.future.pop();
-    if (!entry) return;
-    store.past.push(entry);
-    updateHistoryMeta();
-    if (entry.kind === 'update-element') {
-      await applySnapshot(entry.after);
-      return;
-    }
-    if (entry.kind === 'delete-element') {
-      await deleteElementFromHistory(entry, { errorMessage: 'Failed to redo delete' });
-      return;
-    }
-    if (entry.kind === 'create-element') {
-      await restoreDeletedElement(entry);
-    }
-  };
-
   const undoEv = useEvent(undo);
   const redoEv = useEvent(redo);
 
@@ -3162,8 +1193,7 @@ export default function WorkspacePage() {
     const kind = type === 'note' ? 'note' : 'text';
     const deskId = workspace?.id ?? workspace?.deskId ?? id;
     if (!deskId) return;
-    const list = elementsRef.current || [];
-    const zIndex = Math.round(list.reduce((m, el) => Math.max(m, el?.zIndex ?? 0), 0) + 1);
+    const zIndex = getNextZIndex();
     const width = Math.round(kind === 'note' ? 260 : 240);
     const height = Math.round(kind === 'note' ? 200 : 80);
     const ax = Number(deskP?.x ?? 0);
@@ -3205,561 +1235,78 @@ export default function WorkspacePage() {
         window.setTimeout(() => setActionError(null), 4000);
       } finally {
         // Mobile UX: creation is a one-shot action; always return to Hand.
-        if (isMobile) setActiveTool('hand');
+        if (isMobile) toolManager.setActiveTool('hand');
       }
     })();
   };
+  createNoteOrTextAtDeskPointRef.current = createNoteOrTextAtDeskPoint;
 
-  const onCanvasPointerDown = (e) => {
-    // For touch/pen pointer events, `button` can be -1; we still want creation to work.
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    const target = e.currentTarget;
-    try {
-      target.setPointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-    if (inputDebugEnabled) {
-      let hasCap = null;
-      try {
-        hasCap = typeof target?.hasPointerCapture === 'function' ? target.hasPointerCapture(e.pointerId) : null;
-      } catch {
-        hasCap = null;
-      }
-      pushInputDebug('pointer.down', {
-        type: e.type,
-        pid: e.pointerId,
-        pType: e.pointerType,
-        primary: e.isPrimary,
-        buttons: e.buttons,
-        cancelable: Boolean(e.cancelable),
-        prevented: Boolean(e.defaultPrevented),
-        hasCap,
-        x: Math.round(e.clientX),
-        y: Math.round(e.clientY),
-      });
-    }
-    e.preventDefault();
+  const registerMaterialBlockNode = useCallback((blockId, node) => {
+    const m = materialBlockNodeRef.current;
+    if (node) m.set(blockId, node);
+    else m.delete(blockId);
+  }, []);
 
-    // Mobile pinch-to-zoom: when the 2nd finger touches, switch into pinch mode.
-    if (isMobile && e.pointerType === 'touch') {
-      const pinch = mobilePinchRef.current;
-      if (pinch.pointers.size === 0) {
-        const node = canvasRef.current;
-        const rect = node?.getBoundingClientRect?.();
-        if (rect) pinch.rect = { left: rect.left, top: rect.top };
-      }
-      pinch.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const handleMaterialBlockTitleUpdate = useCallback((blockId, newTitle) => {
+    updateMaterialBlock(blockId, { title: newTitle })
+      .then((updated) => {
+        setMaterialBlocks((prev) => prev.map((b) => (b.id === blockId ? { ...b, ...updated } : b)));
+      })
+      .catch(() => {});
+  }, []);
 
-      if (pinch.pointers.size === 2) {
-        const pts = Array.from(pinch.pointers.values());
-        const a = pts[0];
-        const b = pts[1];
-        const dx = Number(b.x - a.x);
-        const dy = Number(b.y - a.y);
-        const dist = Math.hypot(dx, dy) || 1;
-        const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-        const mid = { x: midClient.x - (pinch.rect?.left ?? 0), y: midClient.y - (pinch.rect?.top ?? 0) };
-        const off0 = viewOffsetRef.current;
-        const s0 = viewScaleRef.current || 1;
+  const handleDeleteMaterialBlock = useCallback((block) => {
+    const blockId = block?.id;
+    if (blockId == null) return;
+    setMaterialBlockModal((cur) => (cur?.id === blockId ? null : cur));
+    setSelectedMaterialBlockId((cur) => (cur === blockId ? null : cur));
+    setMaterialBlocks((prev) => prev.filter((b) => b.id !== blockId));
+    deleteMaterialBlock(blockId).catch(() => {});
+  }, []);
 
-        pinch.active = true;
-        pinch.startDist = dist;
-        pinch.startScale = s0;
-        pinch.startOffset = { ...off0 };
-        pinch.deskMid = { x: (mid.x - off0.x) / s0, y: (mid.y - off0.y) / s0 };
-        ensurePinchRaf();
-        if (inputDebugEnabled) {
-          pushInputDebug('pinch.start', {
-            pCount: pinch.pointers.size,
-            dist: Math.round(dist),
-            startScale: Number((s0 || 1).toFixed(4)),
-          });
-        }
-
-        // Cancel ongoing interactions while pinching.
-        selectStartRef.current = null;
-        setSelectionRect(null);
-        liveStrokeRef.current = null;
-        setLiveStroke(null);
-        eraseStateRef.current.active = false;
-        interactionRef.current = null;
-        setIsPanning(false);
-        panStartRef.current = null;
-        return;
-      }
-    }
-
-    const p = getCanvasPoint(e);
-    const off = viewOffsetRef.current;
-    const curScale = viewScaleRef.current || 1;
-    const deskP = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
-
-    // Exit edit mode on click outside element.
-    // Important UX: the first click outside should *only* finish editing, and not create a new element.
-    const activeEditingId = editingElementIdRef.current ?? editingElementId;
-    if (activeEditingId) {
-      const insideEditing = e.target?.closest?.(`[data-element-id="${activeEditingId}"]`);
-      if (!insideEditing) {
-        endEditing();
-        // For the Hand tool: allow the same gesture to start panning immediately after committing edits.
-        if (activeTool !== 'hand' && !handHoldRef.current.active) return;
-      }
-    }
-
-    // Click on empty canvas deselects connector line selection.
-    if (selectedConnectorId) setSelectedConnectorId(null);
-
-    if (activeTool === 'connector') {
-      // Connector tool starts only from element endpoints.
-      setSelectedConnectorId(null);
-      return;
-    }
-
-    // Clicking empty canvas clears element selection (cursor tool UX).
-    // Do this after the "exit edit mode" early-return above, so a click first commits edits.
-    setSelectedElementIds(new Set());
-    setEditingElementId(null);
-
-    if (activeTool === 'pen') {
-      const stroke = { points: [{ x: deskP.x, y: deskP.y }], color: brushColor, width: brushWidth };
-      liveStrokeRef.current = stroke;
-      setLiveStroke(stroke);
-      return;
-    }
-
-    if (activeTool === 'eraser') {
-      eraseStateRef.current.active = true;
-      eraseStateRef.current.lastTs = 0;
-      // keep erasedIds set across a drag
-      return;
-    }
-
-    // Create elements for note/text tools.
-    if (activeTool === 'note' || activeTool === 'text') {
-      const hitElement = e.target?.closest?.('[data-element-id]');
-      if (hitElement) return;
-      const type = activeTool === 'note' ? 'note' : 'text';
-      createNoteOrTextAtDeskPoint(type, deskP, { beginEdit: true });
-      return;
-    }
-
-    if (activeTool === 'select') {
-      if (isMobile) {
-        // Mobile: disable box-select entirely.
-        selectStartRef.current = null;
-        setSelectionRect(null);
-        return;
-      }
-      // Mobile UX: swipe should pan the board by default (instead of box-select).
-      // Pinch-to-zoom already uses 2 fingers; this enables 1-finger navigation in the default tool.
-      if (isMobile && e.pointerType === 'touch') {
-        selectStartRef.current = null;
-        setSelectionRect(null);
-        panStartRef.current = {
-          pointerId: e.pointerId,
-          startClientX: e.clientX,
-          startClientY: e.clientY,
-          lastClientX: e.clientX,
-          lastClientY: e.clientY,
-          startOffset: { ...viewOffsetRef.current },
-        };
-        setIsPanning(true);
-        ensurePanRaf();
-        if (inputDebugEnabled) pushInputDebug('pan.start', { fromTool: 'select', pid: e.pointerId });
-        return;
-      }
-      selectStartRef.current = p;
-      setSelectionRect({ left: p.x, top: p.y, width: 0, height: 0 });
-    }
-
-    if (activeTool === 'hand') {
-      panStartRef.current = {
-        pointerId: e.pointerId,
-        startClientX: e.clientX,
-        startClientY: e.clientY,
-        lastClientX: e.clientX,
-        lastClientY: e.clientY,
-        startOffset: { ...viewOffsetRef.current },
-      };
-      setIsPanning(true);
-      ensurePanRaf();
-      if (inputDebugEnabled) pushInputDebug('pan.start', { fromTool: 'hand', pid: e.pointerId });
-    }
-  };
-
-  const onCanvasPointerMove = (e) => {
-    // Real mobile browsers may cancel/throttle pointermove if they decide the gesture is scroll/zoom.
-    // During active canvas gestures, aggressively prevent default (when allowed).
-    if (isMobile && e.pointerType === 'touch' && e.cancelable) {
-      const pinchActive = Boolean(mobilePinchRef.current?.active);
-      const panActive = Boolean(panStartRef.current);
-      const drawActive = Boolean(liveStrokeRef.current);
-      const eraseActive = Boolean(eraseStateRef.current?.active);
-      if (pinchActive || panActive || drawActive || eraseActive) {
-        e.preventDefault();
-        if (inputDebugEnabled) pushInputDebug('move.preventDefault', { pinchActive, panActive, drawActive, eraseActive });
-      }
-    }
-    if (inputDebugEnabled) {
-      const last = inputDebugLastMoveLogRef.current;
-      const prevTs = last.get(e.pointerId) || 0;
-      const now = performance.now();
-      // Sample moves (avoid 1000+ lines/sec).
-      if (now - prevTs > 45) {
-        last.set(e.pointerId, now);
-        let coalesced = null;
+  const handleAddCardToBoard = useCallback(
+    (card) => {
+      const deskId = workspace?.id ?? workspace?.deskId ?? id;
+      const block = materialBlockModal;
+      if (!deskId || !block || !card) return;
+      const title = card?.title || 'Без названия';
+      const content = card?.content ?? '';
+      const text = content ? `${title}\n\n${content}` : title;
+      const zIndex = getNextZIndex();
+      const x = Math.round((block.x ?? 0) + (block.width ?? 280) + 30);
+      const y = Math.round(block.y ?? 0);
+      (async () => {
         try {
-          coalesced = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents()?.length ?? 0 : null;
-        } catch {
-          coalesced = null;
-        }
-        pushInputDebug('pointer.move', {
-          pid: e.pointerId,
-          pType: e.pointerType,
-          x: Math.round(e.clientX),
-          y: Math.round(e.clientY),
-          mx: Number(e.movementX ?? 0),
-          my: Number(e.movementY ?? 0),
-          coalesced,
-        });
-      }
-    }
-    if (isMobile && e.pointerType === 'touch') {
-      const pinch = mobilePinchRef.current;
-      if (pinch.pointers.has(e.pointerId)) {
-        pinch.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      }
-
-      if (pinch.active && pinch.pointers.size >= 2) {
-        ensurePinchRaf();
-        return;
-      }
-    }
-
-    if (activeTool === 'pen' && liveStrokeRef.current) {
-      const p = getCanvasPoint(e);
-      const off = viewOffsetRef.current;
-      const s = viewScaleRef.current || 1;
-      const deskP = { x: (p.x - off.x) / s, y: (p.y - off.y) / s };
-      const stroke = liveStrokeRef.current;
-      const prev = stroke.points[stroke.points.length - 1];
-      const dx = deskP.x - prev.x;
-      const dy = deskP.y - prev.y;
-      if (dx * dx + dy * dy < 0.9) return;
-      stroke.points.push({ x: deskP.x, y: deskP.y });
-      // Keep UI responsive; avoid setting state for every move on high frequency devices.
-      if (!interactionRef.current || interactionRef.current.kind !== 'draw') {
-        interactionRef.current = { kind: 'draw' };
-      }
-      if (!interactionRef.current.raf) {
-        interactionRef.current.raf = window.requestAnimationFrame(() => {
-          interactionRef.current.raf = null;
-          setLiveStroke({ ...stroke, points: [...stroke.points] });
-        });
-      }
-      return;
-    }
-
-    if (activeTool === 'eraser' && eraseStateRef.current.active) {
-      const now = performance.now();
-      if (now - (eraseStateRef.current.lastTs || 0) < 28) return;
-      eraseStateRef.current.lastTs = now;
-
-      const p = getCanvasPoint(e);
-      const off = viewOffsetRef.current;
-      const s = viewScaleRef.current || 1;
-      const deskP = { x: (p.x - off.x) / s, y: (p.y - off.y) / s };
-      const radius = Math.max(8, brushWidth * 2);
-
-      const strokes = elementsRef.current.filter((el) => el?.type === 'drawing' && el?.drawing?.data);
-      for (const el of strokes) {
-        if (!el?.id) continue;
-        if (eraseStateRef.current.erasedIds.has(el.id)) continue;
-        const x = Number(el.x ?? 0);
-        const y = Number(el.y ?? 0);
-        const w = Number(el.width ?? 0);
-        const h = Number(el.height ?? 0);
-        if (deskP.x < x - radius || deskP.x > x + w + radius || deskP.y < y - radius || deskP.y > y + h + radius) continue;
-
-        const data = el.drawing?.data;
-        const pts = Array.isArray(data?.points) ? data.points : Array.isArray(data?.pts) ? data.pts : [];
-        if (!pts.length) continue;
-        const absPts = pts.map((p0) => ({ x: x + Number(p0.x ?? 0), y: y + Number(p0.y ?? 0) }));
-        const strokeW = Number(data?.width ?? 4);
-        const hitR2 = (radius + strokeW / 2) * (radius + strokeW / 2);
-
-        let hit = false;
-        if (absPts.length === 1) {
-          const dx = deskP.x - absPts[0].x;
-          const dy = deskP.y - absPts[0].y;
-          hit = dx * dx + dy * dy <= hitR2;
-        } else {
-          for (let i = 1; i < absPts.length; i += 1) {
-            const d2 = distToSegmentSquared(deskP, absPts[i - 1], absPts[i]);
-            if (d2 <= hitR2) {
-              hit = true;
-              break;
-            }
+          const created = await createElementOnDesk(deskId, {
+            type: 'note',
+            x,
+            y,
+            width: 260,
+            height: 200,
+            zIndex,
+            payload: { text },
+          });
+          const vm = elementToVm(created);
+          if (vm?.id) createdElementIdsRef.current.add(vm.id);
+          setElements((prev) => upsertById(prev, vm));
+          if (!applyingHistoryRef.current) {
+            const snap = snapshotForHistory(vm);
+            if (deskId && snap) pushHistory({ kind: 'create-element', deskId, elementId: vm.id, snapshot: snap });
           }
+        } catch (err) {
+          setActionError(err?.response?.data?.error || err?.message || 'Не удалось добавить на доску');
+          window.setTimeout(() => setActionError(null), 4000);
         }
-        if (!hit) continue;
+      })();
+    },
+    [workspace?.id, workspace?.deskId, id, materialBlockModal, elementToVm, snapshotForHistory, getNextZIndex, pushHistory, setElements]
+  );
 
-        eraseStateRef.current.erasedIds.add(el.id);
-        // Optimistic remove; socket broadcast will reconcile for others.
-        setElements((prev) => prev.filter((xEl) => !sameId(xEl.id, el.id)));
-        if (!applyingHistoryRef.current) {
-          const deskId = workspace?.id ?? workspace?.deskId ?? id;
-          const snap = snapshotForHistory(el);
-          if (deskId && snap) {
-            pushHistory({
-              kind: 'delete-element',
-              deskId,
-              elementId: el.id,
-              snapshot: snap,
-            });
-          }
-        }
-        // Fire-and-forget delete.
-        deleteElement(el.id).catch(() => {
-          // ignore
-        });
-      }
-      return;
-    }
+  const onCanvasPointerDown = (e) => toolManager.onCanvasPointerDown(e, editingElementId, editingElementIdRef);
 
-    if (activeTool === 'connector' && !connectorDraftRef.current) {
-      const p = getCanvasPoint(e);
-      const off = viewOffsetRef.current;
-      const s = viewScaleRef.current || 1;
-      const deskP = { x: (p.x - off.x) / s, y: (p.y - off.y) / s };
-      const hoverId = pickHoverElementId(deskP, isMobile ? 24 : 15);
-      setConnectorHoverElementId(hoverId);
-      return;
-    }
+  const onCanvasPointerMove = (e) => toolManager.onCanvasPointerMove(e);
 
-    if (activeTool === 'select' && selectStartRef.current) {
-      const p = getCanvasPoint(e);
-      setSelectionRect(rectFromPoints(selectStartRef.current, p));
-
-      // Live box-select feedback (rAF throttled).
-      selectPendingEndRef.current = p;
-      if (selectRafRef.current == null) {
-        selectRafRef.current = window.requestAnimationFrame(() => {
-          selectRafRef.current = null;
-          const start = selectStartRef.current;
-          const end = selectPendingEndRef.current;
-          if (!start || !end) return;
-          const rect = rectFromPoints(start, end);
-          const minSize = 4; // px; treat smaller as a click
-          if (rect.width < minSize && rect.height < minSize) {
-            setSelectedElementIds(new Set());
-            setEditingElementId(null);
-            return;
-          }
-
-          const off = viewOffsetRef.current;
-          const s = viewScaleRef.current || 1;
-          const left = (rect.left - off.x) / s;
-          const top = (rect.top - off.y) / s;
-          const right = (rect.left + rect.width - off.x) / s;
-          const bottom = (rect.top + rect.height - off.y) / s;
-
-          const hits = [];
-          const list = elementsRef.current || [];
-          for (const el of list) {
-            if (!el?.id) continue;
-            if (el.type === 'connector') continue;
-            const ex = Number(el.x ?? 0);
-            const ey = Number(el.y ?? 0);
-            const ew = Number(el.width ?? 0);
-            const eh = Number(el.height ?? 0);
-            const intersects = ex <= right && ex + ew >= left && ey <= bottom && ey + eh >= top;
-            if (!intersects) continue;
-            hits.push(idKey(el.id));
-          }
-
-          setSelectedElementIds(new Set(hits));
-          setEditingElementId(null);
-        });
-      }
-      return;
-    }
-
-    if (panStartRef.current) {
-      const pan = panStartRef.current;
-      if (pan?.pointerId === e.pointerId) {
-        pan.lastClientX = e.clientX;
-        pan.lastClientY = e.clientY;
-        ensurePanRaf();
-      }
-    }
-  };
-
-  const onCanvasWheel = (e) => {
-    // Zoom on wheel up/down. Prevent page scroll while cursor is over the canvas.
-    e.preventDefault();
-    const p = getCanvasPoint(e);
-    const off = viewOffsetRef.current;
-    const curScale = viewScaleRef.current || 1;
-    const nextScale = clampViewScale(curScale * Math.exp(-e.deltaY * 0.0015));
-    if (Math.abs(nextScale - curScale) < 1e-4) return;
-
-    // Keep desk point under cursor stable.
-    const d = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
-    const nextOffset = { x: p.x - d.x * nextScale, y: p.y - d.y * nextScale };
-    scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
-    persistViewDebounced({ offset: nextOffset, scale: nextScale });
-  };
-
-  const finalizeStroke = async () => {
-    const stroke = liveStrokeRef.current;
-    liveStrokeRef.current = null;
-    setLiveStroke(null);
-    if (!stroke?.points?.length) return;
-
-    const deskId = workspace?.id ?? workspace?.deskId ?? id;
-    if (!deskId) return;
-
-    const pts = stroke.points;
-    let minX = pts[0].x;
-    let minY = pts[0].y;
-    let maxX = pts[0].x;
-    let maxY = pts[0].y;
-    for (const p of pts) {
-      minX = Math.min(minX, p.x);
-      minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x);
-      maxY = Math.max(maxY, p.y);
-    }
-    const pad = Math.max(2, stroke.width / 2 + 2);
-    const x = Math.floor(minX - pad);
-    const y = Math.floor(minY - pad);
-    const width = Math.ceil(maxX - minX + pad * 2);
-    const height = Math.ceil(maxY - minY + pad * 2);
-
-    const relPoints = pts.map((p) => ({
-      x: Math.round((p.x - x) * 10) / 10,
-      y: Math.round((p.y - y) * 10) / 10,
-    }));
-
-    try {
-      const created = await createElementOnDesk(deskId, {
-        type: 'drawing',
-        x: Math.round(x),
-        y: Math.round(y),
-        width: Math.max(4, Math.round(width)),
-        height: Math.max(4, Math.round(height)),
-        zIndex: 0,
-        payload: {
-          data: {
-            v: 1,
-            kind: 'stroke',
-            tool: 'brush',
-            color: stroke.color,
-            width: stroke.width,
-            points: relPoints,
-          },
-        },
-      });
-      const vm = elementToVm(created);
-      if (vm?.id) {
-        createdElementIdsRef.current.add(vm.id);
-        setElements((prev) => upsertById(prev, vm));
-        if (!applyingHistoryRef.current) {
-          const snap = snapshotForHistory(vm);
-          if (deskId && snap) {
-            pushHistory({
-              kind: 'create-element',
-              deskId,
-              elementId: vm.id,
-              snapshot: snap,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to create drawing stroke:', err?.response?.data || err);
-      setActionError(err?.response?.data?.error || err?.message || 'Failed to save drawing');
-      window.setTimeout(() => setActionError(null), 4500);
-    }
-  };
-
-  const onCanvasPointerUp = (e) => {
-    if (inputDebugEnabled) {
-      pushInputDebug('pointer.up', {
-        type: e.type,
-        pid: e.pointerId,
-        pType: e.pointerType,
-        x: Math.round(e.clientX),
-        y: Math.round(e.clientY),
-      });
-    }
-    if (isMobile && e.pointerType === 'touch') {
-      const pinch = mobilePinchRef.current;
-      if (pinch.pointers.has(e.pointerId)) pinch.pointers.delete(e.pointerId);
-
-      if (pinch.active && pinch.pointers.size < 2) {
-        pinch.active = false;
-        if (pinchRafRef.current != null) {
-          window.cancelAnimationFrame(pinchRafRef.current);
-          pinchRafRef.current = null;
-        }
-        if (inputDebugEnabled) pushInputDebug('pinch.end', { remaining: pinch.pointers.size });
-        const off = viewOffsetRef.current;
-        const s = viewScaleRef.current || 1;
-        setViewOffset(off);
-        persistViewDebounced({ offset: off, scale: s }, { immediate: true });
-      }
-    }
-
-    if (activeTool === 'pen' && liveStrokeRef.current) {
-      finalizeStroke();
-    }
-    if (activeTool === 'eraser') {
-      eraseStateRef.current.active = false;
-      eraseStateRef.current.erasedIds = new Set();
-    }
-
-    // Cursor tool: box-select elements into "edit mode" (selection/transform handles).
-    // We intentionally don't open text/link editors for multi-selection.
-    if (activeTool === 'select' && selectStartRef.current) {
-      const start = selectStartRef.current;
-      const end = getCanvasPoint(e);
-      const rect = rectFromPoints(start, end);
-      const minSize = 4; // px; treat smaller as a click
-      if (rect.width >= minSize || rect.height >= minSize) {
-        const off = viewOffsetRef.current;
-        const s = viewScaleRef.current || 1;
-        const left = (rect.left - off.x) / s;
-        const top = (rect.top - off.y) / s;
-        const right = (rect.left + rect.width - off.x) / s;
-        const bottom = (rect.top + rect.height - off.y) / s;
-
-        const hits = [];
-        const list = elementsRef.current || [];
-        for (const el of list) {
-          if (!el?.id) continue;
-          if (el.type === 'connector') continue;
-          const ex = Number(el.x ?? 0);
-          const ey = Number(el.y ?? 0);
-          const ew = Number(el.width ?? 0);
-          const eh = Number(el.height ?? 0);
-          // AABB intersection (touching counts).
-          const intersects = ex <= right && ex + ew >= left && ey <= bottom && ey + eh >= top;
-          if (!intersects) continue;
-          hits.push(idKey(el.id));
-        }
-
-        setSelectedElementIds(new Set(hits));
-        // If multiple are selected, avoid opening multiple editors.
-        if (hits.length !== 1) setEditingElementId(null);
-      }
-    }
-
-    stopInteractions(e);
-  };
+  const onCanvasPointerUp = (e) => toolManager.onCanvasPointerUp(e);
 
   useEffect(() => {
     let mounted = true;
@@ -3810,17 +1357,19 @@ export default function WorkspacePage() {
     if (!workspace?.id && !workspace?.deskId && !id) return () => {};
 
     const deskId = workspace?.id ?? workspace?.deskId ?? id;
-    getElementsByDesk(deskId)
+    loadElements(deskId, elementToVm, { isMounted: () => mounted });
+
+    getMaterialBlocksByDesk(deskId)
       .then((data) => {
         if (!mounted) return;
-        setElements(dedupeMergeById(Array.isArray(data) ? data.map(elementToVm) : []));
+        setMaterialBlocks(Array.isArray(data) ? data : []);
       })
-      .catch(() => mounted && setElements([]));
+      .catch(() => mounted && setMaterialBlocks([]));
 
     return () => {
       mounted = false;
     };
-  }, [workspace?.id, workspace?.deskId, id, elementToVm]);
+  }, [workspace?.id, workspace?.deskId, id, elementToVm, loadElements]);
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -3848,6 +1397,7 @@ export default function WorkspacePage() {
           connectorDraftRef.current = null;
           setConnectorDraft(null);
           setConnectorHoverElementId(null);
+          setConnectorHoverBlockId(null);
           return;
         }
         if (selectedConnectorId) {
@@ -3855,20 +1405,17 @@ export default function WorkspacePage() {
           setSelectedConnectorId(null);
           return;
         }
-        if (activeTool === 'connector') {
+        if (toolManager.activeTool === 'connector') {
           e.preventDefault();
           setConnectorHoverElementId(null);
-          setActiveTool(isMobile ? 'hand' : 'select');
+          toolManager.setActiveTool(isMobile ? 'hand' : 'select');
           return;
         }
-        if (activeTool === 'pen' || activeTool === 'eraser') {
+        if (toolManager.activeTool === 'pen' || toolManager.activeTool === 'eraser') {
           e.preventDefault();
-          liveStrokeRef.current = null;
-          setLiveStroke(null);
-          eraseStateRef.current.active = false;
-          eraseStateRef.current.erasedIds = new Set();
+          toolManager.cancelTools();
           setMobileBrushBarOpen(false);
-          setActiveTool(isMobile ? 'hand' : 'select');
+          toolManager.setActiveTool(isMobile ? 'hand' : 'select');
           return;
         }
       }
@@ -3898,32 +1445,32 @@ export default function WorkspacePage() {
       if (matchShortcut(e, shortcuts['tool.select'])) {
         e.preventDefault();
         setActionError(null);
-        setActiveTool(isMobile ? 'hand' : 'select');
+        toolManager.setActiveTool(isMobile ? 'hand' : 'select');
         return;
       }
       if (matchShortcut(e, shortcuts['tool.text'])) {
         e.preventDefault();
         setActionError(null);
-        setActiveTool('text');
+        toolManager.setActiveTool('text');
         return;
       }
       if (matchShortcut(e, shortcuts['tool.handHold'])) {
         e.preventDefault();
-        if (!handHoldRef.current.active) {
-          handHoldRef.current.active = true;
-          handHoldRef.current.previousTool = activeTool;
-          setActiveTool('hand');
+        if (!toolManager.handHoldRef.current.active) {
+          toolManager.handHoldRef.current.active = true;
+          toolManager.handHoldRef.current.previousTool = toolManager.activeTool;
+          toolManager.setActiveTool('hand');
         }
       }
     };
 
     const onKeyUp = (e) => {
       if (!matchShortcut(e, shortcuts['tool.handHold'])) return;
-      if (!handHoldRef.current.active) return;
-      handHoldRef.current.active = false;
-      const prev = handHoldRef.current.previousTool;
-      handHoldRef.current.previousTool = null;
-      if (prev) setActiveTool(prev);
+      if (!toolManager.handHoldRef.current.active) return;
+      toolManager.handHoldRef.current.active = false;
+      const prev = toolManager.handHoldRef.current.previousTool;
+      toolManager.handHoldRef.current.previousTool = null;
+      if (prev) toolManager.setActiveTool(prev);
     };
 
     window.addEventListener('keydown', onKeyDown, { capture: true });
@@ -3932,23 +1479,7 @@ export default function WorkspacePage() {
       window.removeEventListener('keydown', onKeyDown, { capture: true });
       window.removeEventListener('keyup', onKeyUp, { capture: true });
     };
-  }, [shortcuts, activeTool, selectedConnectorId, undoEv, redoEv, isMobile]);
-
-  const focusElement = (elementId) => {
-    const el = elementsRef.current?.find?.((x) => x?.id === elementId) || elements.find((x) => x?.id === elementId);
-    const canvas = canvasRef.current;
-    if (!el || !canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const cx = rect.width / 2;
-    const cy = rect.height / 2;
-    const ex = (el.x ?? 0) + (el.width ?? 240) / 2;
-    const ey = (el.y ?? 0) + (el.height ?? 160) / 2;
-    const s = viewScaleRef.current || 1;
-    const nextOffset = { x: cx - ex * s, y: cy - ey * s };
-    scheduleApplyViewVars({ offset: nextOffset, scale: s });
-    setViewOffset(nextOffset);
-    persistViewDebounced({ offset: nextOffset, scale: s });
-  };
+  }, [shortcuts, toolManager.activeTool, selectedConnectorId, undoEv, redoEv, isMobile, setElements]);
 
   useEffect(() => {
     const deskId = workspace?.id ?? workspace?.deskId ?? id;
@@ -4079,43 +1610,7 @@ export default function WorkspacePage() {
       socketRef.current = null;
       setPresentUserIds([]);
     };
-  }, [workspace?.id, workspace?.deskId, id, commentsEnabled, elementToVm, normalizeReactions]);
-
-  useEffect(() => {
-    if (!commentsPanel) return () => {};
-    // Let the panel render first.
-    window.setTimeout(() => commentInputRef.current?.focus?.(), 0);
-  }, [commentsPanel]);
-
-  useEffect(() => {
-    const elementId = commentsPanel?.elementId;
-    if (!commentsEnabled || !elementId) return () => {};
-    const list = commentsByElement[elementId] || [];
-    if (!list.length) return () => {};
-    // Best-effort autoscroll to latest.
-    window.setTimeout(() => {
-      const node = commentsListRef.current;
-      if (node) node.scrollTop = node.scrollHeight;
-    }, 0);
-  }, [commentsEnabled, commentsPanel?.elementId, commentsByElement]);
-
-  const openComments = async (elementId) => {
-    if (!commentsEnabled) return;
-    if (!elementId) return;
-    setCommentsPanel({ elementId });
-    setCommentDraft('');
-    if (commentsByElement[elementId]) return;
-    setCommentsLoading((prev) => ({ ...prev, [elementId]: true }));
-    try {
-      const list = await getElementComments(elementId);
-      setCommentsByElement((prev) => ({ ...prev, [elementId]: Array.isArray(list) ? list : [] }));
-    } catch {
-      // ignore (e.g., not group desk -> 404)
-      setCommentsByElement((prev) => ({ ...prev, [elementId]: prev[elementId] || [] }));
-    } finally {
-      setCommentsLoading((prev) => ({ ...prev, [elementId]: false }));
-    }
-  };
+  }, [workspace?.id, workspace?.deskId, id, commentsEnabled, elementToVm, normalizeReactions, setElements, setEditingElementId]);
 
   const mutateElementRef = useCallback((elementId, patch) => {
     if (!elementId || !patch) return;
@@ -4130,7 +1625,7 @@ export default function WorkspacePage() {
   const maybeEnterEditOnPointerUp = useCallback(
     (elementId, ev) => {
       if (!elementId) return;
-      if (activeTool === 'hand' || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'connector') return;
+      if (toolManager.activeTool === 'hand' || toolManager.activeTool === 'pen' || toolManager.activeTool === 'eraser' || toolManager.activeTool === 'connector') return;
       if (ev?.pointerType === 'mouse' && ev?.button !== 0) return;
       // If this pointer sequence turned into a drag, do not enter edit mode.
       if (suppressNextElementClickRef.current.has(elementId)) return;
@@ -4141,7 +1636,7 @@ export default function WorkspacePage() {
       ev?.preventDefault?.();
       beginEditingEv(elementId);
     },
-    [activeTool, editingElementId, beginEditingEv]
+    [toolManager.activeTool, editingElementId, beginEditingEv]
   );
 
   // Stable action wrappers for memoized element components (avoid rerendering all cards on each drag frame).
@@ -4197,27 +1692,6 @@ export default function WorkspacePage() {
       updateLocalElementEv,
     ]
   );
-
-  const submitComment = async () => {
-    if (!commentsEnabled) return;
-    const elementId = commentsPanel?.elementId;
-    const text = String(commentDraft || '').trim();
-    if (!elementId || !text) return;
-    setCommentDraft('');
-    try {
-      const created = await createElementComment(elementId, text);
-      if (created?.id) {
-        setCommentsByElement((prev) => {
-          const existing = prev[elementId] || [];
-          if (existing.some((x) => Number(x?.id) === Number(created.id))) return prev;
-          return { ...prev, [elementId]: [...existing, created] };
-        });
-      }
-    } catch (err) {
-      setActionError(err?.response?.data?.error || err?.message || 'Failed to send comment');
-      window.setTimeout(() => setActionError(null), 4500);
-    }
-  };
 
   const docTextPreviewKey = useMemo(() => {
     // Only care about document URLs + extensions that support text preview.
@@ -4313,100 +1787,6 @@ export default function WorkspacePage() {
     setMobileSheetDragY(0);
   }, []);
 
-  const closeAiPanel = useCallback(() => {
-    aiSheetDragRef.current.active = false;
-    aiSheetDragRef.current.pointerId = null;
-    setAiSheetDragging(false);
-    setAiSheetDragY(0);
-    setAiPanelOpen(false);
-  }, []);
-
-  const closeCommentsPanel = useCallback(() => {
-    commentsSheetDragRef.current.active = false;
-    commentsSheetDragRef.current.pointerId = null;
-    setCommentsSheetDragging(false);
-    setCommentsSheetDragY(0);
-    setCommentsPanel(null);
-  }, []);
-
-  const onCommentsSheetDragStart = useCallback((ev) => {
-    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-    commentsSheetDragRef.current.active = true;
-    commentsSheetDragRef.current.pointerId = ev.pointerId;
-    commentsSheetDragRef.current.startY = ev.clientY;
-    commentsSheetDragRef.current.lastY = ev.clientY;
-    setCommentsSheetDragging(true);
-    try {
-      (commentsSheetRef.current || ev.currentTarget)?.setPointerCapture?.(ev.pointerId);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const onCommentsSheetDragMove = useCallback((ev) => {
-    const d = commentsSheetDragRef.current;
-    if (!d.active || d.pointerId !== ev.pointerId) return;
-    const dy = Math.max(0, ev.clientY - d.startY);
-    d.lastY = ev.clientY;
-    setCommentsSheetDragY(dy);
-  }, []);
-
-  const onCommentsSheetDragEnd = useCallback((ev) => {
-    const d = commentsSheetDragRef.current;
-    if (!d.active || d.pointerId !== ev.pointerId) return;
-    d.active = false;
-    d.pointerId = null;
-    setCommentsSheetDragging(false);
-    const dy = Math.max(0, ev.clientY - d.startY);
-    const shouldClose = dy > 90;
-    if (shouldClose) {
-      closeCommentsPanel();
-      return;
-    }
-    setCommentsSheetDragY(0);
-  }, [closeCommentsPanel]);
-
-  const onAiSheetDragStart = useCallback((ev) => {
-    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-    aiSheetDragRef.current.active = true;
-    aiSheetDragRef.current.pointerId = ev.pointerId;
-    aiSheetDragRef.current.startY = ev.clientY;
-    aiSheetDragRef.current.lastY = ev.clientY;
-    setAiSheetDragging(true);
-    try {
-      (aiSheetRef.current || ev.currentTarget)?.setPointerCapture?.(ev.pointerId);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const onAiSheetDragMove = useCallback((ev) => {
-    const d = aiSheetDragRef.current;
-    if (!d.active || d.pointerId !== ev.pointerId) return;
-    const dy = Math.max(0, ev.clientY - d.startY);
-    d.lastY = ev.clientY;
-    setAiSheetDragY(dy);
-  }, []);
-
-  const onAiSheetDragEnd = useCallback(
-    (ev) => {
-      const d = aiSheetDragRef.current;
-      if (!d.active || d.pointerId !== ev.pointerId) return;
-      d.active = false;
-      d.pointerId = null;
-      setAiSheetDragging(false);
-
-      const dy = Math.max(0, ev.clientY - d.startY);
-      const shouldClose = dy > 90;
-      if (shouldClose) {
-        closeAiPanel();
-        return;
-      }
-      setAiSheetDragY(0);
-    },
-    [closeAiPanel]
-  );
-
   if (loading) {
     return (
       <div className={styles.page}>
@@ -4454,6 +1834,10 @@ export default function WorkspacePage() {
       // ignore share errors
     }
   };
+
+  const onWheelZoom = viewport.onWheelZoom;
+  const zoomAtCenter = viewport.zoomAtCenter;
+  const effectiveCursor = toolManager.activeTool === 'hand' && isPanning ? 'grabbing' : toolManager.canvasCursor;
 
   return (
     <div className={`${styles.page} ${mobileBrushBarOpen ? styles.pageBrushMode : ''}`}>
@@ -4528,6 +1912,7 @@ export default function WorkspacePage() {
           <div className={styles.toolbar}>
             <div className={styles.searchWrap}>
               <IconBtn
+                className={styles.iconBtn}
                 label="Поиск"
                 title="Поиск (Ctrl+F)"
                 buttonRef={searchBtnRef}
@@ -4639,6 +2024,7 @@ export default function WorkspacePage() {
             Share
           </button>
           <IconBtn
+            className={aiPanelOpen ? styles.iconBtnActive : styles.iconBtn}
             label="AI Chat"
             title="Чат с ИИ"
             onClick={() => {
@@ -4646,11 +2032,10 @@ export default function WorkspacePage() {
               setCommentsPanel(null);
               setActionError(null);
             }}
-            className={aiPanelOpen ? styles.iconBtnActive : ''}
           >
             <MessageCircle size={18} />
           </IconBtn>
-          <IconBtn label="Notifications">
+          <IconBtn className={styles.iconBtn} label="Notifications">
             <Bell size={18} />
           </IconBtn>
           <UserMenu variant="compact" />
@@ -4692,105 +2077,23 @@ export default function WorkspacePage() {
 
         {!isMobile ? (
           <aside className={styles.leftRail} aria-label="Tools">
-            <div className={styles.toolsPanel}>
-              {TOOLS.map(({ id: toolId, label, Icon }) => {
-                const isActive = toolId !== 'attach' && activeTool === toolId;
-                const btn = (
-                  <button
-                    key={toolId}
-                    type="button"
-                    className={`${styles.tool} ${isActive ? styles.toolActive : ''}`}
-                    aria-label={label}
-                    aria-pressed={isActive}
-                    onClick={() => {
-                      if (toolId === 'attach') {
-                        openAttachDialog();
-                        return;
-                      }
-                      setActionError(null);
-                      setActiveTool(toolId);
-                    }}
-                  >
-                    {toolId === 'attach' && uploading ? (
-                      <Loader2 size={18} className={styles.spinner} />
-                    ) : (
-                      <Icon size={18} />
-                    )}
-                  </button>
-                );
-
-                if (toolId !== 'link' && toolId !== 'pen') return btn;
-
-                return (
-                  <div key={toolId} className={styles.toolWrap}>
-                    {btn}
-                    {activeTool === 'link' && toolId === 'link' ? (
-                      <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
-                        <div className={styles.toolPopoverRow}>
-                          <input
-                            ref={linkInputRef}
-                            className={styles.linkInput}
-                            placeholder="Paste URL and press Enter"
-                            value={linkDraftUrl}
-                            disabled={creatingLink}
-                            onChange={(ev) => setLinkDraftUrl(ev.target.value)}
-                            onKeyDown={(ev) => {
-                              if (ev.key === 'Escape') {
-                                ev.preventDefault();
-                                setLinkDraftUrl('');
-                                setActiveTool('select');
-                                return;
-                              }
-                              if (ev.key === 'Enter' && !ev.shiftKey) {
-                                ev.preventDefault();
-                                submitLink();
-                              }
-                            }}
-                          />
-                          {creatingLink ? <Loader2 size={16} className={styles.spinner} /> : null}
-                        </div>
-                        <div className={styles.toolPopoverHint}>Enter — add to board · Esc — close</div>
-                      </div>
-                    ) : null}
-
-                    {activeTool === 'pen' && toolId === 'pen' ? (
-                      <div className={styles.toolPopover} onPointerDown={(ev) => ev.stopPropagation()}>
-                        <div className={styles.toolPopoverRow}>
-                          <div className={styles.swatches} aria-label="Brush color">
-                            {BRUSH_COLORS.map((c) => (
-                              <button
-                                key={c}
-                                type="button"
-                                className={`${styles.swatch} ${brushColor === c ? styles.swatchActive : ''}`}
-                                style={{ background: c }}
-                                onClick={() => setBrushColor(c)}
-                                aria-label={`Color ${c}`}
-                                aria-pressed={brushColor === c}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                        <div className={styles.toolPopoverRow}>
-                          <div className={styles.widthRow}>
-                            <input
-                              className={styles.widthSlider}
-                              type="range"
-                              min={1}
-                              max={24}
-                              value={brushWidth}
-                              onChange={(ev) => setBrushWidth(Number(ev.target.value))}
-                              aria-label="Brush width"
-                            />
-                            <div className={styles.widthLabel}>{brushWidth}px</div>
-                          </div>
-                        </div>
-                        <div className={styles.toolPopoverHint}>Drag — draw · Esc — switch tool</div>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
+            <Toolbar
+              activeTool={toolManager.activeTool}
+              setActiveTool={toolManager.setActiveTool}
+              brushColor={toolManager.brushColor}
+              brushWidth={toolManager.brushWidth}
+              setBrushColor={toolManager.setBrushColor}
+              setBrushWidth={toolManager.setBrushWidth}
+              linkInputRef={linkInputRef}
+              linkDraftUrl={linkDraftUrl}
+              setLinkDraftUrl={setLinkDraftUrl}
+              creatingLink={creatingLink}
+              submitLink={submitLink}
+              openAttachDialog={openAttachDialog}
+              uploading={uploading}
+              setActionError={setActionError}
+              styles={styles}
+            />
 
             <div className={styles.historyPanel} aria-label="History">
               <button
@@ -4881,12 +2184,9 @@ export default function WorkspacePage() {
                   className={styles.mobileBrushExit}
                   aria-label="Exit brush"
                   onClick={() => {
-                    liveStrokeRef.current = null;
-                    setLiveStroke(null);
-                    eraseStateRef.current.active = false;
-                    eraseStateRef.current.erasedIds = new Set();
+                    toolManager.cancelTools();
                     setMobileBrushBarOpen(false);
-                    setActiveTool('hand');
+                    toolManager.setActiveTool('hand');
                   }}
                 >
                   <X size={20} />
@@ -4895,19 +2195,19 @@ export default function WorkspacePage() {
                 <div className={styles.mobileBrushModes} aria-label="Brush mode">
                   <button
                     type="button"
-                    className={`${styles.mobileBrushModeBtn} ${activeTool === 'pen' ? styles.mobileBrushModeBtnActive : ''}`}
+                    className={`${styles.mobileBrushModeBtn} ${toolManager.activeTool === 'pen' ? styles.mobileBrushModeBtnActive : ''}`}
                     aria-label="Pen"
-                    aria-pressed={activeTool === 'pen'}
-                    onClick={() => setActiveTool('pen')}
+                    aria-pressed={toolManager.activeTool === 'pen'}
+                    onClick={() => toolManager.setActiveTool('pen')}
                   >
                     <PenLine size={20} />
                   </button>
                   <button
                     type="button"
-                    className={`${styles.mobileBrushModeBtn} ${activeTool === 'eraser' ? styles.mobileBrushModeBtnActive : ''}`}
+                    className={`${styles.mobileBrushModeBtn} ${toolManager.activeTool === 'eraser' ? styles.mobileBrushModeBtnActive : ''}`}
                     aria-label="Eraser"
-                    aria-pressed={activeTool === 'eraser'}
-                    onClick={() => setActiveTool('eraser')}
+                    aria-pressed={toolManager.activeTool === 'eraser'}
+                    onClick={() => toolManager.setActiveTool('eraser')}
                   >
                     <Eraser size={20} />
                   </button>
@@ -4918,11 +2218,11 @@ export default function WorkspacePage() {
                     <button
                       key={c}
                       type="button"
-                      className={`${styles.mobileBrushSwatch} ${brushColor === c ? styles.mobileBrushSwatchActive : ''}`}
+                      className={`${styles.mobileBrushSwatch} ${toolManager.brushColor === c ? styles.mobileBrushSwatchActive : ''}`}
                       style={{ background: c }}
-                      onClick={() => setBrushColor(c)}
+                      onClick={() => toolManager.setBrushColor(c)}
                       aria-label={`Color ${c}`}
-                      aria-pressed={brushColor === c}
+                      aria-pressed={toolManager.brushColor === c}
                     />
                   ))}
                 </div>
@@ -4932,8 +2232,8 @@ export default function WorkspacePage() {
                   type="range"
                   min={1}
                   max={24}
-                  value={brushWidth}
-                  onChange={(ev) => setBrushWidth(Number(ev.target.value))}
+                  value={toolManager.brushWidth}
+                  onChange={(ev) => toolManager.setBrushWidth(Number(ev.target.value))}
                   aria-label="Brush width"
                 />
               </div>
@@ -4993,7 +2293,7 @@ export default function WorkspacePage() {
                             }
                             if (toolId === 'pen' || toolId === 'eraser') {
                               setActionError(null);
-                              setActiveTool(toolId);
+                              toolManager.setActiveTool(toolId);
                               setMobileBrushBarOpen(true);
                               setMobileToolsOpen(false);
                               setMobileLinkOpen(false);
@@ -5084,7 +2384,7 @@ export default function WorkspacePage() {
           onPointerCancel={onCanvasPointerUp}
           // IMPORTANT: never end touch gestures on pointerleave (real devices emit it mid-gesture).
           onPointerLeave={isMobile ? undefined : onCanvasPointerUp}
-          onWheel={onCanvasWheel}
+          onWheel={onWheelZoom}
           style={{
             '--canvas-cursor': effectiveCursor,
             '--note-bg': `url(${note2Img})`,
@@ -5188,7 +2488,8 @@ export default function WorkspacePage() {
           <div className={styles.grid} />
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}
           <div className={styles.boardContent}>
-            <ConnectorsLayer
+            <ElementRenderer
+              styles={styles}
               connectors={connectorElements}
               connectorDraft={connectorDraft}
               selectedConnectorId={selectedConnectorId}
@@ -5196,592 +2497,60 @@ export default function WorkspacePage() {
               startConnectorBendDrag={startConnectorBendDragEv}
               computeConnectorPathFromAnchors={computeConnectorPathFromAnchors}
               getAnchorPoint={getLiveAnchorPoint}
-              active={connectorsFollowDuringDrag}
+              connectorsFollowDuringDrag={connectorsFollowDuringDrag}
+              elements={elements}
+              materialBlocks={materialBlocks}
+              interactionRef={interactionRef}
+              elementResizeOffset={elementResizeOffset}
+              selectedElementIds={selectedElementIds}
+              setSelectedElementIds={setSelectedElementIds}
+              registerElementNode={registerElementNode}
+              onElementPointerDown={onElementPointerDown}
+              onElementClick={onElementClick}
+              startResize={startResize}
+              handleDeleteElement={handleDeleteElement}
+              editingElementId={editingElementId}
+              setEditingElementId={setEditingElementId}
+              deletingElementId={deletingElementId}
+              isMobile={isMobile}
+              commentsEnabled={commentsEnabled}
+              searchQuery={searchQuery}
+              hasSearchQuery={hasSearchQuery}
+              manualSearchHitIds={manualSearchHitIds}
+              activeTool={toolManager.activeTool}
+              connectorHoverElementId={connectorHoverElementId}
+              noteTextActions={noteTextActions}
+              layoutReactionBubbles={layoutReactionBubbles}
+              openReactionPicker={openReactionPicker}
+              beginEditing={beginEditing}
+              openComments={openComments}
+              updateLocalElement={updateLocalElement}
+              queueNoteEdit={queueNoteEdit}
+              endEditing={endEditing}
+              persistElement={persistElement}
+              editStartSnapRef={editStartSnapRef}
+              openDocument={openDocument}
+              downloadDocument={downloadDocument}
+              openExternalUrl={openExternalUrl}
+              getLinkPreview={getLinkPreview}
+              docTextPreview={docTextPreview}
+              toggleReaction={toggleReaction}
+              startConnectorDrag={startConnectorDrag}
+              selectedMaterialBlockId={selectedMaterialBlockId}
+              materialBlockDragOffset={materialBlockDragOffset}
+              connectorHoverBlockId={connectorHoverBlockId}
+              startBlockDrag={startBlockDrag}
+              setMaterialBlockModal={setMaterialBlockModal}
+              startBlockResize={startBlockResize}
+              setSelectedMaterialBlockId={setSelectedMaterialBlockId}
+              registerMaterialBlockNode={registerMaterialBlockNode}
+              handleMaterialBlockTitleUpdate={handleMaterialBlockTitleUpdate}
+              handleDeleteMaterialBlock={handleDeleteMaterialBlock}
+              startConnectorDragFromBlock={startConnectorDragFromBlock}
             />
-
-            {elements.map((el) => {
-              if (el?.type === 'connector') return null;
-              if (el?.type === 'drawing') {
-                const data = el.drawing?.data || el.Drawing?.data || {};
-                const pts = Array.isArray(data?.points) ? data.points : [];
-                const strokeColor = String(data?.color || '#0f172a');
-                const strokeW = Number(data?.width ?? 4);
-                const path = pointsToSvgPath(pts);
-                const drag = interactionRef.current;
-                const dragPos = drag?.kind === 'drag' && sameId(drag.elementId, el.id) ? drag.latest : null;
-                const dx = Number(dragPos?.x ?? (el.x ?? 0));
-                const dy = Number(dragPos?.y ?? (el.y ?? 0));
-                const isSelected = selectedElementIds.has(idKey(el.id));
-                return (
-                  <div
-                    key={el.id}
-                    data-element-id={el.id}
-                    className={`${styles.element} ${styles.drawingElement}`}
-                    ref={(node) => registerElementNode(el.id, node)}
-                    style={{
-                        left: 0,
-                        top: 0,
-                      width: el.width ?? 10,
-                      height: el.height ?? 10,
-                      zIndex: el.zIndex ?? 0,
-                      transform: `translate3d(${dx}px, ${dy}px, 0) rotate(${el.rotation ?? 0}deg)`,
-                    }}
-                    onPointerDown={(ev) => onElementPointerDown(el.id, ev)}
-                    onClick={(ev) => {
-                      if (activeTool === 'hand' || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'connector') return;
-                      ev.stopPropagation();
-                      setSelectedElementIds(new Set([idKey(el.id)]));
-                      setEditingElementId(null);
-                    }}
-                  >
-                    <svg
-                      className={styles.drawingSvg}
-                      width={el.width ?? 10}
-                      height={el.height ?? 10}
-                      viewBox={`0 0 ${el.width ?? 10} ${el.height ?? 10}`}
-                      aria-hidden="true"
-                    >
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke={strokeColor}
-                        strokeWidth={strokeW}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-
-                    {isSelected ? (
-                      <div className={styles.transformBox}>
-                        <div className={styles.elementActions}>
-                          <button
-                            type="button"
-                            className={styles.deleteElementBtn}
-                            onPointerDown={(ev) => {
-                              ev.preventDefault();
-                              ev.stopPropagation();
-                              handleDeleteElement(el);
-                            }}
-                            disabled={sameId(deletingElementId, el.id)}
-                            aria-label="Delete element"
-                            title="Delete element"
-                          >
-                            {sameId(deletingElementId, el.id) ? (
-                              <Loader2 size={16} className={styles.spinner} />
-                            ) : (
-                              <Trash2 size={16} />
-                            )}
-                          </button>
-                        </div>
-                        <div
-                          className={`${styles.resizeHandle} ${styles.hNW}`}
-                          onPointerDown={(ev) => startResize(el.id, 'nw', ev)}
-                        />
-                        <div className={`${styles.resizeHandle} ${styles.hN}`} onPointerDown={(ev) => startResize(el.id, 'n', ev)} />
-                        <div
-                          className={`${styles.resizeHandle} ${styles.hNE}`}
-                          onPointerDown={(ev) => startResize(el.id, 'ne', ev)}
-                        />
-                        <div className={`${styles.resizeHandle} ${styles.hE}`} onPointerDown={(ev) => startResize(el.id, 'e', ev)} />
-                        <div
-                          className={`${styles.resizeHandle} ${styles.hSE}`}
-                          onPointerDown={(ev) => startResize(el.id, 'se', ev)}
-                        />
-                        <div className={`${styles.resizeHandle} ${styles.hS}`} onPointerDown={(ev) => startResize(el.id, 's', ev)} />
-                        <div
-                          className={`${styles.resizeHandle} ${styles.hSW}`}
-                          onPointerDown={(ev) => startResize(el.id, 'sw', ev)}
-                        />
-                        <div className={`${styles.resizeHandle} ${styles.hW}`} onPointerDown={(ev) => startResize(el.id, 'w', ev)} />
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              }
-
-              if (el?.type === 'note' || el?.type === 'text') {
-                const isEditing = editingElementId === el.id;
-                const isSelected = selectedElementIds.has(idKey(el.id));
-                const drag = interactionRef.current;
-                const dragPos = drag?.kind === 'drag' && sameId(drag.elementId, el.id) ? drag.latest : null;
-                return (
-                  <NoteTextElement
-                    key={el.id}
-                    el={el}
-                    isMobile={isMobile}
-                    isSelected={isSelected}
-                    isEditing={isEditing}
-                    dragX={dragPos?.x ?? null}
-                    dragY={dragPos?.y ?? null}
-                    commentsEnabled={commentsEnabled}
-                    deletingElementId={deletingElementId}
-                    searchQuery={searchQuery}
-                    isSearchHit={hasSearchQuery && manualSearchHitIds.has(el.id)}
-                    activeTool={activeTool}
-                    connectorHoverElementId={connectorHoverElementId}
-                    connectorFromElementId={connectorDraft?.from?.elementId ?? null}
-                    connectorToHoverElementId={connectorDraft?.toHover?.elementId ?? null}
-                    registerNode={registerElementNode}
-                    actions={noteTextActions}
-                  />
-                );
-              }
-
-              const isEditing = editingElementId === el.id;
-              const isSelected = selectedElementIds.has(idKey(el.id));
-              const isDocument = el.type === 'document';
-              const isLink = el.type === 'link';
-              const showConnectorEndpoints =
-                isSelected ||
-                (activeTool === 'connector' && connectorHoverElementId === el.id) ||
-                (connectorDraft?.from?.elementId === el.id || connectorDraft?.toHover?.elementId === el.id);
-              const innerClass =
-                isDocument || isLink
-                  ? `${styles.elementInner} ${styles.documentInner} ${isLink ? styles.linkInner : ''}`
-                  : el.type === 'note'
-                    ? `${styles.elementInner} ${styles.noteInner}`
-                    : `${styles.elementInner} ${styles.textInner}`;
-              const displayTextClass = el.type === 'note' ? `${styles.displayText} ${styles.notePad}` : styles.displayText;
-              const editorClass = el.type === 'note' ? `${styles.editor} ${styles.noteEditorPad}` : styles.editor;
-
-              const doc = isDocument ? el.document ?? el.Document : null;
-              const docTitle = fixMojibakeNameClient(doc?.title || 'Document');
-              const docUrl = doc?.url;
-              const docExt = getExt(docTitle) || getExt(docUrl);
-              const DocIcon = pickDocIcon(docExt);
-              const isPhotoDoc = Boolean(docUrl) && isPhotoExt(docExt);
-
-              const link = isLink ? el.link ?? el.Link : null;
-              const linkUrl = link?.url || '';
-              const linkTitle = fixMojibakeNameClient(link?.title || safeHostname(linkUrl) || linkUrl || 'Link');
-              const linkPreview = link?.previewImageUrl || '';
-              const linkHost = safeHostname(linkUrl);
-
-              const reactionBubbles = layoutReactionBubbles(el.id, el.reactions);
-              const drag = interactionRef.current;
-              const dragPos = drag?.kind === 'drag' && sameId(drag.elementId, el.id) ? drag.latest : null;
-              const ex = Number(dragPos?.x ?? (el.x ?? 0));
-              const ey = Number(dragPos?.y ?? (el.y ?? 0));
-
-              return (
-                <div
-                  key={el.id}
-                  data-element-id={el.id}
-                  className={styles.element}
-                  ref={(node) => registerElementNode(el.id, node)}
-                  style={{
-                      left: 0,
-                      top: 0,
-                    width: el.width ?? 240,
-                    height: el.height ?? 160,
-                    zIndex: el.zIndex ?? 0,
-                      transform: `translate3d(${ex}px, ${ey}px, 0) rotate(${el.rotation ?? 0}deg)`,
-                  }}
-                  onPointerDown={(ev) => onElementPointerDown(el.id, ev)}
-                  onClick={(ev) => onElementClick(el.id, ev)}
-                  onContextMenu={(ev) => {
-                    if (isMobile) return;
-                    if (activeTool === 'pen' || activeTool === 'eraser') return;
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    openReactionPicker(el.id, ev.clientX, ev.clientY);
-                  }}
-                  onDoubleClick={() => {
-                    if (activeTool === 'pen' || activeTool === 'eraser') return;
-                    beginEditing(el.id);
-                  }}
-                >
-                  {commentsEnabled ? (
-                    <button
-                      type="button"
-                      className={styles.commentBtn}
-                      onPointerDown={(ev) => ev.stopPropagation()}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        openComments(el.id);
-                      }}
-                      aria-label="Comments"
-                      title="Комментарии"
-                    >
-                      <MessageCircle size={16} />
-                    </button>
-                  ) : null}
-                  <div
-                    className={`${innerClass} ${
-                      searchQuery.trim() && manualSearchHitIds.has(el.id) ? styles.elementSearchHit : ''
-                    }`}
-                  >
-                    {isDocument ? (
-                      isPhotoDoc ? (
-                        <div className={styles.photoCard} aria-label={docTitle}>
-                          <img className={styles.photoImg} src={docUrl} alt={docTitle} draggable={false} />
-                        </div>
-                      ) : (
-                        <div className={styles.docCard}>
-                          <div className={styles.docHeader}>
-                            <div className={styles.docIcon}>
-                              <DocIcon size={18} />
-                            </div>
-                            <div className={styles.docInfo}>
-                              <div className={styles.docTitleRow}>
-                                <button
-                                  type="button"
-                                  className={styles.docTitleBtn}
-                                  onPointerDown={(ev) => ev.stopPropagation()}
-                                  onClick={(ev) => {
-                                    ev.stopPropagation();
-                                    openDocument(docUrl);
-                                  }}
-                                  disabled={!docUrl}
-                                  title={docUrl ? 'Open' : 'No file'}
-                                >
-                                  {renderHighlightedText(docTitle, searchQuery, styles.searchMark)}
-                                </button>
-                                <div className={styles.docActions}>
-                                  <button
-                                    type="button"
-                                    className={styles.docActionBtn}
-                                    onPointerDown={(ev) => ev.stopPropagation()}
-                                    onClick={(ev) => {
-                                      ev.stopPropagation();
-                                      openDocument(docUrl);
-                                    }}
-                                    disabled={!docUrl}
-                                    aria-label="Open file"
-                                    title="Open"
-                                  >
-                                    <ExternalLink size={16} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.docActionBtn}
-                                    onPointerDown={(ev) => ev.stopPropagation()}
-                                    onClick={(ev) => {
-                                      ev.stopPropagation();
-                                      downloadDocument(docUrl, docTitle);
-                                    }}
-                                    disabled={!docUrl}
-                                    aria-label="Download file"
-                                    title="Download"
-                                  >
-                                    <Download size={16} />
-                                  </button>
-                                </div>
-                              </div>
-                              <div className={styles.docMeta}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
-                            </div>
-                          </div>
-                          <div className={styles.docPreview}>
-                            {docUrl && ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(docExt) ? (
-                              <img
-                                className={styles.docThumb}
-                                src={docUrl}
-                                alt={docTitle}
-                                draggable={false}
-                                onPointerDown={(ev) => ev.stopPropagation()}
-                              />
-                            ) : docUrl && docExt === 'pdf' ? (
-                              <object
-                                className={styles.docPdf}
-                                data={docUrl}
-                                type="application/pdf"
-                                aria-label={docTitle}
-                              >
-                                <div className={styles.docPreviewFallback}>Preview not available</div>
-                              </object>
-                            ) : docUrl && TEXT_PREVIEW_EXTS.has(docExt) ? (
-                              <div className={styles.docTextPreview} aria-label="Text preview">
-                                <pre className={styles.docTextPre}>
-                                  {docTextPreview[docUrl] != null
-                                    ? docTextPreview[docUrl] || 'Preview not available'
-                                    : 'Loading preview...'}
-                                </pre>
-                              </div>
-                            ) : (
-                              <div className={styles.docPreviewFallback}>
-                                <div className={styles.docFallbackIcon}>
-                                  <DocIcon size={34} />
-                                </div>
-                                <div className={styles.docFallbackExt}>{docExt ? docExt.toUpperCase() : 'FILE'}</div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )
-                    ) : isLink ? (
-                      <div className={styles.linkCard}>
-                        <div className={styles.linkHeader}>
-                          <div className={styles.linkIcon}>
-                            <Link2 size={18} />
-                          </div>
-                          <div className={styles.linkInfo}>
-                            {isEditing ? (
-                              <div className={styles.linkEdit}>
-                                <input
-                                  className={styles.linkEditTitle}
-                                  value={link?.title ?? ''}
-                                  placeholder="Title (optional)"
-                                  onPointerDown={(ev) => ev.stopPropagation()}
-                                  onChange={(ev) => {
-                                    const next = { ...(link || {}), title: ev.target.value };
-                                    updateLocalElement(el.id, { link: next, Link: next });
-                                  }}
-                                />
-                                <input
-                                  className={styles.linkEditUrl}
-                                  value={linkUrl}
-                                  placeholder="https://example.com"
-                                  onPointerDown={(ev) => ev.stopPropagation()}
-                                  onChange={(ev) => {
-                                    const next = { ...(link || {}), url: ev.target.value };
-                                    updateLocalElement(el.id, { link: next, Link: next });
-                                  }}
-                                  onKeyDown={(ev) => {
-                                    if (ev.key === 'Escape') {
-                                      ev.preventDefault();
-                                      setEditingElementId(null);
-                                      return;
-                                    }
-                                    if (ev.key === 'Enter' && !ev.shiftKey) {
-                                      ev.preventDefault();
-                                      const nextUrl = normalizeUrlClient(ev.currentTarget.value);
-                                      const nextLink = { ...(link || {}), url: nextUrl };
-                                      updateLocalElement(el.id, { link: nextLink, Link: nextLink });
-                                      setEditingElementId(null);
-                                      (async () => {
-                                        try {
-                                          let preview = null;
-                                          try {
-                                            preview = await getLinkPreview(nextUrl);
-                                          } catch {
-                                            preview = null;
-                                          }
-                                          const hydrated =
-                                            preview && (preview.title || preview.previewImageUrl || preview.url)
-                                              ? {
-                                                  ...nextLink,
-                                                  url: preview.url || nextUrl,
-                                                  title: nextLink.title || preview.title,
-                                                  previewImageUrl: preview.previewImageUrl || nextLink.previewImageUrl,
-                                                }
-                                              : nextLink;
-                                          updateLocalElement(el.id, { link: hydrated, Link: hydrated });
-                                          const before = editStartSnapRef.current.get(el.id) || null;
-                                          editStartSnapRef.current.delete(el.id);
-                                          await persistElement({ ...el, link: hydrated, Link: hydrated }, { historyBefore: before });
-                                        } catch {
-                                          // ignore
-                                        }
-                                      })();
-                                    }
-                                  }}
-                                />
-                              </div>
-                            ) : (
-                              <div className={styles.linkTitleRow}>
-                                <button
-                                  type="button"
-                                  className={styles.linkTitleBtn}
-                                  onPointerDown={(ev) => ev.stopPropagation()}
-                                  onClick={(ev) => {
-                                    ev.stopPropagation();
-                                    openExternalUrl(linkUrl);
-                                  }}
-                                  disabled={!linkUrl}
-                                  title={linkUrl || 'No url'}
-                                >
-                                  {renderHighlightedText(linkTitle, searchQuery, styles.searchMark)}
-                                </button>
-                                <div className={styles.docActions}>
-                                  <button
-                                    type="button"
-                                    className={styles.docActionBtn}
-                                    onPointerDown={(ev) => ev.stopPropagation()}
-                                    onClick={(ev) => {
-                                      ev.stopPropagation();
-                                      openExternalUrl(linkUrl);
-                                    }}
-                                    disabled={!linkUrl}
-                                    aria-label="Open link"
-                                    title="Open"
-                                  >
-                                    <ExternalLink size={16} />
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                            <div className={styles.linkMeta}>
-                              {renderHighlightedText(linkHost || 'LINK', searchQuery, styles.searchMark)}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className={styles.linkPreview}>
-                          {linkPreview ? (
-                            <img
-                              className={styles.linkThumb}
-                              src={linkPreview}
-                              alt={linkTitle}
-                              draggable={false}
-                              onPointerDown={(ev) => ev.stopPropagation()}
-                            />
-                          ) : (
-                            <div className={styles.linkPreviewFallback}>
-                              <div className={styles.linkFallbackIcon}>
-                                <Link2 size={34} />
-                              </div>
-                              <div className={styles.linkFallbackHost}>{linkHost || 'PREVIEW'}</div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : isEditing ? (
-                      <textarea
-                        className={editorClass}
-                        value={el.content ?? ''}
-                        autoFocus
-                        onPointerDown={(ev) => ev.stopPropagation()}
-                        onChange={(ev) => {
-                          const next = ev.target.value;
-                          updateLocalElement(el.id, { content: next });
-                          if (el.type === 'note') queueNoteEdit(el.id, next);
-                        }}
-                        onKeyDown={async (ev) => {
-                          if (ev.key === 'Escape') {
-                            ev.preventDefault();
-                            ev.stopPropagation();
-                            await endEditing();
-                            return;
-                          }
-                          if (ev.key === 'Enter' && !ev.shiftKey) {
-                            ev.preventDefault();
-                            await endEditing();
-                          }
-                        }}
-                        onBlur={(ev) => {
-                          // Exit edit mode when focus leaves the element entirely (e.g. clicking toolbar).
-                          const next = ev.relatedTarget;
-                          if (next && next.closest?.(`[data-element-id="${el.id}"]`)) return;
-                          if (editingElementId === el.id) endEditing();
-                        }}
-                      />
-                    ) : (
-                      <div className={displayTextClass}>
-                        {renderHighlightedText(el.content ?? '', searchQuery, styles.searchMark)}
-                      </div>
-                    )}
-                  </div>
-
-                  {showConnectorEndpoints ? (
-                    <div className={styles.connectorEndpointsBox} aria-hidden="true">
-                      <div
-                        className={`${styles.connectorEndpoint} ${styles.epTop}`}
-                        onPointerDown={(ev) => startConnectorDrag(el.id, 'top', ev)}
-                      />
-                      <div
-                        className={`${styles.connectorEndpoint} ${styles.epRight}`}
-                        onPointerDown={(ev) => startConnectorDrag(el.id, 'right', ev)}
-                      />
-                      <div
-                        className={`${styles.connectorEndpoint} ${styles.epBottom}`}
-                        onPointerDown={(ev) => startConnectorDrag(el.id, 'bottom', ev)}
-                      />
-                      <div
-                        className={`${styles.connectorEndpoint} ${styles.epLeft}`}
-                        onPointerDown={(ev) => startConnectorDrag(el.id, 'left', ev)}
-                      />
-                    </div>
-                  ) : null}
-
-                  {reactionBubbles.length ? (
-                    <div className={styles.reactionsLayer} aria-label="Reactions">
-                      {reactionBubbles.map((b) => (
-                        <button
-                          key={b.emoji}
-                          type="button"
-                          className={`${styles.reactionBubble} ${b.count === 1 ? styles.reactionSolo : ''}`}
-                          data-side={b.side}
-                          style={{
-                            left: `${b.xPct}%`,
-                            top: `${b.yPct}%`,
-                          }}
-                          onPointerDown={(ev) => ev.stopPropagation()}
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            toggleReaction(el.id, b.emoji);
-                          }}
-                          title={b.count > 1 ? `${b.emoji} · ${b.count}` : b.emoji}
-                          aria-label={b.count > 1 ? `${b.emoji} ${b.count}` : b.emoji}
-                        >
-                          <span className={styles.reactionEmoji}>{b.emoji}</span>
-                          {b.count > 1 ? <span className={styles.reactionCount}>{b.count}</span> : null}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  {isSelected ? (
-                    <div className={styles.transformBox}>
-                      <div className={styles.elementActions}>
-                        <button
-                          type="button"
-                          className={styles.deleteElementBtn}
-                          onPointerDown={(ev) => {
-                            ev.preventDefault();
-                            ev.stopPropagation();
-                            handleDeleteElement(el);
-                          }}
-                          disabled={sameId(deletingElementId, el.id)}
-                          aria-label="Delete element"
-                          title="Delete element"
-                        >
-                          {sameId(deletingElementId, el.id) ? (
-                            <Loader2 size={16} className={styles.spinner} />
-                          ) : (
-                            <Trash2 size={16} />
-                          )}
-                        </button>
-                      </div>
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hNW}`}
-                        onPointerDown={(ev) => startResize(el.id, 'nw', ev)}
-                      />
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hN}`}
-                        onPointerDown={(ev) => startResize(el.id, 'n', ev)}
-                      />
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hNE}`}
-                        onPointerDown={(ev) => startResize(el.id, 'ne', ev)}
-                      />
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hE}`}
-                        onPointerDown={(ev) => startResize(el.id, 'e', ev)}
-                      />
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hSE}`}
-                        onPointerDown={(ev) => startResize(el.id, 'se', ev)}
-                      />
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hS}`}
-                        onPointerDown={(ev) => startResize(el.id, 's', ev)}
-                      />
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hSW}`}
-                        onPointerDown={(ev) => startResize(el.id, 'sw', ev)}
-                      />
-                      <div
-                        className={`${styles.resizeHandle} ${styles.hW}`}
-                        onPointerDown={(ev) => startResize(el.id, 'w', ev)}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-            {liveStroke?.points?.length ? (
+            {toolManager.liveStroke?.points?.length ? (
               (() => {
-                const pts = liveStroke.points;
+                const pts = toolManager.liveStroke.points;
                 let minX = pts[0].x;
                 let minY = pts[0].y;
                 let maxX = pts[0].x;
@@ -5792,7 +2561,7 @@ export default function WorkspacePage() {
                   maxX = Math.max(maxX, p.x);
                   maxY = Math.max(maxY, p.y);
                 }
-                const pad = Math.max(2, liveStroke.width / 2 + 2);
+                const pad = Math.max(2, toolManager.liveStroke.width / 2 + 2);
                 const x = Math.floor(minX - pad);
                 const y = Math.floor(minY - pad);
                 const w = Math.ceil(maxX - minX + pad * 2);
@@ -5809,8 +2578,8 @@ export default function WorkspacePage() {
                       <path
                         d={d}
                         fill="none"
-                        stroke={liveStroke.color}
-                        strokeWidth={liveStroke.width}
+                        stroke={toolManager.liveStroke.color}
+                        strokeWidth={toolManager.liveStroke.width}
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       />
@@ -5820,14 +2589,14 @@ export default function WorkspacePage() {
               })()
             ) : null}
           </div>
-          {selectionRect ? (
+          {toolManager.selectionRect ? (
             <div
               className={styles.selectionRect}
               style={{
-                left: selectionRect.left,
-                top: selectionRect.top,
-                width: selectionRect.width,
-                height: selectionRect.height,
+                left: toolManager.selectionRect.left,
+                top: toolManager.selectionRect.top,
+                width: toolManager.selectionRect.width,
+                height: toolManager.selectionRect.height,
               }}
             />
           ) : null}
@@ -5838,20 +2607,7 @@ export default function WorkspacePage() {
             <button
               type="button"
               className={styles.zoomBtn}
-              onClick={() => {
-                const node = canvasRef.current;
-                if (!node) return;
-                const rect = node.getBoundingClientRect();
-                const p = { x: rect.width / 2, y: rect.height / 2 };
-                const off = viewOffsetRef.current;
-                const curScale = viewScaleRef.current || 1;
-                const nextScale = clampViewScale(curScale / 1.12);
-                const d = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
-                const nextOffset = { x: p.x - d.x * nextScale, y: p.y - d.y * nextScale };
-                scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
-                setViewOffset(nextOffset);
-                persistViewDebounced({ offset: nextOffset, scale: nextScale });
-              }}
+              onClick={() => zoomAtCenter('out')}
               aria-label="Zoom out"
               title="Zoom out"
             >
@@ -5863,20 +2619,7 @@ export default function WorkspacePage() {
             <button
               type="button"
               className={styles.zoomBtn}
-              onClick={() => {
-                const node = canvasRef.current;
-                if (!node) return;
-                const rect = node.getBoundingClientRect();
-                const p = { x: rect.width / 2, y: rect.height / 2 };
-                const off = viewOffsetRef.current;
-                const curScale = viewScaleRef.current || 1;
-                const nextScale = clampViewScale(curScale * 1.12);
-                const d = { x: (p.x - off.x) / curScale, y: (p.y - off.y) / curScale };
-                const nextOffset = { x: p.x - d.x * nextScale, y: p.y - d.y * nextScale };
-                scheduleApplyViewVars({ offset: nextOffset, scale: nextScale });
-                setViewOffset(nextOffset);
-                persistViewDebounced({ offset: nextOffset, scale: nextScale });
-              }}
+              onClick={() => zoomAtCenter('in')}
               aria-label="Zoom in"
               title="Zoom in"
             >
@@ -6347,6 +3090,16 @@ export default function WorkspacePage() {
             />
           </div>
         </div>
+      ) : null}
+
+      {materialBlockModal ? (
+        <MaterialBlockModal
+          block={materialBlockModal}
+          onClose={() => setMaterialBlockModal(null)}
+          isMobile={isMobile}
+          deskId={workspace?.id ?? workspace?.deskId ?? id}
+          onAddCardToBoard={handleAddCardToBoard}
+        />
       ) : null}
     </div>
   );

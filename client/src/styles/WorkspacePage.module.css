@@ -1306,7 +1306,7 @@
   position: absolute;
   inset: 0;
   overflow: visible;
-  pointer-events: auto;
+  pointer-events: none;
   z-index: 0;
 }
 

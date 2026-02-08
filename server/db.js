@@ -8,11 +8,13 @@ const pool = {
   acquire: 30_000,
 };
 
-// Render/managed Postgres обычно отдаёт DATABASE_URL и требует SSL.
-// Локально можно продолжать использовать DB_* переменные.
+// Production (Render): используем DATABASE_URL. Development: локальные DB_*.
+const isProduction = process.env.NODE_ENV === 'production';
 const databaseUrl = process.env.DATABASE_URL;
 
-module.exports = databaseUrl
+const useProductionDb = isProduction && databaseUrl;
+
+module.exports = useProductionDb
   ? new Sequelize(databaseUrl, {
       dialect: 'postgres',
       logging,

@@ -438,6 +438,105 @@ const CalendarNotificationLog = sequelize.define(
   }
 );
 
+// --- Material Block (учебное хранилище на доске) ---
+const MaterialBlock = sequelize.define(
+  'material_block',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    boardId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: Desk, key: 'deskId' },
+      onDelete: 'CASCADE',
+      onUpdate: 'CASCADE',
+    },
+    title: { type: DataTypes.STRING, allowNull: false, defaultValue: 'Материалы' },
+    x: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    y: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    width: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 280 },
+    height: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 160 },
+  },
+  {
+    indexes: [{ fields: ['boardId'] }],
+  }
+);
+
+const MaterialCard = sequelize.define(
+  'material_card',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    blockId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: MaterialBlock, key: 'id' },
+      onDelete: 'CASCADE',
+      onUpdate: 'CASCADE',
+    },
+    title: { type: DataTypes.STRING, allowNull: false, defaultValue: '' },
+    content: { type: DataTypes.TEXT, allowNull: false, defaultValue: '' },
+    createdBy: { type: DataTypes.INTEGER, allowNull: true, references: { model: User, key: 'id' } },
+  },
+  {
+    indexes: [{ fields: ['blockId', 'createdAt'] }, { fields: ['blockId'] }],
+  }
+);
+
+const MaterialFile = sequelize.define(
+  'material_file',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    cardId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: MaterialCard, key: 'id' },
+      onDelete: 'CASCADE',
+      onUpdate: 'CASCADE',
+    },
+    fileUrl: { type: DataTypes.TEXT, allowNull: false },
+    fileType: { type: DataTypes.STRING, allowNull: true },
+    size: { type: DataTypes.INTEGER, allowNull: true },
+  },
+  {
+    indexes: [{ fields: ['cardId'] }],
+  }
+);
+
+const MaterialLink = sequelize.define(
+  'material_link',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    cardId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: MaterialCard, key: 'id' },
+      onDelete: 'CASCADE',
+      onUpdate: 'CASCADE',
+    },
+    url: { type: DataTypes.TEXT, allowNull: false },
+    title: { type: DataTypes.STRING, allowNull: true },
+  },
+  {
+    indexes: [{ fields: ['cardId'] }],
+  }
+);
+
+const MaterialCardTag = sequelize.define(
+  'material_card_tag',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    cardId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: MaterialCard, key: 'id' },
+      onDelete: 'CASCADE',
+      onUpdate: 'CASCADE',
+    },
+    tag: { type: DataTypes.STRING, allowNull: false },
+  },
+  {
+    indexes: [{ fields: ['cardId'] }, { unique: true, fields: ['cardId', 'tag'] }],
+  }
+);
 
 // --- Relationships ---
 User.hasMany(Project, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
@@ -551,6 +650,24 @@ CalendarNotificationLog.belongsTo(CalendarEvent, { foreignKey: 'eventId' });
 User.hasMany(CalendarNotificationLog, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 CalendarNotificationLog.belongsTo(User, { foreignKey: 'userId' });
 
+Desk.hasMany(MaterialBlock, { foreignKey: 'boardId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+MaterialBlock.belongsTo(Desk, { foreignKey: 'boardId' });
+
+MaterialBlock.hasMany(MaterialCard, { foreignKey: 'blockId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+MaterialCard.belongsTo(MaterialBlock, { foreignKey: 'blockId' });
+
+User.hasMany(MaterialCard, { foreignKey: 'createdBy', onDelete: 'SET NULL', onUpdate: 'CASCADE' });
+MaterialCard.belongsTo(User, { foreignKey: 'createdBy' });
+
+MaterialCard.hasMany(MaterialFile, { foreignKey: 'cardId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+MaterialFile.belongsTo(MaterialCard, { foreignKey: 'cardId' });
+
+MaterialCard.hasMany(MaterialLink, { foreignKey: 'cardId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+MaterialLink.belongsTo(MaterialCard, { foreignKey: 'cardId' });
+
+MaterialCard.hasMany(MaterialCardTag, { foreignKey: 'cardId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+MaterialCardTag.belongsTo(MaterialCard, { foreignKey: 'cardId' });
+
 module.exports = {
   User,
   RefreshToken,
@@ -576,4 +693,9 @@ module.exports = {
   CalendarMyEvent,
   CalendarEventInvite,
   CalendarNotificationLog,
+  MaterialBlock,
+  MaterialCard,
+  MaterialFile,
+  MaterialLink,
+  MaterialCardTag,
 };

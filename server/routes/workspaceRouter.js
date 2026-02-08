@@ -6,8 +6,9 @@ const noteVersionsCtrl = require('../controllers/noteVersionsCtrl');
 const uploadsCtrl = require('../controllers/uploadsCtrl');
 const linkPreviewCtrl = require('../controllers/linkPreviewCtrl');
 const commentsCtrl = require('../controllers/commentsCtrl');
+const materialBlocksCtrl = require('../controllers/materialBlocksCtrl');
 const authMiddleware = require('../middleware/authMiddleware');
-const { upload } = require('../middleware/uploadMiddleware');
+const { upload, uploadCardFile } = require('../middleware/uploadMiddleware');
 
 const router = express.Router();
 
@@ -53,5 +54,32 @@ router.post('/desk/:deskId/upload', authMiddleware, (req, res, next) => {
 
 // Link preview (OpenGraph/Twitter/meta) for creating `link` elements.
 router.post('/link/preview', authMiddleware, linkPreviewCtrl.preview);
+
+// Material blocks (учебное хранилище на доске)
+router.get('/desk/:deskId/material-blocks', authMiddleware, materialBlocksCtrl.listByDesk);
+router.post('/desk/:deskId/material-blocks', authMiddleware, materialBlocksCtrl.create);
+router.get('/material-blocks/:blockId', authMiddleware, materialBlocksCtrl.getOne);
+router.put('/material-blocks/:blockId', authMiddleware, materialBlocksCtrl.update);
+router.delete('/material-blocks/:blockId', authMiddleware, materialBlocksCtrl.delete);
+router.get('/material-blocks/:blockId/cards', authMiddleware, materialBlocksCtrl.getCards);
+router.post('/material-blocks/:blockId/cards', authMiddleware, materialBlocksCtrl.createCard);
+router.get('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.getCard);
+router.put('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.updateCard);
+router.delete('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.deleteCard);
+router.post(
+  '/material-cards/:cardId/upload',
+  authMiddleware,
+  (req, res, next) => {
+    uploadCardFile.single('file')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
+      return next();
+    });
+  },
+  materialBlocksCtrl.uploadCardFile
+);
+router.post('/material-cards/:cardId/links', authMiddleware, materialBlocksCtrl.addCardLink);
+router.delete('/material-links/:linkId', authMiddleware, materialBlocksCtrl.deleteCardLink);
+router.delete('/material-files/:fileId', authMiddleware, materialBlocksCtrl.deleteCardFile);
+router.put('/material-cards/:cardId/tags', authMiddleware, materialBlocksCtrl.setCardTags);
 
 module.exports = router;

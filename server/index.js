@@ -233,6 +233,73 @@ async function start() {
       // ignore
     }
 
+    // Schema back-compat: material blocks (учебное хранилище на доске).
+    try {
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "material_blocks" (' +
+          '"id" SERIAL PRIMARY KEY,' +
+          '"boardId" INTEGER NOT NULL REFERENCES "desks"("deskId") ON DELETE CASCADE ON UPDATE CASCADE,' +
+          '"title" VARCHAR(255) NOT NULL DEFAULT \'Материалы\',' +
+          '"x" INTEGER NOT NULL DEFAULT 0,' +
+          '"y" INTEGER NOT NULL DEFAULT 0,' +
+          '"width" INTEGER NOT NULL DEFAULT 280,' +
+          '"height" INTEGER NOT NULL DEFAULT 160,' +
+          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
+          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_blocks_board_id" ON "material_blocks" ("boardId");');
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "material_cards" (' +
+          '"id" SERIAL PRIMARY KEY,' +
+          '"blockId" INTEGER NOT NULL REFERENCES "material_blocks"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
+          '"title" VARCHAR(255) NOT NULL DEFAULT \'\',' +
+          '"content" TEXT NOT NULL DEFAULT \'\',' +
+          '"createdBy" INTEGER REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE,' +
+          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
+          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_cards_block_id" ON "material_cards" ("blockId");');
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_cards_block_created" ON "material_cards" ("blockId","createdAt");');
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "material_files" (' +
+          '"id" SERIAL PRIMARY KEY,' +
+          '"cardId" INTEGER NOT NULL REFERENCES "material_cards"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
+          '"fileUrl" TEXT NOT NULL,' +
+          '"fileType" VARCHAR(255),' +
+          '"size" INTEGER,' +
+          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
+          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_files_card_id" ON "material_files" ("cardId");');
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "material_links" (' +
+          '"id" SERIAL PRIMARY KEY,' +
+          '"cardId" INTEGER NOT NULL REFERENCES "material_cards"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
+          '"url" TEXT NOT NULL,' +
+          '"title" VARCHAR(255),' +
+          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
+          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_links_card_id" ON "material_links" ("cardId");');
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "material_card_tags" (' +
+          '"id" SERIAL PRIMARY KEY,' +
+          '"cardId" INTEGER NOT NULL REFERENCES "material_cards"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
+          '"tag" VARCHAR(255) NOT NULL,' +
+          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
+          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
+          'CONSTRAINT "material_card_tags_card_id_tag_key" UNIQUE("cardId","tag")' +
+        ');'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_card_tags_card_id" ON "material_card_tags" ("cardId");');
+    } catch {
+      // ignore
+    }
+
     // In early development it's convenient to auto-align schema with models.
     // Set DB_SYNC_ALTER=true to enable non-destructive alters (still be careful in production).
     await sequelize.sync({ alter: process.env.DB_SYNC_ALTER === 'true' });
