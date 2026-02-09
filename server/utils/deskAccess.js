@@ -19,7 +19,7 @@ async function canManageDesk(desk, userId) {
   if (desk.userId === userId) return true;
   if (!desk.groupId) return false;
   const role = await getGroupRole(desk.groupId, userId);
-  return role === 'OWNER' || role === 'ADMIN';
+  return Boolean(role); // any active group member can edit the board
 }
 
 module.exports = {
