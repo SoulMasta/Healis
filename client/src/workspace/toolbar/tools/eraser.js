@@ -12,7 +12,6 @@ export function createEraserTool(ctx) {
     setElements,
     pushHistory,
     applyingHistoryRef,
-    elementToVm,
     snapshotForHistory,
     workspace,
     deskIdParam: id,

@@ -164,6 +164,15 @@ export function useToolManager({
       setMaterialBlocks,
       createFrameAtDeskRectRef,
       setLiveFrameRect,
+      createNoteOrTextAtDeskPointRef,
+      createdElementIdsRef,
+      elementsRef,
+      interactionRef,
+      pushInputDebug,
+      setActionError,
+      setConnectorHoverBlockId,
+      setConnectorHoverElementId,
+      setElements,
     ]
   );
 
@@ -410,6 +419,7 @@ export function useToolManager({
       activeTool,
       ensurePanRaf,
       inputDebugEnabled,
+      inputDebugLastMoveLogRef,
       isMobile,
       mobilePinchRef,
       panStartRef,

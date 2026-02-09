@@ -12,7 +12,7 @@ import {
   denyGroupJoinRequest,
 } from '../http/groupAPI';
 import { getMyCalendar, respondToCalendarInvite, respondToCalendarPeriodInvite } from '../http/calendarAPI';
-import { listMyNotifications, markNotificationRead } from '../http/notificationsAPI';
+import { listMyNotifications } from '../http/notificationsAPI';
 import { loadNotificationFeed, NOTIFICATION_FEED_STORAGE_KEY } from '../utils/notificationFeed';
 import { toast } from '../utils/toast';
 
@@ -344,19 +344,6 @@ export default function MobileNotificationsPage() {
       alert(e?.response?.data?.error || e?.message || 'Не удалось выполнить действие');
     } finally {
       setBusyId(null);
-    }
-  };
-
-  const markServerRead = async (id) => {
-    if (!id) return;
-    try {
-      await markNotificationRead(id);
-      // optimistic refresh
-      setServerNotifications((prev) =>
-        (Array.isArray(prev) ? prev : []).map((n) => (Number(n?.id) === Number(id) ? { ...n, readAt: n.readAt || new Date().toISOString() } : n))
-      );
-    } catch {
-      // ignore
     }
   };
 
