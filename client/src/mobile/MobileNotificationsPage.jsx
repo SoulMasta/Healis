@@ -186,8 +186,10 @@ export default function MobileNotificationsPage() {
   const items = useMemo(() => {
     const out = [];
 
-    // Persistent server inbox (includes calendar worker notifications).
+    // Persistent server inbox (single message, no "Upcoming event", no read button).
     for (const n of Array.isArray(serverNotifications) ? serverNotifications.slice(0, 50) : []) {
+      const title = String(n?.title || '').trim();
+      if (/upcoming\s+event/i.test(title)) continue;
       const payload = n?.payload || {};
       const isCalendar = String(n?.type || '').toUpperCase().includes('CALENDAR');
       const createdAt = n?.createdAt ? new Date(n.createdAt) : null;
@@ -199,11 +201,11 @@ export default function MobileNotificationsPage() {
       out.push({
         kind: isCalendar ? 'calendar' : 'boards',
         id: `sn-${n?.id}`,
-        title: n?.title || (isCalendar ? 'Календарь' : 'Уведомление'),
+        title: title || (isCalendar ? 'Календарь' : 'Уведомление'),
         subtitle: String(n?.body || '').trim() || String(event?.title || '').trim(),
         meta: meta || undefined,
         icon: <CalendarDays size={18} />,
-        actions: { serverNotificationId: n?.id, readAt: n?.readAt },
+        actions: undefined,
       });
     }
 
@@ -359,7 +361,7 @@ export default function MobileNotificationsPage() {
   };
 
   return (
-    <MobileLayout title="Уведомления" padded={false}>
+    <MobileLayout title="" padded={false}>
       <div className={styles.wrap}>
         <Tabs value={tab} onChange={setTab} />
 
@@ -433,17 +435,6 @@ export default function MobileNotificationsPage() {
                           Отклонить
                         </button>
                       </>
-                    ) : a?.serverNotificationId ? (
-                      <button
-                        type="button"
-                        className={styles.actionOk}
-                        onClick={() => markServerRead(a.serverNotificationId)}
-                        disabled={isBusy || Boolean(a.readAt)}
-                        title={a.readAt ? 'Уже прочитано' : 'Отметить прочитанным'}
-                      >
-                        <Check size={16} />
-                        {a.readAt ? 'Прочитано' : 'Прочитать'}
-                      </button>
                     ) : null
                   }
                 />

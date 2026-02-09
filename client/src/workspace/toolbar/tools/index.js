@@ -3,6 +3,7 @@ export { createEraserTool } from './eraser';
 export { createSelectTool } from './select';
 export { createHandTool } from './hand';
 export { createConnectorTool } from './connector';
+export { createFrameTool } from './frame';
 export { createNoteTool } from './note';
 export { createTextTool } from './text';
 export { createMaterialBlockTool } from './material_block';

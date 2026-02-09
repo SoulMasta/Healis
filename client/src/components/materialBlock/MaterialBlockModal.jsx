@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { List } from 'react-window';
-import { X, Plus, Trash2, LayoutGrid } from 'lucide-react';
+import { X, Plus, Trash2, LayoutGrid, Copy, Pencil } from 'lucide-react';
 import { getMaterialCards, createMaterialCard, deleteMaterialCard } from '../../http/materialBlocksAPI';
 import MaterialCardItem from './MaterialCardItem';
 import MaterialCardEditor from './MaterialCardEditor';
@@ -40,10 +40,40 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
 
   const deleteCardMutation = useMutation({
     mutationFn: (cardId) => deleteMaterialCard(cardId),
-    onSuccess: (_, cardId) => {
+    onSuccess: () => {
       setMenuCard(null);
       setMenuPos(null);
       queryClient.invalidateQueries({ queryKey: ['material-cards', blockId] });
+    },
+  });
+
+  const duplicateCardMutation = useMutation({
+    mutationFn: (card) =>
+      createMaterialCard(blockId, {
+        title: (card?.title || 'Карточка') + ' (копия)',
+        content: card?.content ?? '',
+      }),
+    onSuccess: (newCard) => {
+      setMenuCard(null);
+      setMenuPos(null);
+      if (!newCard?.id) return;
+      const normalized = {
+        id: newCard.id,
+        title: newCard.title ?? 'Новая карточка',
+        content: newCard.content ?? '',
+        attachments: newCard.attachments ?? [],
+        links: newCard.links ?? [],
+        tags: newCard.tags ?? [],
+        created_by: newCard.created_by ?? null,
+        created_at: newCard.created_at ?? newCard.createdAt,
+        updated_at: newCard.updated_at ?? newCard.updatedAt,
+      };
+      queryClient.invalidateQueries({ queryKey: ['material-cards', blockId] });
+      queryClient.setQueryData(queryKey, (prev) => {
+        if (!prev) return prev;
+        const prevCards = prev?.cards ?? [];
+        return { ...prev, cards: [normalized, ...prevCards], total: (prev?.total ?? 0) + 1 };
+      });
     },
   });
 
@@ -78,7 +108,6 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
           totalPages: Math.ceil(newTotal / limit),
         };
       });
-      setEditingCard(normalized);
     },
     onError: () => {
       setCreating(false);
@@ -133,11 +162,11 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
   );
 
   const rowComponent = useCallback(
-    ({ index, style, ...rest }) => {
+    ({ index, style, ariaAttributes, ...rest }) => {
       const card = cards[index];
       if (!card) return null;
       return (
-        <div style={style} {...rest}>
+        <div style={style} {...ariaAttributes} {...rest}>
           <MaterialCardItem
             card={card}
             onClick={() => setEditingCard(card)}
@@ -152,8 +181,9 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
   const openCreateDialog = useCallback(() => {
     if (!blockId) return;
     setNewCardTitle('');
+    createCardMutation.reset();
     setShowCreateDialog(true);
-  }, [blockId]);
+  }, [blockId, createCardMutation]);
 
   useEffect(() => {
     if (showCreateDialog && createDialogInputRef.current) {
@@ -195,13 +225,23 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
 
   if (editingCard) {
     return (
-      <MaterialCardEditor
-        card={editingCard}
-        blockTitle={block?.title}
-        onClose={handleCloseEditor}
-        onBack={handleBack}
-        isMobile={isMobile}
-      />
+      <div
+        className={styles.overlay}
+        onClick={(e) => e.target === e.currentTarget && handleBack()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Редактор карточки"
+      >
+        <div className={`${styles.modal} ${styles.editorModal} ${isMobile ? styles.fullscreen : ''}`} onClick={(e) => e.stopPropagation()}>
+          <MaterialCardEditor
+            card={editingCard}
+            blockTitle={block?.title}
+            onClose={handleCloseEditor}
+            onBack={handleBack}
+            isMobile={isMobile}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -248,7 +288,7 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
             type="button"
             className={styles.addCardBtn}
             onClick={openCreateDialog}
-            disabled={creating}
+            disabled={creating || !blockId}
           >
             <Plus size={18} style={{ verticalAlign: 'middle', marginRight: 6 }} />
             Создать карточку
@@ -284,14 +324,33 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          <button
-            type="button"
-            className={styles.ddItem}
-            onClick={() => handleAddToBoard(menuCard)}
-          >
+          <button type="button" className={styles.ddItem} onClick={() => handleAddToBoard(menuCard)}>
             <LayoutGrid size={18} />
             Добавить на доску
           </button>
+          <button
+            type="button"
+            className={styles.ddItem}
+            onClick={() => duplicateCardMutation.mutate(menuCard)}
+            disabled={duplicateCardMutation.isPending}
+          >
+            <Copy size={18} />
+            Дублировать
+          </button>
+          <div className={styles.ddDivider} />
+          <button
+            type="button"
+            className={styles.ddItem}
+            onClick={() => {
+              setMenuCard(null);
+              setMenuPos(null);
+              setEditingCard(menuCard);
+            }}
+          >
+            <Pencil size={18} />
+            Редактировать
+          </button>
+          <div className={styles.ddDivider} />
           <button
             type="button"
             className={`${styles.ddItem} ${styles.ddDanger}`}
@@ -311,6 +370,7 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
             if (e.target === e.currentTarget && !createCardMutation.isPending) {
               setShowCreateDialog(false);
               setNewCardTitle('');
+              createCardMutation.reset();
             }
           }}
           role="dialog"
@@ -334,7 +394,13 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
               placeholder="Введите название"
               disabled={createCardMutation.isPending}
               aria-label="Название карточки"
+              aria-invalid={createCardMutation.isError}
             />
+            {createCardMutation.isError ? (
+              <p className={styles.createDialogError} role="alert">
+                Не удалось создать карточку. Проверьте, что сервер запущен и доступен (например, backend на порту 5000). Можно повторить попытку.
+              </p>
+            ) : null}
             <div className={styles.createDialogActions}>
               <button
                 type="button"
@@ -343,6 +409,7 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
                   if (!createCardMutation.isPending) {
                     setShowCreateDialog(false);
                     setNewCardTitle('');
+                    createCardMutation.reset();
                   }
                 }}
                 disabled={createCardMutation.isPending}

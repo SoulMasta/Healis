@@ -1215,11 +1215,9 @@ export default function MobileHomePage() {
               }}
             />
           </div>
-        ) : (
-          'Доски'
-        )
+        ) : null
       }
-      leftSlot={<UserMenu variant="icon" iconClickMode="settings" />}
+      leftSlot={<UserMenu variant="bare" iconClickMode="settings" />}
       rightSlot={
         searchOpen ? (
           <button

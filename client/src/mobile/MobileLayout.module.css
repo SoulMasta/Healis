@@ -13,6 +13,7 @@
   background: linear-gradient(180deg, rgba(238, 242, 249, 0.96), rgba(238, 242, 249, 0.84));
   backdrop-filter: blur(12px);
   padding: 10px 14px;
+  min-height: 56px;
   display: grid;
   grid-template-columns: 64px 1fr 64px;
   align-items: center;
@@ -24,6 +25,8 @@
 .headerRight {
   display: flex;
   align-items: center;
+  align-self: stretch;
+  min-height: 44px;
 }
 
 .headerRight {
@@ -33,6 +36,8 @@
 .headerCenter {
   min-width: 0;
   text-align: left;
+  display: flex;
+  align-items: center;
 }
 
 .headerTitle {

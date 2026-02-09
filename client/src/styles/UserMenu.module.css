@@ -4,6 +4,20 @@
   align-items: center;
 }
 
+.rootAvatarCompact .avatarBtnBare {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.rootAvatarCompact .avatar {
+  width: 30px;
+  height: 30px;
+  font-size: 12px;
+}
+
 .signInBtn,
 .signInBtnCompact {
   height: 36px;
@@ -77,16 +91,22 @@
 
 .avatarBtnBare,
 .signInBtnBare {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.7);
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: transform 120ms ease;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.avatarBtnBare .avatar {
+  width: 35px;
+  height: 35px;
+  font-size: 14px;
 }
 
 .avatarBtnBare:active,
@@ -258,6 +278,17 @@
     width: 32px;
     height: 32px;
     font-size: 14px;
+  }
+
+  .rootAvatarCompact .avatarBtnBare {
+    width: 34px;
+    height: 34px;
+  }
+
+  .rootAvatarCompact .avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 12px;
   }
 
   .menuItem {

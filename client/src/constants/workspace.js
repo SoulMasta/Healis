@@ -1,5 +1,6 @@
 import {
   Eraser,
+  Frame,
   Hand,
   Link2,
   MousePointer2,
@@ -26,6 +27,7 @@ export const TOOLS = [
   { id: 'select', label: 'Select', Icon: MousePointer2, hotspot: [2, 2], fallbackCursor: 'default' },
   { id: 'hand', label: 'Hand', Icon: Hand, hotspot: [12, 12], fallbackCursor: 'grab' },
   { id: 'connector', label: 'Соединительные линии', Icon: Spline, hotspot: [4, 4], fallbackCursor: 'crosshair' },
+  { id: 'frame', label: 'Frame', Icon: Frame, hotspot: [12, 12], fallbackCursor: 'crosshair' },
   { id: 'note', label: 'Note', Icon: Square, hotspot: [12, 12], fallbackCursor: 'copy' },
   { id: 'text', label: 'Text', Icon: Type, hotspot: [8, 18], fallbackCursor: 'text' },
   { id: 'material_block', label: 'Блок материалов', Icon: BookMarked, hotspot: [2, 2], fallbackCursor: 'pointer' },

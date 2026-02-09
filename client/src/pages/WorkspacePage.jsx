@@ -5,6 +5,7 @@ import {
   ArrowUp,
   ArrowLeft,
   Bell,
+  ChevronDown,
   Eraser,
   Home,
   MoreVertical,
@@ -34,20 +35,17 @@ import {
 } from '../http/elementsAPI';
 import {
   getMaterialBlocksByDesk,
-  createMaterialBlock,
   updateMaterialBlock,
   deleteMaterialBlock,
 } from '../http/materialBlocksAPI';
 import { MaterialBlockModal } from '../components/materialBlock';
-import { createElementComment, getElementComments } from '../http/commentsAPI';
-import { chatWithDesk, getAiStatus } from '../http/aiAPI';
 import UserMenu from '../components/UserMenu';
 import MembersMenu from '../components/MembersMenu';
 import { useBreakpoints } from '../hooks/useBreakpoints';
 import styles from '../styles/WorkspacePage.module.css';
 import note2Img from '../static/note2.png';
 import { DEFAULT_SHORTCUTS, formatShortcut, loadShortcuts, matchShortcut } from '../utils/shortcuts';
-import { buildManualBoardSearchIndex, makeSnippet, runManualBoardSearch } from '../utils/boardSearch';
+import { makeSnippet } from '../utils/boardSearch';
 import { useWorkspace, idKey, sameId, normalizeElementId, upsertById } from '../workspace/useWorkspace';
 import { useCanvasViewportState } from '../workspace/Canvas';
 import { useElementFrame } from '../components/board/useElementFrame';
@@ -100,6 +98,7 @@ export default function WorkspacePage() {
   const [linkDraftUrl, setLinkDraftUrl] = useState('');
   const connectorsRef = useRef(null);
   const createNoteOrTextAtDeskPointRef = useRef(null);
+  const createFrameAtDeskRectRef = useRef(null);
   const endEditingRef = useRef(null);
   const workspaceState = useWorkspace();
   const { elements, editingElementId, setEditingElementId, setElements, load: loadElements, dedupe: dedupeElements } =
@@ -114,6 +113,7 @@ export default function WorkspacePage() {
   const [mobileSheetDragging, setMobileSheetDragging] = useState(false);
   const [mobileBrushBarOpen, setMobileBrushBarOpen] = useState(false);
   const [mobileLinkOpen, setMobileLinkOpen] = useState(false);
+  const [mobileMembersOpen, setMobileMembersOpen] = useState(false);
 
   const [materialBlocks, setMaterialBlocks] = useState([]);
   const [materialBlockModal, setMaterialBlockModal] = useState(null);
@@ -142,18 +142,13 @@ export default function WorkspacePage() {
   const zoomPctRef = viewport.zoomPctRef;
   const viewOffsetRef = viewport.viewOffsetRef;
   const viewScaleRef = viewport.viewScaleRef;
-  const getCanvasPoint = viewport.getCanvasPoint;
   const getDeskPointFromClient = viewport.getDeskPointFromClient;
   const scheduleApplyViewVars = viewport.scheduleApplyViewVars;
   const persistViewDebounced = viewport.persistViewDebounced;
   const setViewOffset = viewport.setViewOffset;
   const isPanning = viewport.isPanning;
-  const setIsPanning = viewport.setIsPanning;
   const panStartRef = viewport.panStartRef;
-  const ensurePanRaf = viewport.ensurePanRaf;
   const mobilePinchRef = viewport.mobilePinchRef;
-  const ensurePinchRaf = viewport.ensurePinchRaf;
-  const pinchRafRef = viewport.pinchRafRef;
 
   const {
     searchOpen,
@@ -161,8 +156,6 @@ export default function WorkspacePage() {
     searchQuery,
     setSearchQuery,
     hasSearchQuery,
-    manualSearchIndex,
-    manualSearchHits,
     manualSearchHitIds,
     manualSearchResults,
     searchBtnRef,
@@ -201,9 +194,7 @@ export default function WorkspacePage() {
     commentInputRef,
     commentsListRef,
     commentsSheetRef,
-    commentsSheetDragRef,
     commentsSheetDragY,
-    setCommentsSheetDragY,
     commentsSheetDragging,
     openComments,
     submitComment,
@@ -227,7 +218,6 @@ export default function WorkspacePage() {
     aiListRef,
     aiSheetRef,
     aiSheetDragY,
-    setAiSheetDragY,
     aiSheetDragging,
     setAiError,
     sendAiMessage,
@@ -279,7 +269,7 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (!isMobile) return;
     if (mobileToolsOpen) setSearchOpen(false);
-  }, [isMobile, mobileToolsOpen]);
+  }, [isMobile, mobileToolsOpen, setSearchOpen]);
 
   useEffect(() => {
     if (!isMobile) return;
@@ -325,6 +315,7 @@ export default function WorkspacePage() {
     if (!el) return '';
     if (el.type === 'note') return el.note?.text ?? el.Note?.text ?? '';
     if (el.type === 'text') return el.text?.content ?? el.Text?.content ?? '';
+    if (el.type === 'frame') return el.frame?.title ?? el.Frame?.title ?? 'Frame';
     return '';
   }, []);
 
@@ -343,12 +334,14 @@ export default function WorkspacePage() {
     const link = el.type === 'link' ? el.link ?? el.Link : null;
     const drawing = el.type === 'drawing' ? el.drawing ?? el.Drawing : null;
     const connector = el.type === 'connector' ? el.connector ?? el.Connector : null;
+    const frame = el.type === 'frame' ? el.frame ?? el.Frame : null;
     if (el.type === 'note') return { text: el.content ?? '' };
     if (el.type === 'text') return { content: el.content ?? '' };
     if (el.type === 'document') return { title: doc?.title, url: doc?.url };
     if (el.type === 'link') return { title: link?.title, url: link?.url, previewImageUrl: link?.previewImageUrl };
     if (el.type === 'drawing') return { data: drawing?.data };
     if (el.type === 'connector') return { data: connector?.data };
+    if (el.type === 'frame') return { title: frame?.title ?? 'Frame' };
     return undefined;
   }, []);
 
@@ -401,6 +394,7 @@ export default function WorkspacePage() {
     if (vm.link == null && vm.Link != null) vm.link = vm.Link;
     if (vm.drawing == null && vm.Drawing != null) vm.drawing = vm.Drawing;
     if (vm.connector == null && vm.Connector != null) vm.connector = vm.Connector;
+    if (vm.frame == null && vm.Frame != null) vm.frame = vm.Frame;
 
     // Resolve /uploads URLs to the API origin when frontend is hosted separately.
     if (vm.type === 'document') {
@@ -493,6 +487,7 @@ export default function WorkspacePage() {
     interactionRef,
     materialBlockInteractionRef,
     createNoteOrTextAtDeskPointRef,
+    createFrameAtDeskRectRef,
     inputDebugEnabled,
     pushInputDebug,
     endEditingRef,
@@ -538,20 +533,10 @@ export default function WorkspacePage() {
     setConnectorsFollowDuringDrag,
     connectorHoverBlockId,
     setConnectorHoverBlockId,
-    flushConnectorDraft,
-    setConnectorDraftNext,
-    cancelConnectorDraft,
-    createConnectorOnDesk,
     startConnectorDrag,
     startConnectorDragFromBlock,
     startConnectorBendDrag,
-    getAnchorPoint,
-    pickHoverElementId,
-    pickSideAtPoint,
-    pickHoverBlockId,
-    pickSideAtPointForBlock,
     computeConnectorPathFromAnchors,
-    isConnectableElement,
     getLiveAnchorPoint,
     connectorElements,
     onSelectConnector,
@@ -605,12 +590,12 @@ export default function WorkspacePage() {
       window.removeEventListener('pointerup', onWindowPointerUpOrCancel, true);
       window.removeEventListener('pointercancel', onWindowPointerUpOrCancel, true);
     };
-  }, [inputDebugEnabled, pushInputDebug, stopInteractions, toolManager]);
+  }, [inputDebugEnabled, pushInputDebug, stopInteractions, toolManager, mobilePinchRef, panStartRef]);
 
   useEffect(() => {
     if (toolManager.activeTool !== 'link') return;
     window.setTimeout(() => linkInputRef.current?.focus?.(), 0);
-  }, [toolManager.activeTool]);
+  }, [toolManager.activeTool, toolManager]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -622,14 +607,14 @@ export default function WorkspacePage() {
       toolManager.setActiveTool('hand');
     }
     toolManager.cancelTools();
-  }, [isMobile, toolManager.activeTool]);
+  }, [isMobile, toolManager.activeTool, toolManager]);
 
   useEffect(() => {
     if (!isMobile) return;
     if (!mobileBrushBarOpen && (toolManager.activeTool === 'pen' || toolManager.activeTool === 'eraser')) {
       toolManager.setActiveTool('hand');
     }
-  }, [isMobile, mobileBrushBarOpen, toolManager.activeTool]);
+  }, [isMobile, mobileBrushBarOpen, toolManager.activeTool, toolManager]);
 
   const persistElement = async (el, opts = {}) => {
     if (!el?.id) return;
@@ -643,6 +628,7 @@ export default function WorkspacePage() {
     };
     const doc = el.type === 'document' ? el.document ?? el.Document : null;
     const link = el.type === 'link' ? el.link ?? el.Link : null;
+    const frame = el.type === 'frame' ? el.frame ?? el.Frame : null;
     const payload =
       el.type === 'note'
         ? { text: el.content ?? '' }
@@ -652,7 +638,9 @@ export default function WorkspacePage() {
             ? { title: doc?.title, url: doc?.url }
             : el.type === 'link'
               ? { title: link?.title, url: link?.url, previewImageUrl: link?.previewImageUrl }
-              : undefined;
+              : el.type === 'frame'
+                ? { title: frame?.title ?? 'Frame' }
+                : undefined;
 
     const updated = await updateElement(el.id, { ...base, payload });
     const vm = elementToVm(updated);
@@ -747,7 +735,8 @@ export default function WorkspacePage() {
     mobileSuppressDragPointerIdRef,
     setElementResizeOffset,
   });
-  const { maybeStartElementDrag, startResize, updateLocalElement, focusElement, getNextZIndex } = elementFrame;
+  const { maybeStartElementDrag, startResize, updateLocalElement, focusElement, getNextZIndex, getMinZIndex } =
+    elementFrame;
   updateLocalElementRef.current = updateLocalElement;
 
   const onElementPointerDown = (elementId, e) => {
@@ -846,8 +835,10 @@ export default function WorkspacePage() {
     }
 
     // More reliable than dblclick (which can be suppressed by pointer handlers).
+    // Frame: title edit only via double-click on the label, not on the area.
     if (e.detail === 2) {
-      beginEditing(elementId);
+      const el = elementsRef.current?.find?.((x) => sameId(x?.id, elementId)) ?? null;
+      if (el?.type !== 'frame') beginEditing(elementId);
     }
 
     // Allow dragging elements by holding LMB anywhere on the element.
@@ -878,6 +869,14 @@ export default function WorkspacePage() {
 
     if (toolManager.activeTool === 'hand' || toolManager.activeTool === 'pen' || toolManager.activeTool === 'eraser' || toolManager.activeTool === 'connector') return;
     ev.stopPropagation();
+    const el = elementsRef.current?.find?.((x) => sameId(x?.id, elementId)) ?? null;
+    // Frame: title edit only via double-click/double-tap on the label.
+    if (el?.type === 'frame') {
+      setSelectedElementIds(new Set([idKey(elementId)]));
+      setEditingElementId(null);
+      setSelectedMaterialBlockId(null);
+      return;
+    }
     if (editingElementId === elementId) return;
     beginEditing(elementId);
   };
@@ -890,6 +889,7 @@ export default function WorkspacePage() {
       }
       connectorDraftRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
   }, []);
 
   const queueNoteEdit = (elementId, text) => {
@@ -1241,6 +1241,64 @@ export default function WorkspacePage() {
   };
   createNoteOrTextAtDeskPointRef.current = createNoteOrTextAtDeskPoint;
 
+  const createFrameAtDeskRect = useCallback(
+    (deskRect) => {
+      const deskId = workspace?.id ?? workspace?.deskId ?? id;
+      if (!deskId) return;
+      const x = Math.round(deskRect.left ?? 0);
+      const y = Math.round(deskRect.top ?? 0);
+      const width = Math.max(80, Math.round(deskRect.width ?? 200));
+      const height = Math.max(60, Math.round(deskRect.height ?? 120));
+      const zIndex = getMinZIndex();
+      setActionError(null);
+      (async () => {
+        try {
+          const created = await createElementOnDesk(deskId, {
+            type: 'frame',
+            x,
+            y,
+            width,
+            height,
+            zIndex,
+            payload: { title: 'Frame' },
+          });
+          const vm = elementToVm(created);
+          if (vm?.id) createdElementIdsRef.current.add(vm.id);
+          setElements((prev) => upsertById(prev, vm));
+          if (!applyingHistoryRef.current) {
+            const snap = snapshotForHistory(vm);
+            if (deskId && snap) {
+              pushHistory({
+                kind: 'create-element',
+                deskId,
+                elementId: vm.id,
+                snapshot: snap,
+              });
+            }
+          }
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('Failed to create frame:', err?.response?.data || err);
+          setActionError(err?.response?.data?.error || err?.message || 'Failed to create frame');
+          window.setTimeout(() => setActionError(null), 4000);
+        }
+      })();
+    },
+    [
+      workspace,
+      id,
+      getMinZIndex,
+      setActionError,
+      elementToVm,
+      setElements,
+      applyingHistoryRef,
+      createdElementIdsRef,
+      snapshotForHistory,
+      pushHistory,
+    ]
+  );
+  createFrameAtDeskRectRef.current = createFrameAtDeskRect;
+
   const registerMaterialBlockNode = useCallback((blockId, node) => {
     const m = materialBlockNodeRef.current;
     if (node) m.set(blockId, node);
@@ -1299,7 +1357,19 @@ export default function WorkspacePage() {
         }
       })();
     },
-    [workspace?.id, workspace?.deskId, id, materialBlockModal, elementToVm, snapshotForHistory, getNextZIndex, pushHistory, setElements]
+    [
+      workspace?.id,
+      workspace?.deskId,
+      id,
+      materialBlockModal,
+      elementToVm,
+      snapshotForHistory,
+      getNextZIndex,
+      pushHistory,
+      setElements,
+      applyingHistoryRef,
+      createdElementIdsRef,
+    ]
   );
 
   const onCanvasPointerDown = (e) => toolManager.onCanvasPointerDown(e, editingElementId, editingElementIdRef);
@@ -1479,6 +1549,7 @@ export default function WorkspacePage() {
       window.removeEventListener('keydown', onKeyDown, { capture: true });
       window.removeEventListener('keyup', onKeyUp, { capture: true });
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- key handler: minimal deps to avoid re-subscribing
   }, [shortcuts, toolManager.activeTool, selectedConnectorId, undoEv, redoEv, isMobile, setElements]);
 
   useEffect(() => {
@@ -1610,7 +1681,18 @@ export default function WorkspacePage() {
       socketRef.current = null;
       setPresentUserIds([]);
     };
-  }, [workspace?.id, workspace?.deskId, id, commentsEnabled, elementToVm, normalizeReactions, setElements, setEditingElementId]);
+  }, [
+    workspace?.id,
+    workspace?.deskId,
+    id,
+    commentsEnabled,
+    elementToVm,
+    normalizeReactions,
+    setElements,
+    setEditingElementId,
+    setCommentsByElement,
+    setCommentsPanel,
+  ]);
 
   const mutateElementRef = useCallback((elementId, patch) => {
     if (!elementId || !patch) return;
@@ -1844,13 +1926,35 @@ export default function WorkspacePage() {
       {isMobile ? (
         <header className={`${styles.mobileTopBar} ${searchOpen ? styles.mobileTopBarSearch : ''}`}>
           {!searchOpen ? (
+            <>
             <div className={styles.mobileTopPill} role="banner" aria-label="Board header">
               <Link to="/home" className={styles.mobileTopIconBtn} aria-label="Home">
                 <Home size={20} />
               </Link>
-              <div className={styles.mobileBoardTitle} title={boardTitle}>
-                {boardTitle}
-              </div>
+              {workspace?.groupId ? (
+                <button
+                  type="button"
+                  className={styles.mobileBoardTitleBtn}
+                  title={boardTitle}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setMobileMembersOpen(true);
+                  }}
+                  aria-label={`${boardTitle}, нажмите чтобы открыть участников`}
+                >
+                  <span className={styles.mobileBoardTitleText}>{boardTitle}</span>
+                  <span className={styles.mobileBoardTitleIndicators}>
+                    {presentUserIds.length > 0 ? (
+                      <span className={styles.mobileBoardTitleBadge}>{presentUserIds.length}</span>
+                    ) : null}
+                    <ChevronDown size={12} className={styles.mobileBoardTitleChevron} />
+                  </span>
+                </button>
+              ) : (
+                <div className={styles.mobileBoardTitle} title={boardTitle}>
+                  {boardTitle}
+                </div>
+              )}
               <button
                 type="button"
                 className={styles.mobileTopIconBtn}
@@ -1861,7 +1965,7 @@ export default function WorkspacePage() {
                 <Search size={20} />
               </button>
               <div className={styles.mobileAvatarWrap} aria-label="Profile">
-                <UserMenu variant="bare" />
+                <UserMenu variant="bare" avatarSize="compact" />
               </div>
               <button type="button" className={styles.mobileTopIconBtn} aria-label="Share board" onClick={shareBoard}>
                 <Share2 size={20} />
@@ -1870,6 +1974,16 @@ export default function WorkspacePage() {
                 <MoreVertical size={20} />
               </button>
             </div>
+            {workspace?.groupId ? (
+              <MembersMenu
+                variant="modal"
+                groupId={workspace.groupId}
+                presentUserIds={new Set(presentUserIds)}
+                open={mobileMembersOpen}
+                onClose={() => setMobileMembersOpen(false)}
+              />
+            ) : null}
+            </>
           ) : (
             <div ref={mobileSearchBarRef} className={styles.mobileSearchBar} role="search" aria-label="Search">
               <Search size={20} className={styles.mobileSearchIcon} aria-hidden="true" />
@@ -2597,6 +2711,17 @@ export default function WorkspacePage() {
                 top: toolManager.selectionRect.top,
                 width: toolManager.selectionRect.width,
                 height: toolManager.selectionRect.height,
+              }}
+            />
+          ) : null}
+          {toolManager.liveFrameRect ? (
+            <div
+              className={styles.liveFrameRect}
+              style={{
+                left: toolManager.liveFrameRect.left,
+                top: toolManager.liveFrameRect.top,
+                width: toolManager.liveFrameRect.width,
+                height: toolManager.liveFrameRect.height,
               }}
             />
           ) : null}

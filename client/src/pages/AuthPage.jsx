@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Home, Lock, Mail, Loader2, UserPlus, LogIn, AtSign, User, GraduationCap } from 'lucide-react';
+import { Home, Lock, Mail, Loader2, LogIn, AtSign, User, GraduationCap } from 'lucide-react';
 import { googleAuth, login, registration } from '../http/userAPI';
 import styles from '../styles/AuthPage.module.css';
 
@@ -187,11 +187,6 @@ export default function AuthPage() {
         <div className={styles.card}>
           <aside className={styles.left}>
             <div className={styles.leftTitle}>{isRegister ? 'Добро пожаловать!' : 'С возвращением'}</div>
-            <div className={styles.leftSub}>
-              {isRegister
-                ? 'Создайте аккаунт, чтобы пользоваться досками, календарём и настройками.'
-                : 'Войдите, чтобы открыть свои доски и продолжить работу.'}
-            </div>
 
             <div className={styles.features}>
               <div className={styles.featureRow}>
@@ -208,27 +203,20 @@ export default function AuthPage() {
               </div>
             </div>
 
-            <button type="button" className={styles.switchBtn} onClick={switchMode}>
-              {isRegister ? (
-                <>
-                  <LogIn size={18} />
-                  У меня уже есть аккаунт
-                </>
-              ) : (
-                <>
-                  <UserPlus size={18} />
-                  Создать аккаунт
-                </>
-              )}
-            </button>
+            {isRegister && (
+              <button type="button" className={styles.switchBtn} onClick={switchMode}>
+                <LogIn size={18} />
+                У меня уже есть аккаунт
+              </button>
+            )}
           </aside>
 
           <section className={styles.right}>
             <div className={styles.formTop}>
               <div className={styles.formTitle}>{isRegister ? 'Регистрация' : 'Вход'}</div>
-              <div className={styles.formSub}>
-                {isRegister ? 'Заполните профиль и задайте пароль.' : 'Введите email и пароль.'}
-              </div>
+              {isRegister && (
+                <div className={styles.formSub}>Заполните профиль и задайте пароль.</div>
+              )}
             </div>
 
             <form className={styles.form} onSubmit={onSubmit}>

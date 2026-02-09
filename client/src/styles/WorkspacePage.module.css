@@ -440,11 +440,71 @@
   padding: 0 2px;
 }
 
+.mobileBoardTitleBtn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 10px;
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+
+.mobileBoardTitleBtn:hover,
+.mobileBoardTitleBtn:focus,
+.mobileBoardTitleBtn:active {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.mobileBoardTitleText {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.mobileBoardTitleIndicators {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 8px;
+}
+
+.mobileBoardTitleBadge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: white;
+  font-size: 10px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+
+.mobileBoardTitleChevron {
+  color: rgba(15, 23, 42, 0.5);
+}
+
 .mobileAvatarWrap {
   width: 38px;
   height: 38px;
   display: grid;
   place-items: center;
+}
+
+.mobileAvatarWrap > * {
+  flex-shrink: 0;
 }
 
 .mobileSearchBar {
@@ -2290,6 +2350,65 @@
   transform: none;
 }
 
+/* Frame: light blue zone, label above area (not overlapping), +50% size */
+.frameFill {
+  position: absolute;
+  inset: 0;
+  background: rgba(185, 227, 255, 0.818);
+  border: 2px solid rgba(123, 174, 255, 0.45);
+  border-radius: 8px;
+  pointer-events: none;
+}
+.frameLabel {
+  position: absolute;
+  top: auto;
+  bottom: 100%;
+  left: 12px;
+  margin-bottom: 6px;
+  padding: 6px 15px;
+  border-radius: 8px;
+  background: rgba(29, 78, 216, 0.92);
+  color: white;
+  font-size: 18px;
+  font-weight: 600;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  white-space: nowrap;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.frameLabelInput {
+  position: absolute;
+  top: auto;
+  bottom: 100%;
+  left: 12px;
+  margin-bottom: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(29, 78, 216, 0.92);
+  color: white;
+  font-size: 18px;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  min-width: 90px;
+  max-width: calc(100% - 24px);
+}
+.frameLabelInput::placeholder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Frame: selection border exactly on contour (no inset) */
+.transformBoxFrame {
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(43, 108, 255, 0.9);
+  border-radius: 20px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(43, 108, 255, 0.2);
+}
+
 .resizeHandle {
   position: absolute;
   width: 10px;
@@ -2359,6 +2478,14 @@
   position: absolute;
   border: 2px dotted rgba(0, 0, 0, 0.9);
   background: transparent;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.liveFrameRect {
+  position: absolute;
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  background: rgba(147, 197, 253, 0.25);
   pointer-events: none;
   box-sizing: border-box;
 }

@@ -16,12 +16,11 @@ export function getApiBaseUrl() {
   if (fromEnv) return fromEnv;
 
   // Helpful fallback for the common "frontend on Vercel, backend elsewhere" setup.
-  // This keeps production working even if the env var wasn't configured.
   if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) {
     return DEFAULT_PROD_API_URL;
   }
 
-  // Empty means: use same-origin (or CRA proxy in development).
+  // Empty means: use same-origin (e.g. when backend is served with frontend or via reverse proxy).
   return '';
 }
 
@@ -42,5 +41,14 @@ export function getSocketBaseUrl() {
   }
 
   return '';
+}
+
+/** Resolve upload/avatar URL for img src: relative paths go to API origin when cross-origin. */
+export function resolveUploadUrl(url) {
+  if (!url || !String(url).trim()) return '';
+  const s = String(url).trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  const base = getApiBaseUrl();
+  return base ? `${normalizeUrl(base)}${s.startsWith('/') ? s : `/${s}`}` : s;
 }
 

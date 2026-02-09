@@ -51,7 +51,7 @@ export function ElementWrapper({
     >
       {children}
       {isSelected && renderActions ? (
-        <div className={s.transformBox}>
+        <div className={elementType === 'frame' ? (s.transformBoxFrame ?? s.transformBox) : s.transformBox}>
           {renderActions}
           {elementType !== 'note' ? (
             <>

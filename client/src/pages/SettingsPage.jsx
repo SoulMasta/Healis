@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ChevronRight, Home, Keyboard, Moon, Shield, User, LogOut } from 'lucide-react';
 import styles from '../styles/SettingsPage.module.css';
 import { getProfile, updateProfile, uploadAvatar, serverLogout } from '../http/userAPI';
+import { resolveUploadUrl } from '../config/runtime';
 import { useBreakpoints } from '../hooks/useBreakpoints';
 import MobileLayout from '../mobile/MobileLayout';
 import {
@@ -266,7 +267,7 @@ export default function SettingsPage() {
           <div className={styles.avatarRow}>
             <div className={styles.avatarBox} aria-hidden="true">
               {profile?.avatarUrl ? (
-                <img className={styles.avatarImg} src={profile.avatarUrl} alt="" />
+                <img className={styles.avatarImg} src={resolveUploadUrl(profile.avatarUrl)} alt="" />
               ) : (
                 <div className={styles.avatarPlaceholder}>@</div>
               )}

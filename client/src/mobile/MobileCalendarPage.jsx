@@ -484,7 +484,7 @@ export default function MobileCalendarPage() {
 
   return (
     <MobileLayout
-      title="Календарь"
+      title=""
       padded={false}
       leftSlot={
         canManageMyGroup ? (

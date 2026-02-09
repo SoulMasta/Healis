@@ -22,12 +22,14 @@ const User = sequelize.define('user', {
 });
 
 // Long-lived refresh tokens (stored as hashes; raw tokens never stored in DB).
+// deviceId: optional client fingerprint for PWA/multi-device; supports reuse detection.
 const RefreshToken = sequelize.define(
   'refresh_token',
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
     tokenHash: { type: DataTypes.STRING, allowNull: false, unique: true },
+    deviceId: { type: DataTypes.STRING, allowNull: true },
     expiresAt: { type: DataTypes.DATE, allowNull: false },
     revokedAt: { type: DataTypes.DATE, allowNull: true },
     replacedByTokenHash: { type: DataTypes.STRING, allowNull: true },
@@ -35,7 +37,7 @@ const RefreshToken = sequelize.define(
     ip: { type: DataTypes.STRING, allowNull: true },
   },
   {
-    indexes: [{ fields: ['userId'] }, { fields: ['expiresAt'] }],
+    indexes: [{ fields: ['userId'] }, { fields: ['expiresAt'] }, { fields: ['userId', 'deviceId'] }],
   }
 );
 
@@ -158,7 +160,7 @@ const Element = sequelize.define('element', {
   type: {
     type: DataTypes.STRING,
     allowNull: false,
-    validate: { isIn: [['note', 'text', 'document', 'link', 'drawing', 'connector']] },
+    validate: { isIn: [['note', 'text', 'document', 'link', 'drawing', 'connector', 'frame']] },
   },
   x: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   y: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
@@ -264,6 +266,17 @@ const Connector = sequelize.define('connector', {
     references: { model: Element, key: 'elementId' },
   },
   data: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+});
+
+// Frame: background zone on the board (always behind other elements); has optional title.
+const Frame = sequelize.define('frame', {
+  elementId: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+    references: { model: Element, key: 'elementId' },
+  },
+  title: { type: DataTypes.STRING, allowNull: false, defaultValue: 'Frame' },
 });
 
 // Element comments (thread per element).
@@ -608,6 +621,9 @@ Drawing.belongsTo(Element, { foreignKey: 'elementId' });
 Element.hasOne(Connector, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Connector.belongsTo(Element, { foreignKey: 'elementId' });
 
+Element.hasOne(Frame, { foreignKey: 'elementId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+Frame.belongsTo(Element, { foreignKey: 'elementId' });
+
 Desk.hasMany(Comment, { foreignKey: 'deskId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Comment.belongsTo(Desk, { foreignKey: 'deskId' });
 
@@ -686,6 +702,7 @@ module.exports = {
   Link,
   Drawing,
   Connector,
+  Frame,
   Comment,
   CalendarEvent,
   CalendarGroupPeriod,

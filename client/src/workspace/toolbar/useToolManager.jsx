@@ -7,6 +7,7 @@ import {
   createSelectTool,
   createHandTool,
   createConnectorTool,
+  createFrameTool,
   createNoteTool,
   createTextTool,
   createMaterialBlockTool,
@@ -40,6 +41,7 @@ export function useToolManager({
   interactionRef,
   materialBlockInteractionRef,
   createNoteOrTextAtDeskPointRef,
+  createFrameAtDeskRectRef,
   inputDebugEnabled,
   pushInputDebug,
   endEditingRef,
@@ -47,6 +49,7 @@ export function useToolManager({
 }) {
   const [activeTool, setActiveTool] = useState(() => (isMobile ? 'hand' : TOOLS[0].id));
   const [selectionRect, setSelectionRect] = useState(null);
+  const [liveFrameRect, setLiveFrameRect] = useState(null);
   const [brushColor, setBrushColor] = useState(DEFAULT_BRUSH_COLOR);
   const [brushWidth, setBrushWidth] = useState(DEFAULT_BRUSH_WIDTH);
   const [liveStroke, setLiveStroke] = useState(null);
@@ -126,6 +129,8 @@ export function useToolManager({
       setConnectorHoverBlockId,
       isMobile,
       createNoteOrTextAtDeskPointRef,
+      createFrameAtDeskRectRef,
+      setLiveFrameRect,
       setMaterialBlocks,
       setActiveTool,
     }),
@@ -157,6 +162,8 @@ export function useToolManager({
       pickHoverBlockId,
       isMobile,
       setMaterialBlocks,
+      createFrameAtDeskRectRef,
+      setLiveFrameRect,
     ]
   );
 
@@ -167,6 +174,7 @@ export function useToolManager({
       select: createSelectTool(ctx),
       hand: createHandTool(ctx),
       connector: createConnectorTool(ctx),
+      frame: createFrameTool(ctx),
       note: createNoteTool(ctx),
       text: createTextTool(ctx),
       material_block: createMaterialBlockTool(ctx),
@@ -177,6 +185,7 @@ export function useToolManager({
   const cancelTools = useCallback(() => {
     selectStartRef.current = null;
     setSelectionRect(null);
+    setLiveFrameRect(null);
     liveStrokeRef.current = null;
     setLiveStroke(null);
     eraseStateRef.current.active = false;
@@ -184,7 +193,8 @@ export function useToolManager({
     tools.pen?.cancel?.();
     tools.eraser?.cancel?.();
     tools.select?.cancel?.();
-  }, [tools.pen, tools.eraser, tools.select, setSelectionRect, setLiveStroke]);
+    tools.frame?.cancel?.();
+  }, [tools.pen, tools.eraser, tools.select, tools.frame, setSelectionRect, setLiveStroke, setLiveFrameRect]);
 
   const onCanvasPointerDown = useCallback(
     (e, editingElementId, editingElementIdRef) => {
@@ -467,6 +477,7 @@ export function useToolManager({
     setBrushWidth,
     liveStroke,
     selectionRect,
+    liveFrameRect,
     liveStrokeRef,
     eraseStateRef,
     selectStartRef,

@@ -89,6 +89,20 @@ export function buildManualBoardSearchIndex(elements = []) {
       }
       continue;
     }
+
+    if (el.type === 'frame') {
+      const frame = el.frame ?? el.Frame ?? {};
+      const title = String(frame?.title ?? 'Frame');
+      idx.push({
+        elementId: el.id,
+        elementType: el.type,
+        field: 'title',
+        label: 'Frame',
+        text: title,
+        norm: normalize(title),
+      });
+      continue;
+    }
   }
   return idx;
 }

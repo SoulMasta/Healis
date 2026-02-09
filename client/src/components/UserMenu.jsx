@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, LogOut, UserRound, Users, ChevronDown } from 'lucide-react';
 import { getToken, serverLogout } from '../http/userAPI';
+import { resolveUploadUrl } from '../config/runtime';
 import styles from '../styles/UserMenu.module.css';
 
 function safeParseJwt(token) {
@@ -18,7 +19,7 @@ function safeParseJwt(token) {
   }
 }
 
-export default function UserMenu({ variant = 'default', iconClickMode = 'menu' }) {
+export default function UserMenu({ variant = 'default', iconClickMode = 'menu', avatarSize }) {
   const navigate = useNavigate();
   const rootRef = useRef(null);
 
@@ -28,7 +29,7 @@ export default function UserMenu({ variant = 'default', iconClickMode = 'menu' }
   const user = useMemo(() => (token ? safeParseJwt(token) : null), [token]);
   const email = user?.email || '';
   const username = user?.username ? `@${user.username}` : '';
-  const avatarUrl = user?.avatarUrl || '';
+  const avatarUrl = resolveUploadUrl(user?.avatarUrl || '');
   const initial = (email || 'U').trim().charAt(0).toUpperCase() || 'U';
 
   useEffect(() => {
@@ -99,22 +100,23 @@ export default function UserMenu({ variant = 'default', iconClickMode = 'menu' }
     );
   }
 
+  const isCompactAvatar = avatarSize === 'compact';
   return (
-    <div className={styles.root} ref={rootRef}>
+    <div className={`${styles.root} ${isCompactAvatar ? styles.rootAvatarCompact : ''}`} ref={rootRef}>
       <button
         type="button"
         className={
           isBare ? styles.avatarBtnBare : isIcon ? styles.avatarBtnIcon : isCompact ? styles.avatarBtnCompact : styles.avatarBtn
         }
         onClick={() => {
-          if (isIcon && iconClickMode === 'settings') {
+          if ((isIcon || isBare) && iconClickMode === 'settings') {
             goAccount();
             return;
           }
           setOpen((v) => !v);
         }}
-        aria-haspopup={isIcon && iconClickMode === 'settings' ? undefined : 'menu'}
-        aria-expanded={isIcon && iconClickMode === 'settings' ? undefined : open}
+        aria-haspopup={(isIcon || isBare) && iconClickMode === 'settings' ? undefined : 'menu'}
+        aria-expanded={(isIcon || isBare) && iconClickMode === 'settings' ? undefined : open}
         aria-label={isIcon || isBare ? 'Профиль' : undefined}
         title={isIcon || isBare ? 'Профиль' : undefined}
       >

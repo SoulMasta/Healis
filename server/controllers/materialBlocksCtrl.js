@@ -36,6 +36,17 @@ async function getBlockWithDesk(blockId, userId) {
   return { block, desk };
 }
 
+async function getDeskForCard(cardId, userId) {
+  const card = await MaterialCard.findByPk(cardId);
+  if (!card) return null;
+  const block = await MaterialBlock.findByPk(card.blockId);
+  if (!block) return null;
+  const desk = await Desk.findByPk(block.boardId);
+  if (!desk) return null;
+  const canManage = await canManageDesk(desk, userId);
+  return canManage ? desk : null;
+}
+
 class MaterialBlocksController {
   async listByDesk(req, res) {
     try {
@@ -240,7 +251,10 @@ class MaterialBlocksController {
 
   async createCard(req, res) {
     try {
-      const { blockId } = req.params;
+      const blockIdRaw = req.params.blockId;
+      const blockId = typeof blockIdRaw === 'string' ? parseInt(blockIdRaw, 10) : blockIdRaw;
+      if (Number.isNaN(blockId)) return res.status(400).json({ error: 'Invalid block id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
@@ -258,24 +272,25 @@ class MaterialBlocksController {
       });
       const full = await MaterialCard.findByPk(card.id, {
         include: [
-          { model: User, as: 'User', attributes: ['id', 'nickname', 'username'], required: false },
-          { model: MaterialFile, as: 'MaterialFiles', required: false },
-          { model: MaterialLink, as: 'MaterialLinks', required: false },
-          { model: MaterialCardTag, as: 'MaterialCardTags', required: false },
+          { model: User, as: 'user', attributes: ['id', 'nickname', 'username'], required: false },
+          { model: MaterialFile, as: 'material_files', attributes: ['id', 'fileUrl', 'fileType', 'size'], required: false },
+          { model: MaterialLink, as: 'material_links', attributes: ['id', 'url', 'title'], required: false },
+          { model: MaterialCardTag, as: 'material_card_tags', attributes: ['id', 'tag'], required: false },
         ],
       });
       const j = full.toJSON();
-      j.created_by = j.User ? { id: j.User.id, nickname: j.User.nickname, username: j.User.username } : null;
-      j.attachments = (j.MaterialFiles || []).map((f) => ({ id: f.id, file_url: f.fileUrl, file_type: f.fileType, size: f.size }));
-      j.links = (j.MaterialLinks || []).map((l) => ({ id: l.id, url: l.url, title: l.title }));
-      j.tags = (j.MaterialCardTags || []).map((t) => t.tag);
-      delete j.User;
-      delete j.MaterialFiles;
-      delete j.MaterialLinks;
-      delete j.MaterialCardTags;
+      j.created_by = j.user ? { id: j.user.id, nickname: j.user.nickname, username: j.user.username } : null;
+      j.attachments = (j.material_files || []).map((f) => ({ id: f.id, file_url: f.fileUrl, file_type: f.fileType, size: f.size }));
+      j.links = (j.material_links || []).map((l) => ({ id: l.id, url: l.url, title: l.title }));
+      j.tags = (j.material_card_tags || []).map((t) => t.tag);
+      delete j.user;
+      delete j.material_files;
+      delete j.material_links;
+      delete j.material_card_tags;
       return res.status(201).json(j);
     } catch (error) {
-      return res.status(500).json({ error: error.message });
+      console.error('MaterialBlocksCtrl.createCard', error);
+      return res.status(500).json({ error: error.message || 'Create card failed' });
     }
   }
 
@@ -287,29 +302,29 @@ class MaterialBlocksController {
 
       const card = await MaterialCard.findByPk(cardId, {
         include: [
-          { model: MaterialBlock, as: 'MaterialBlock', include: [{ model: Desk, as: 'Desk' }] },
-          { model: User, as: 'User', attributes: ['id', 'nickname', 'username'], required: false },
-          { model: MaterialFile, as: 'MaterialFiles', required: false },
-          { model: MaterialLink, as: 'MaterialLinks', required: false },
-          { model: MaterialCardTag, as: 'MaterialCardTags', required: false },
+          { model: User, as: 'user', attributes: ['id', 'nickname', 'username'], required: false },
+          { model: MaterialFile, as: 'material_files', attributes: ['id', 'fileUrl', 'fileType', 'size'], required: false },
+          { model: MaterialLink, as: 'material_links', attributes: ['id', 'url', 'title'], required: false },
+          { model: MaterialCardTag, as: 'material_card_tags', attributes: ['id', 'tag'], required: false },
         ],
       });
       if (!card) return res.status(404).json({ error: 'Card not found' });
-      const desk = card.MaterialBlock?.Desk || (card.MaterialBlock && (await Desk.findByPk(card.MaterialBlock.boardId)));
+      const block = await MaterialBlock.findByPk(card.blockId);
+      if (!block) return res.status(404).json({ error: 'Card not found' });
+      const desk = await Desk.findByPk(block.boardId);
       if (!desk) return res.status(404).json({ error: 'Card not found' });
       const ok = await canReadDesk(desk, userId);
       if (!ok) return res.status(404).json({ error: 'Card not found' });
 
       const j = card.toJSON();
-      j.created_by = j.User ? { id: j.User.id, nickname: j.User.nickname, username: j.User.username } : null;
-      j.attachments = (j.MaterialFiles || []).map((f) => ({ id: f.id, file_url: f.fileUrl, file_type: f.fileType, size: f.size }));
-      j.links = (j.MaterialLinks || []).map((l) => ({ id: l.id, url: l.url, title: l.title }));
-      j.tags = (j.MaterialCardTags || []).map((t) => t.tag);
-      delete j.User;
-      delete j.MaterialFiles;
-      delete j.MaterialLinks;
-      delete j.MaterialCardTags;
-      delete j.MaterialBlock;
+      j.created_by = j.user ? { id: j.user.id, nickname: j.user.nickname, username: j.user.username } : null;
+      j.attachments = (j.material_files || []).map((f) => ({ id: f.id, file_url: f.fileUrl, file_type: f.fileType, size: f.size }));
+      j.links = (j.material_links || []).map((l) => ({ id: l.id, url: l.url, title: l.title }));
+      j.tags = (j.material_card_tags || []).map((t) => t.tag);
+      delete j.user;
+      delete j.material_files;
+      delete j.material_links;
+      delete j.material_card_tags;
       return res.json(j);
     } catch (error) {
       return res.status(500).json({ error: error.message });
@@ -318,88 +333,92 @@ class MaterialBlocksController {
 
   async updateCard(req, res) {
     try {
-      const { cardId } = req.params;
+      const cardIdRaw = req.params.cardId;
+      const cardId = typeof cardIdRaw === 'string' ? parseInt(cardIdRaw, 10) : cardIdRaw;
+      if (Number.isNaN(cardId)) return res.status(400).json({ error: 'Invalid card id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-      const card = await MaterialCard.findByPk(cardId, {
-        include: [{ model: MaterialBlock, as: 'MaterialBlock' }],
-      });
-      if (!card) return res.status(404).json({ error: 'Card not found' });
-      const desk = card.MaterialBlock && (await Desk.findByPk(card.MaterialBlock.boardId));
+      const desk = await getDeskForCard(cardId, userId);
       if (!desk) return res.status(404).json({ error: 'Card not found' });
-      const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
+
+      const card = await MaterialCard.findByPk(cardId);
+      if (!card) return res.status(404).json({ error: 'Card not found' });
 
       const { title, content } = req.body || {};
-      if (title !== undefined) await card.update({ title: String(title).trim() || card.title });
-      if (content !== undefined) await card.update({ content: String(content) });
+      const updates = {};
+      if (title !== undefined) updates.title = String(title).trim() || card.title;
+      if (content !== undefined) updates.content = String(content);
+      if (Object.keys(updates).length) await card.update(updates);
 
       const full = await MaterialCard.findByPk(card.id, {
         include: [
-          { model: User, as: 'User', attributes: ['id', 'nickname', 'username'], required: false },
-          { model: MaterialFile, as: 'MaterialFiles', required: false },
-          { model: MaterialLink, as: 'MaterialLinks', required: false },
-          { model: MaterialCardTag, as: 'MaterialCardTags', required: false },
+          { model: User, as: 'user', attributes: ['id', 'nickname', 'username'], required: false },
+          { model: MaterialFile, as: 'material_files', attributes: ['id', 'fileUrl', 'fileType', 'size'], required: false },
+          { model: MaterialLink, as: 'material_links', attributes: ['id', 'url', 'title'], required: false },
+          { model: MaterialCardTag, as: 'material_card_tags', attributes: ['id', 'tag'], required: false },
         ],
       });
       const j = full.toJSON();
-      j.created_by = j.User ? { id: j.User.id, nickname: j.User.nickname, username: j.User.username } : null;
-      j.attachments = (j.MaterialFiles || []).map((f) => ({ id: f.id, file_url: f.fileUrl, file_type: f.fileType, size: f.size }));
-      j.links = (j.MaterialLinks || []).map((l) => ({ id: l.id, url: l.url, title: l.title }));
-      j.tags = (j.MaterialCardTags || []).map((t) => t.tag);
-      delete j.User;
-      delete j.MaterialFiles;
-      delete j.MaterialLinks;
-      delete j.MaterialCardTags;
+      j.created_by = j.user ? { id: j.user.id, nickname: j.user.nickname, username: j.user.username } : null;
+      j.attachments = (j.material_files || []).map((f) => ({ id: f.id, file_url: f.fileUrl, file_type: f.fileType, size: f.size }));
+      j.links = (j.material_links || []).map((l) => ({ id: l.id, url: l.url, title: l.title }));
+      j.tags = (j.material_card_tags || []).map((t) => t.tag);
+      delete j.user;
+      delete j.material_files;
+      delete j.material_links;
+      delete j.material_card_tags;
       return res.json(j);
     } catch (error) {
-      return res.status(500).json({ error: error.message });
+      console.error('MaterialBlocksCtrl.updateCard', error);
+      return res.status(500).json({ error: error.message || 'Update failed' });
     }
   }
 
   async deleteCard(req, res) {
     try {
-      const { cardId } = req.params;
+      const cardIdRaw = req.params.cardId;
+      const cardId = typeof cardIdRaw === 'string' ? parseInt(cardIdRaw, 10) : cardIdRaw;
+      if (Number.isNaN(cardId)) return res.status(400).json({ error: 'Invalid card id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-      const card = await MaterialCard.findByPk(cardId, {
-        include: [{ model: MaterialBlock, as: 'MaterialBlock' }],
-      });
-      if (!card) return res.status(404).json({ error: 'Card not found' });
-      const desk = card.MaterialBlock && (await Desk.findByPk(card.MaterialBlock.boardId));
+      const desk = await getDeskForCard(cardId, userId);
       if (!desk) return res.status(404).json({ error: 'Card not found' });
-      const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
+
+      const card = await MaterialCard.findByPk(cardId);
+      if (!card) return res.status(404).json({ error: 'Card not found' });
 
       await card.destroy();
       return res.json({ message: 'Card deleted' });
     } catch (error) {
-      return res.status(500).json({ error: error.message });
+      console.error('MaterialBlocksCtrl.deleteCard', error);
+      return res.status(500).json({ error: error.message || 'Delete failed' });
     }
   }
 
   async uploadCardFile(req, res) {
     try {
-      const { cardId } = req.params;
+      const cardIdRaw = req.params.cardId;
+      const cardId = typeof cardIdRaw === 'string' ? parseInt(cardIdRaw, 10) : cardIdRaw;
+      if (Number.isNaN(cardId)) return res.status(400).json({ error: 'Invalid card id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-      const card = await MaterialCard.findByPk(cardId, {
-        include: [{ model: MaterialBlock, as: 'MaterialBlock' }],
-      });
-      if (!card) return res.status(404).json({ error: 'Card not found' });
-      const desk = card.MaterialBlock && (await Desk.findByPk(card.MaterialBlock.boardId));
+      const desk = await getDeskForCard(cardId, userId);
       if (!desk) return res.status(404).json({ error: 'Card not found' });
-      const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
+
+      const card = await MaterialCard.findByPk(cardId);
+      if (!card) return res.status(404).json({ error: 'Card not found' });
 
       const file = req.file;
       if (!file) return res.status(400).json({ error: 'No file provided' });
 
       const filename = file.filename || path.basename(file.path || '');
-      const fileUrl = `/uploads/${userId}/card/${cardId}/${encodeURIComponent(filename)}`;
+      const fileUrl = `/uploads/${userId}/card/${card.id}/${encodeURIComponent(filename)}`;
       const mf = await MaterialFile.create({
         cardId: card.id,
         fileUrl,
@@ -419,18 +438,18 @@ class MaterialBlocksController {
 
   async addCardLink(req, res) {
     try {
-      const { cardId } = req.params;
+      const cardIdRaw = req.params.cardId;
+      const cardId = typeof cardIdRaw === 'string' ? parseInt(cardIdRaw, 10) : cardIdRaw;
+      if (Number.isNaN(cardId)) return res.status(400).json({ error: 'Invalid card id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-      const card = await MaterialCard.findByPk(cardId, {
-        include: [{ model: MaterialBlock, as: 'MaterialBlock' }],
-      });
-      if (!card) return res.status(404).json({ error: 'Card not found' });
-      const desk = card.MaterialBlock && (await Desk.findByPk(card.MaterialBlock.boardId));
+      const desk = await getDeskForCard(cardId, userId);
       if (!desk) return res.status(404).json({ error: 'Card not found' });
-      const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
+
+      const card = await MaterialCard.findByPk(cardId);
+      if (!card) return res.status(404).json({ error: 'Card not found' });
 
       const { url, title } = req.body || {};
       if (!url || !String(url).trim()) return res.status(400).json({ error: 'url is required' });
@@ -447,18 +466,18 @@ class MaterialBlocksController {
 
   async deleteCardLink(req, res) {
     try {
-      const { linkId } = req.params;
+      const linkIdRaw = req.params.linkId;
+      const linkId = typeof linkIdRaw === 'string' ? parseInt(linkIdRaw, 10) : linkIdRaw;
+      if (Number.isNaN(linkId)) return res.status(400).json({ error: 'Invalid link id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-      const link = await MaterialLink.findByPk(linkId, {
-        include: [{ model: MaterialCard, as: 'MaterialCard', include: [{ model: MaterialBlock, as: 'MaterialBlock' }] }],
-      });
+      const link = await MaterialLink.findByPk(linkId);
       if (!link) return res.status(404).json({ error: 'Link not found' });
-      const desk = link.MaterialCard?.MaterialBlock && (await Desk.findByPk(link.MaterialCard.MaterialBlock.boardId));
+
+      const desk = await getDeskForCard(link.cardId, userId);
       if (!desk) return res.status(404).json({ error: 'Link not found' });
-      const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
 
       await link.destroy();
       return res.json({ message: 'Link deleted' });
@@ -469,18 +488,18 @@ class MaterialBlocksController {
 
   async deleteCardFile(req, res) {
     try {
-      const { fileId } = req.params;
+      const fileIdRaw = req.params.fileId;
+      const fileId = typeof fileIdRaw === 'string' ? parseInt(fileIdRaw, 10) : fileIdRaw;
+      if (Number.isNaN(fileId)) return res.status(400).json({ error: 'Invalid file id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-      const mf = await MaterialFile.findByPk(fileId, {
-        include: [{ model: MaterialCard, as: 'MaterialCard', include: [{ model: MaterialBlock, as: 'MaterialBlock' }] }],
-      });
+      const mf = await MaterialFile.findByPk(fileId);
       if (!mf) return res.status(404).json({ error: 'File not found' });
-      const desk = mf.MaterialCard?.MaterialBlock && (await Desk.findByPk(mf.MaterialCard.MaterialBlock.boardId));
+
+      const desk = await getDeskForCard(mf.cardId, userId);
       if (!desk) return res.status(404).json({ error: 'File not found' });
-      const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
 
       await mf.destroy();
       return res.json({ message: 'File deleted' });
@@ -491,18 +510,18 @@ class MaterialBlocksController {
 
   async setCardTags(req, res) {
     try {
-      const { cardId } = req.params;
+      const cardIdRaw = req.params.cardId;
+      const cardId = typeof cardIdRaw === 'string' ? parseInt(cardIdRaw, 10) : cardIdRaw;
+      if (Number.isNaN(cardId)) return res.status(400).json({ error: 'Invalid card id' });
+
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: 'Not authorized' });
 
-      const card = await MaterialCard.findByPk(cardId, {
-        include: [{ model: MaterialBlock, as: 'MaterialBlock' }],
-      });
-      if (!card) return res.status(404).json({ error: 'Card not found' });
-      const desk = card.MaterialBlock && (await Desk.findByPk(card.MaterialBlock.boardId));
+      const desk = await getDeskForCard(cardId, userId);
       if (!desk) return res.status(404).json({ error: 'Card not found' });
-      const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
+
+      const card = await MaterialCard.findByPk(cardId);
+      if (!card) return res.status(404).json({ error: 'Card not found' });
 
       const tags = Array.isArray(req.body?.tags) ? req.body.tags.map((t) => String(t).trim()).filter(Boolean) : [];
       await MaterialCardTag.destroy({ where: { cardId: card.id } });

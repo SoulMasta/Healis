@@ -15,7 +15,154 @@ import {
   renderHighlightedText,
   TEXT_PREVIEW_EXTS,
 } from '../../utils/boardRenderUtils';
+import { useDoubleTap } from '../../hooks/useDoubleTap';
 import styles from '../../styles/WorkspacePage.module.css';
+
+const FrameElement = React.memo(function FrameElement({
+  el,
+  isSelected,
+  isEditing,
+  dragPos,
+  resizeOffset,
+  deletingElementId,
+  activeTool,
+  connectorHoverElementId,
+  connectorFromElementId,
+  connectorToHoverElementId,
+  registerNode,
+  onPointerDown,
+  onElementClick,
+  startResize,
+  handleDeleteElement,
+  beginEditing,
+  endEditing,
+  updateLocalElement,
+  persistElement,
+  startConnectorDrag,
+  styles: s,
+}) {
+  const elementId = el?.id;
+  const frame = el?.frame ?? el?.Frame;
+  const title = frame?.title ?? 'Frame';
+  const [draftTitle, setDraftTitle] = React.useState(title);
+  const inputRef = React.useRef(null);
+  React.useEffect(() => {
+    if (isEditing) {
+      setDraftTitle(title);
+      inputRef.current?.focus?.();
+    }
+  }, [isEditing, title]);
+  const commitTitle = React.useCallback(() => {
+    const t = String(draftTitle ?? '').trim() || 'Frame';
+    updateLocalElement?.(elementId, { frame: { ...(frame || {}), title: t } });
+    endEditing?.();
+    const current = { ...el, frame: { ...(frame || {}), title: t } };
+    persistElement?.(current, {}).catch(() => {});
+  }, [elementId, draftTitle, frame, el, updateLocalElement, endEditing, persistElement]);
+  const openFrameTitleEdit = React.useCallback(() => {
+    if (activeTool !== 'pen' && activeTool !== 'eraser') beginEditing(elementId);
+  }, [activeTool, beginEditing, elementId]);
+  const { onPointerUp: onDoubleTapPointerUp } = useDoubleTap(openFrameTitleEdit);
+
+  const showConnectorEndpoints =
+    isSelected ||
+    (activeTool === 'connector' && connectorHoverElementId === elementId) ||
+    connectorFromElementId === elementId ||
+    connectorToHoverElementId === elementId;
+  const renderActions = (
+    <div className={s.elementActions}>
+      <button
+        type="button"
+        className={s.deleteElementBtn}
+        onPointerDown={(ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          handleDeleteElement(el);
+        }}
+        disabled={sameId(deletingElementId, elementId)}
+        aria-label="Delete frame"
+        title="Delete frame"
+      >
+        {sameId(deletingElementId, elementId) ? (
+          <Loader2 size={16} className={s.spinner} />
+        ) : (
+          <Trash2 size={16} />
+        )}
+      </button>
+    </div>
+  );
+  return (
+    <ElementWrapper
+      element={el}
+      dragPos={dragPos}
+      resizeOffset={resizeOffset}
+      registerNode={registerNode}
+      onPointerDown={onPointerDown}
+      onClick={onElementClick}
+      startResize={startResize}
+      isSelected={isSelected}
+      renderActions={renderActions}
+      elementType="frame"
+      className={s.element}
+      styles={s}
+    >
+      <div className={s.frameFill} />
+      {isEditing ? (
+        <input
+          ref={inputRef}
+          className={s.frameLabelInput}
+          value={draftTitle}
+          onChange={(e) => setDraftTitle(e.target.value)}
+          onBlur={commitTitle}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitTitle();
+            }
+            if (e.key === 'Escape') {
+              setDraftTitle(title);
+              endEditing?.();
+              e.target.blur();
+            }
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <div
+          className={s.frameLabel}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            openFrameTitleEdit();
+          }}
+          onPointerUp={onDoubleTapPointerUp}
+        >
+          {title}
+        </div>
+      )}
+      {showConnectorEndpoints ? (
+        <div className={s.connectorEndpointsBox} aria-hidden="true">
+          <div
+            className={`${s.connectorEndpoint} ${s.epTop}`}
+            onPointerDown={(ev) => startConnectorDrag?.(elementId, 'top', ev)}
+          />
+          <div
+            className={`${s.connectorEndpoint} ${s.epRight}`}
+            onPointerDown={(ev) => startConnectorDrag?.(elementId, 'right', ev)}
+          />
+          <div
+            className={`${s.connectorEndpoint} ${s.epBottom}`}
+            onPointerDown={(ev) => startConnectorDrag?.(elementId, 'bottom', ev)}
+          />
+          <div
+            className={`${s.connectorEndpoint} ${s.epLeft}`}
+            onPointerDown={(ev) => startConnectorDrag?.(elementId, 'left', ev)}
+          />
+        </div>
+      ) : null}
+    </ElementWrapper>
+  );
+});
 
 const NoteTextElement = React.memo(function NoteTextElement({
   el,
@@ -620,6 +767,39 @@ export function ElementRenderer({
                 </div>
               ) : null}
             </div>
+          );
+        }
+
+        if (el?.type === 'frame') {
+          const isEditing = editingElementId === el.id;
+          const isSelected = selectedElementIds.has(idKey(el.id));
+          const drag = interactionRef.current;
+          const dragPos = drag?.kind === 'drag' && sameId(drag.elementId, el.id) ? drag.latest : null;
+          return (
+            <FrameElement
+              key={el.id}
+              el={el}
+              isSelected={isSelected}
+              isEditing={isEditing}
+              dragPos={dragPos}
+              resizeOffset={elementResizeOffset[el.id]}
+              deletingElementId={deletingElementId}
+              activeTool={activeTool}
+              connectorHoverElementId={connectorHoverElementId}
+              connectorFromElementId={connectorDraft?.from?.elementId ?? null}
+              connectorToHoverElementId={connectorDraft?.toHover?.elementId ?? null}
+              registerNode={registerElementNode}
+              onPointerDown={onElementPointerDown}
+              onElementClick={onElementClick}
+              startResize={startResize}
+              handleDeleteElement={handleDeleteElement}
+              beginEditing={beginEditing}
+              endEditing={endEditing}
+              updateLocalElement={updateLocalElement}
+              persistElement={persistElement}
+              startConnectorDrag={startConnectorDrag}
+              styles={s}
+            />
           );
         }
 

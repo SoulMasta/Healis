@@ -5,6 +5,7 @@ const { OAuth2Client } = require('google-auth-library');
 const { User, RefreshToken } = require('../models/models');
 const { randomToken, hashToken } = require('../utils/authTokens');
 
+const JWT_SECRET = process.env.JWT_SECRET || process.env.SECRET_KEY;
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
 const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30);
 const BCRYPT_ROUNDS = Math.min(Math.max(Number(process.env.BCRYPT_ROUNDS || 10), 8), 14);
@@ -73,16 +74,16 @@ function normalizeCourse(value) {
 
 function cookieOptions() {
   const isProd = process.env.NODE_ENV === 'production';
-  return {
+  const opts = {
     httpOnly: true,
     secure: isProd,
-    // Frontend (Vercel) and backend (Render) are different sites in production,
-    // so refresh cookie must be SameSite=None;Secure to be sent on XHR/fetch.
     sameSite: isProd ? 'none' : 'lax',
-    // Restrict cookie to auth routes.
     path: '/api/user',
     maxAge: REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   };
+  // PWA cross-origin: frontend (Vercel) and backend (Render) different origins;
+  // SameSite=None;Secure required. Do not set domain - cookie follows API origin.
+  return opts;
 }
 
 function serializeProfile(user) {
@@ -102,20 +103,29 @@ function serializeProfile(user) {
 function generateAccessToken(user) {
   return jwt.sign(
     { id: user.id, email: user.email, role: user.role, username: user.username || null, avatarUrl: user.avatarUrl || null },
-    process.env.SECRET_KEY,
+    JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_TTL }
   );
+}
+
+function getDeviceId(req) {
+  const header = String(req.headers['x-device-id'] || '').trim().slice(0, 64);
+  if (header) return header;
+  const ua = String(req.headers['user-agent'] || '').slice(0, 64);
+  return ua || null;
 }
 
 async function issueRefreshToken({ userId, req, transaction }) {
   const raw = randomToken(32);
   const tokenHash = hashToken(raw);
   const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const deviceId = getDeviceId(req);
 
   await RefreshToken.create(
     {
       userId,
       tokenHash,
+      deviceId,
       expiresAt,
       userAgent: String(req.headers['user-agent'] || '').slice(0, 1000) || null,
       ip: String(req.ip || '').slice(0, 100) || null,
@@ -385,7 +395,7 @@ class UserController {
     }
   }
 
-  // Refresh access token using httpOnly cookie refreshToken (rotates refresh token).
+  // Refresh access token using httpOnly cookie. Rotates refresh token, supports reuse protection.
   async refresh(req, res) {
     try {
       const raw = req.cookies?.refreshToken;
@@ -394,7 +404,17 @@ class UserController {
       const tokenHash = hashToken(raw);
       const token = await RefreshToken.findOne({ where: { tokenHash } });
       if (!token) return res.status(401).json({ error: 'Not authorized' });
-      if (token.revokedAt) return res.status(401).json({ error: 'Not authorized' });
+
+      // Reuse detection: revoked token presented again -> possible theft. Revoke all tokens for user.
+      if (token.revokedAt) {
+        await RefreshToken.update(
+          { revokedAt: new Date() },
+          { where: { userId: token.userId } }
+        );
+        res.clearCookie('refreshToken', { path: '/api/user' });
+        return res.status(401).json({ error: 'Not authorized' });
+      }
+
       if (token.expiresAt && new Date(token.expiresAt).getTime() <= Date.now()) {
         return res.status(401).json({ error: 'Not authorized' });
       }
@@ -402,7 +422,6 @@ class UserController {
       const user = await User.findByPk(token.userId);
       if (!user) return res.status(401).json({ error: 'Not authorized' });
 
-      // Rotate refresh token (best-effort; keeps only one active cookie token per client session).
       const nextRefresh = await issueRefreshToken({ userId: user.id, req });
       await token.update({ revokedAt: new Date(), replacedByTokenHash: nextRefresh.tokenHash });
       res.cookie('refreshToken', nextRefresh.raw, cookieOptions());

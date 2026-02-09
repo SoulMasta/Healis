@@ -1,9 +1,24 @@
 import axios from 'axios';
 
 const API_BASE = '/api/user';
-const TOKEN_KEY = 'token';
+
+// Access token only in memory (survives tab refresh via refresh cookie, no XSS via localStorage).
+let accessToken = null;
+
+function getDeviceId() {
+  try {
+    const s = localStorage.getItem('healis:deviceId');
+    if (s) return s;
+    const id = crypto.randomUUID ? crypto.randomUUID() : `d${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    localStorage.setItem('healis:deviceId', id);
+    return id;
+  } catch {
+    return null;
+  }
+}
 
 function setAuthToken(token) {
+  accessToken = token;
   if (token) {
     axios.defaults.headers.common.Authorization = `Bearer ${token}`;
   } else {
@@ -12,28 +27,30 @@ function setAuthToken(token) {
 }
 
 function notifyTokenChanged() {
-  // storage event doesn't fire in the same tab, so we emit a custom event too.
   window.dispatchEvent(new Event('healis:token'));
 }
 
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return accessToken;
 }
 
-// Initialize axios auth header on app load/refresh (so other API calls are authorized).
-setAuthToken(getToken());
-
 export function logout() {
-  localStorage.removeItem(TOKEN_KEY);
+  accessToken = null;
   setAuthToken(null);
   notifyTokenChanged();
 }
 
+function authHeaders() {
+  const h = { withCredentials: true };
+  const did = getDeviceId();
+  if (did) h.headers = { 'X-Device-Id': did };
+  return h;
+}
+
 export async function registration(payload) {
-  const res = await axios.post(`${API_BASE}/registration`, payload, { withCredentials: true });
+  const res = await axios.post(`${API_BASE}/registration`, payload, authHeaders());
   const token = res.data?.token;
   if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
     setAuthToken(token);
     notifyTokenChanged();
   }
@@ -41,10 +58,9 @@ export async function registration(payload) {
 }
 
 export async function login(email, password) {
-  const res = await axios.post(`${API_BASE}/login`, { email, password }, { withCredentials: true });
+  const res = await axios.post(`${API_BASE}/login`, { email, password }, authHeaders());
   const token = res.data?.token;
   if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
     setAuthToken(token);
     notifyTokenChanged();
   }
@@ -52,10 +68,9 @@ export async function login(email, password) {
 }
 
 export async function googleAuth(credential) {
-  const res = await axios.post(`${API_BASE}/google`, { credential }, { withCredentials: true });
+  const res = await axios.post(`${API_BASE}/google`, { credential }, authHeaders());
   const token = res.data?.token;
   if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
     setAuthToken(token);
     notifyTokenChanged();
   }
@@ -64,10 +79,9 @@ export async function googleAuth(credential) {
 
 // Get a new access token using httpOnly refresh cookie (server rotates refresh token).
 export async function refreshAuth() {
-  const res = await axios.post(`${API_BASE}/refresh`, null, { withCredentials: true });
+  const res = await axios.post(`${API_BASE}/refresh`, null, authHeaders());
   const newToken = res.data?.token;
   if (newToken) {
-    localStorage.setItem(TOKEN_KEY, newToken);
     setAuthToken(newToken);
     notifyTokenChanged();
   }
@@ -82,26 +96,36 @@ export async function serverLogout() {
   }
 }
 
-// --- Axios 401 auto-refresh (best-effort) ---
+// --- Axios 401 auto-refresh: queue during refresh, no logout on network/5xx ---
 let refreshInFlight = null;
+
+function isAuthEndpoint(url) {
+  const s = String(url || '');
+  return (
+    s.includes('/api/user/login') ||
+    s.includes('/api/user/registration') ||
+    s.includes('/api/user/google') ||
+    s.includes('/api/user/refresh') ||
+    s.includes('/api/user/logout')
+  );
+}
+
 axios.interceptors.response.use(
   (resp) => resp,
   async (error) => {
     const status = error?.response?.status;
     const original = error?.config;
-
-    // Do not loop on auth endpoints.
     const url = String(original?.url || '');
-    const isAuthEndpoint =
-      url.includes('/api/user/login') ||
-      url.includes('/api/user/registration') ||
-      url.includes('/api/user/google') ||
-      url.includes('/api/user/refresh') ||
-      url.includes('/api/user/logout');
 
-    if (status !== 401 || !original || original._retry || isAuthEndpoint) {
+    if (!original || original._retry || isAuthEndpoint(url)) {
       return Promise.reject(error);
     }
+
+    // 5xx / network: do not logout, let user retry.
+    if (status && status >= 500) return Promise.reject(error);
+    if (!error.response && error.code) return Promise.reject(error);
+
+    if (status !== 401) return Promise.reject(error);
 
     original._retry = true;
 
@@ -120,7 +144,8 @@ axios.interceptors.response.use(
       }
       return axios(original);
     } catch (e) {
-      logout();
+      // Only logout when refresh returned 401 (no valid refresh cookie). Never logout on 5xx/network.
+      if (e?.response?.status === 401) logout();
       return Promise.reject(e);
     }
   }
@@ -128,12 +153,13 @@ axios.interceptors.response.use(
 
 export async function checkAuth() {
   const token = getToken();
+  const opts = authHeaders();
   const res = await axios.get(`${API_BASE}/auth`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    ...opts,
+    headers: { ...opts.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   });
   const newToken = res.data?.token;
   if (newToken) {
-    localStorage.setItem(TOKEN_KEY, newToken);
     setAuthToken(newToken);
     notifyTokenChanged();
   }
@@ -143,7 +169,6 @@ export async function checkAuth() {
 function applyTokenFromResponse(data) {
   const newToken = data?.token;
   if (newToken) {
-    localStorage.setItem(TOKEN_KEY, newToken);
     setAuthToken(newToken);
     notifyTokenChanged();
   }

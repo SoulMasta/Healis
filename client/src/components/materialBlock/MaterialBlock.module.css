@@ -30,19 +30,20 @@
 
 .title {
   font-weight: 650;
-  font-size: 15px;
+  font-size: 19px;
   color: var(--fg, #0f172a);
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: text;
 }
 
 .titleInput {
   width: 100%;
   font: inherit;
   font-weight: 650;
-  font-size: 15px;
+  font-size: 19px;
   color: var(--fg, #0f172a);
   margin: 0;
   padding: 0;
@@ -95,7 +96,7 @@
     padding: 10px 12px;
   }
   .title {
-    font-size: 14px;
+    font-size: 18px;
   }
   .openBtn {
     padding: 8px 14px;

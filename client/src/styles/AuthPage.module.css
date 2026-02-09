@@ -292,6 +292,7 @@
 .formInput {
   height: 44px;
   width: 100%;
+  box-sizing: border-box;
   padding: 0 14px 0 40px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -427,6 +428,12 @@
   .left {
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+  .right {
+    min-width: 0;
+  }
+  .inputWrap {
+    min-width: 0;
   }
   .grid3 {
     grid-template-columns: 1fr;

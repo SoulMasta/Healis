@@ -1,5 +1,5 @@
 const sequelize = require('../db');
-const { Desk, Element, Note, NoteVersion, Text, Document, Link, Drawing, Connector } = require('../models/models');
+const { Desk, Element, Note, NoteVersion, Text, Document, Link, Drawing, Connector, Frame } = require('../models/models');
 const { canReadDesk, canManageDesk } = require('../utils/deskAccess');
 const { emitToDesk } = require('../realtime/bus');
 
@@ -10,6 +10,7 @@ const TYPE_TO_MODEL = {
   link: Link,
   drawing: Drawing,
   connector: Connector,
+  frame: Frame,
 };
 
 const TYPE_ALLOWED_FIELDS = {
@@ -19,6 +20,7 @@ const TYPE_ALLOWED_FIELDS = {
   link: ['title', 'url', 'previewImageUrl'],
   drawing: ['data'],
   connector: ['data'],
+  frame: ['title'],
 };
 
 function elementInclude() {
@@ -30,6 +32,7 @@ function elementInclude() {
     { model: Link, required: false },
     { model: Drawing, required: false },
     { model: Connector, required: false },
+    { model: Frame, required: false },
   ];
 }
 

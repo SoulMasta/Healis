@@ -209,9 +209,48 @@
   }
 }
 
+.rootModal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.rootModal .menu,
+.rootModal .modalBackdrop {
+  pointer-events: auto;
+}
+
+.menuModal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 360px);
+  max-height: 75vh;
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  z-index: 10000;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  z-index: 9999;
+}
+
 @media (max-width: 640px) {
   .menu {
     width: min(92vw, 320px);
+  }
+
+  .menuModal {
+    max-height: 70vh;
   }
 
   /* Touch targets */

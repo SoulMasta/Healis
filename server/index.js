@@ -19,6 +19,7 @@ const calendarRoutes = require('./routes/calendarRouter');
 const notificationsRoutes = require('./routes/notificationsRouter');
 const aiRoutes = require('./routes/aiRouter');
 const { startCalendarNotificationWorker } = require('./services/calendarNotificationWorker');
+const { startCleanup: startRateLimitCleanup } = require('./middleware/rateLimit');
 
 const PORT = Number(process.env.PORT) || 5000;
 const app = express();
@@ -233,6 +234,27 @@ async function start() {
       // ignore
     }
 
+    // Schema back-compat: rate_limits table (DB-backed, no in-memory state).
+    try {
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "rate_limits" (' +
+          '"bucket_key" VARCHAR(255) PRIMARY KEY,' +
+          '"count" INTEGER NOT NULL DEFAULT 0,' +
+          '"reset_at" TIMESTAMP WITH TIME ZONE NOT NULL' +
+        ');'
+      );
+    } catch {
+      // ignore
+    }
+
+    // Schema back-compat: refresh_token.device_id for PWA multi-device.
+    try {
+      await sequelize.query('ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "deviceId" VARCHAR(255);');
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "refresh_tokens_user_device" ON "refresh_tokens" ("userId","deviceId");');
+    } catch {
+      // ignore
+    }
+
     // Schema back-compat: material blocks (учебное хранилище на доске).
     try {
       await sequelize.query(
@@ -331,6 +353,7 @@ async function start() {
     const server = http.createServer(app);
     initRealtime(server);
     startCalendarNotificationWorker({ intervalMs: 60_000 });
+    startRateLimitCleanup(5 * 60_000);
 
     server.listen(PORT, () => {
       // eslint-disable-next-line no-console

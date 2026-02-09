@@ -302,16 +302,9 @@ export default function HomePage() {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    const onStorage = (e) => {
-      if (e.key === 'token') setToken(e.newValue);
-    };
     const onToken = () => setToken(getToken());
-    window.addEventListener('storage', onStorage);
     window.addEventListener('healis:token', onToken);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('healis:token', onToken);
-    };
+    return () => window.removeEventListener('healis:token', onToken);
   }, []);
 
   // Accept invite link (origin/home?invite=CODE) -> join group by code.

@@ -3,6 +3,7 @@ import { Trash2 } from 'lucide-react';
 import styles from './MaterialBlock.module.css';
 import elementStyles from '../../styles/WorkspacePage.module.css';
 import { ElementWrapper } from '../board/ElementWrapper';
+import { useDoubleTap } from '../../hooks/useDoubleTap';
 
 const MaterialBlock = React.memo(function MaterialBlock({
   block,
@@ -80,6 +81,12 @@ const MaterialBlock = React.memo(function MaterialBlock({
     [commitTitle, title]
   );
 
+  const openTitleEdit = useCallback(() => {
+    onSelect?.(block);
+    setIsEditingTitle(true);
+  }, [block, onSelect]);
+  const { onPointerUp: onTitleDoubleTapUp } = useDoubleTap(openTitleEdit);
+
   const handleWrapperPointerDown = useCallback(
     (blockId, ev) => {
       if (ev.target.closest?.('[data-material-open-btn]')) return;
@@ -88,7 +95,8 @@ const MaterialBlock = React.memo(function MaterialBlock({
       if (ev.target.closest?.('[data-material-connector-endpoint]')) return;
       if (ev.target.closest?.('[data-material-delete-btn]')) return;
       if (ev.target.closest?.('[data-material-title]')) {
-        onSelect?.(block);
+        ev.stopPropagation();
+        ev.preventDefault();
         return;
       }
       onPointerDown?.(ev, block);
@@ -156,11 +164,14 @@ const MaterialBlock = React.memo(function MaterialBlock({
           <h3
             className={styles.title}
             data-material-title
+            title="Двойной клик для изменения названия"
+            onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}
+            onPointerUp={onTitleDoubleTapUp}
             onDoubleClick={(e) => {
               e.stopPropagation();
               e.preventDefault();
-              onSelect?.(block);
-              setIsEditingTitle(true);
+              openTitleEdit();
             }}
           >
             {title || 'Материалы'}

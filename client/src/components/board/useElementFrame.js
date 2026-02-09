@@ -241,8 +241,8 @@ export function useElementFrame(opts) {
         aspect,
       };
 
-      const minW = 120;
-      const minH = el.type === 'text' ? 50 : 80;
+      const minW = el.type === 'frame' ? 80 : 120;
+      const minH = el.type === 'text' ? 50 : el.type === 'frame' ? 60 : 80;
 
       const onMove = (ev) => {
         const cur = interactionRef.current;
@@ -385,6 +385,12 @@ export function useElementFrame(opts) {
     return Math.round(list.reduce((m, el) => Math.max(m, el?.zIndex ?? 0), 0) + 1);
   }, [elementsRef]);
 
+  const getMinZIndex = useCallback(() => {
+    const list = elementsRef.current || [];
+    const min = list.reduce((m, el) => Math.min(m, el?.zIndex ?? 0), 0);
+    return min - 1;
+  }, [elementsRef]);
+
   useEffect(() => {
     const pendingPatches = pendingLocalElementPatchesRef.current;
     return () => {
@@ -413,5 +419,6 @@ export function useElementFrame(opts) {
     updateLocalElement,
     focusElement,
     getNextZIndex,
+    getMinZIndex,
   };
 }
