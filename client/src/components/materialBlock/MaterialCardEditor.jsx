@@ -55,6 +55,20 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const docInputRef = useRef(null);
   const titleInputRef = useRef(null);
   const mobileLayout = Boolean(isMobile);
+  const [keyboardBottomOffset, setKeyboardBottomOffset] = useState(0);
+
+  useEffect(() => {
+    if (!mobileLayout || typeof window === 'undefined' || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    const update = () => setKeyboardBottomOffset(Math.max(0, window.innerHeight - vv.height));
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, [mobileLayout]);
 
   useEffect(() => {
     setTitle(card?.title ?? '');
@@ -604,7 +618,7 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       </div>
 
       {mobileLayout && (
-        <div className={styles.mobileToolbar}>
+        <div className={styles.mobileToolbar} style={keyboardBottomOffset > 0 ? { bottom: keyboardBottomOffset } : undefined}>
           {isEditing && (
             <button
               type="button"

@@ -1395,17 +1395,18 @@
   cursor: grabbing;
 }
 
+/* Connector endpoints: at element edge (half-size offset), -10% size, scale-inverse at any zoom */
 .connectorEndpointsBox {
   position: absolute;
-  inset: -18px;
+  inset: calc(-6.3px / var(--view-scale, 1));
   pointer-events: none;
   z-index: 40;
 }
 
 .connectorEndpoint {
   position: absolute;
-  width: 14px;
-  height: 14px;
+  width: calc(12.6px / var(--view-scale, 1));
+  height: calc(12.6px / var(--view-scale, 1));
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.95);
   border: 2px solid rgba(43, 108, 255, 0.9);
@@ -1414,7 +1415,7 @@
 }
 
 .epTop {
-  top: -18px;
+  top: calc(-6.3px / var(--view-scale, 1));
   left: 50%;
   transform: translate(-50%, -50%);
   cursor: crosshair;
@@ -1422,13 +1423,13 @@
 
 .epRight {
   top: 50%;
-  right: -18px;
+  right: calc(-6.3px / var(--view-scale, 1));
   transform: translate(50%, -50%);
   cursor: crosshair;
 }
 
 .epBottom {
-  bottom: -18px;
+  bottom: calc(-6.3px / var(--view-scale, 1));
   left: 50%;
   transform: translate(-50%, 50%);
   cursor: crosshair;
@@ -1436,7 +1437,7 @@
 
 .epLeft {
   top: 50%;
-  left: -18px;
+  left: calc(-6.3px / var(--view-scale, 1));
   transform: translate(-50%, -50%);
   cursor: crosshair;
 }
@@ -1444,28 +1445,28 @@
 /* Slightly larger connector hit targets on touch devices */
 @media (hover: none) {
   .connectorEndpointsBox {
-    inset: -26px;
+    inset: calc(-8.1px / var(--view-scale, 1));
   }
 
   .connectorEndpoint {
-    width: 18px;
-    height: 18px;
+    width: calc(16.2px / var(--view-scale, 1));
+    height: calc(16.2px / var(--view-scale, 1));
   }
 
   .epTop {
-    top: -26px;
+    top: calc(-8.1px / var(--view-scale, 1));
   }
 
   .epRight {
-    right: -26px;
+    right: calc(-8.1px / var(--view-scale, 1));
   }
 
   .epBottom {
-    bottom: -26px;
+    bottom: calc(-8.1px / var(--view-scale, 1));
   }
 
   .epLeft {
-    left: -26px;
+    left: calc(-8.1px / var(--view-scale, 1));
   }
 }
 
@@ -2372,23 +2373,24 @@
   border-radius: 8px;
   pointer-events: none;
 }
+/* Frame label: size/position scale-inverse so same screen size at any zoom */
 .frameLabel {
   position: absolute;
   top: auto;
   bottom: 100%;
-  left: 12px;
-  margin-bottom: 6px;
-  padding: 6px 15px;
-  border-radius: 8px;
+  left: calc(12px / var(--view-scale, 1));
+  margin-bottom: calc(6px / var(--view-scale, 1));
+  padding: calc(6px / var(--view-scale, 1)) calc(15px / var(--view-scale, 1));
+  border-radius: calc(8px / var(--view-scale, 1));
   background: rgba(29, 78, 216, 0.92);
   color: white;
-  font-size: 18px;
+  font-size: calc(18px / var(--view-scale, 1));
   font-weight: 600;
   pointer-events: auto;
   user-select: none;
   -webkit-user-select: none;
   white-space: nowrap;
-  max-width: calc(100% - 24px);
+  max-width: calc(100% - 24px / var(--view-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -2396,17 +2398,17 @@
   position: absolute;
   top: auto;
   bottom: 100%;
-  left: 12px;
-  margin-bottom: 6px;
-  padding: 6px 12px;
-  border-radius: 8px;
+  left: calc(12px / var(--view-scale, 1));
+  margin-bottom: calc(6px / var(--view-scale, 1));
+  padding: calc(6px / var(--view-scale, 1)) calc(12px / var(--view-scale, 1));
+  border-radius: calc(8px / var(--view-scale, 1));
   background: rgba(29, 78, 216, 0.92);
   color: white;
-  font-size: 18px;
+  font-size: calc(18px / var(--view-scale, 1));
   font-weight: 600;
   border: 1px solid rgba(255, 255, 255, 0.4);
-  min-width: 90px;
-  max-width: calc(100% - 24px);
+  min-width: calc(90px / var(--view-scale, 1));
+  max-width: calc(100% - 24px / var(--view-scale, 1));
 }
 .frameLabelInput::placeholder {
   color: rgba(255, 255, 255, 0.7);
@@ -2422,11 +2424,12 @@
   box-shadow: 0 0 0 1px rgba(43, 108, 255, 0.2);
 }
 
+/* Resize handles: -10% size (13.5px), on edit-frame contour (half-size offset), scale-inverse at any zoom */
 .resizeHandle {
   position: absolute;
-  width: 10px;
-  height: 10px;
-  border-radius: 4px;
+  width: calc(13.5px / var(--view-scale, 1));
+  height: calc(13.5px / var(--view-scale, 1));
+  border-radius: calc(5.4px / var(--view-scale, 1));
   background: rgba(255, 255, 255, 0.95);
   border: 1px solid rgba(43, 108, 255, 0.9);
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.18);
@@ -2434,46 +2437,46 @@
 }
 
 .hNW {
-  top: -10px;
-  left: -10px;
+  top: calc(-6.75px / var(--view-scale, 1));
+  left: calc(-6.75px / var(--view-scale, 1));
   cursor: nwse-resize;
 }
 .hN {
-  top: -10px;
+  top: calc(-6.75px / var(--view-scale, 1));
   left: 50%;
   transform: translateX(-50%);
   cursor: ns-resize;
 }
 .hNE {
-  top: -10px;
-  right: -10px;
+  top: calc(-6.75px / var(--view-scale, 1));
+  right: calc(-6.75px / var(--view-scale, 1));
   cursor: nesw-resize;
 }
 .hE {
   top: 50%;
-  right: -10px;
+  right: calc(-6.75px / var(--view-scale, 1));
   transform: translateY(-50%);
   cursor: ew-resize;
 }
 .hSE {
-  bottom: -10px;
-  right: -10px;
+  bottom: calc(-6.75px / var(--view-scale, 1));
+  right: calc(-6.75px / var(--view-scale, 1));
   cursor: nwse-resize;
 }
 .hS {
-  bottom: -10px;
+  bottom: calc(-6.75px / var(--view-scale, 1));
   left: 50%;
   transform: translateX(-50%);
   cursor: ns-resize;
 }
 .hSW {
-  bottom: -10px;
-  left: -10px;
+  bottom: calc(-6.75px / var(--view-scale, 1));
+  left: calc(-6.75px / var(--view-scale, 1));
   cursor: nesw-resize;
 }
 .hW {
   top: 50%;
-  left: -10px;
+  left: calc(-6.75px / var(--view-scale, 1));
   transform: translateY(-50%);
   cursor: ew-resize;
 }
