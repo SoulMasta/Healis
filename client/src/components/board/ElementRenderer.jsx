@@ -536,7 +536,7 @@ const ConnectorsLayer = React.memo(function ConnectorsLayer({
               <circle
                 cx={handle.x}
                 cy={handle.y}
-                r={7}
+                r={9}
                 className={styles.connectorBendHandle}
                 style={{ pointerEvents: 'auto' }}
                 onPointerDown={(ev) => startConnectorBendDrag?.(el.id, ev)}

@@ -188,6 +188,50 @@ export function useConnectors({
     return { d, mid, handle: { x: mid.x + bx, y: mid.y + by }, p0, p3 };
   }, []);
 
+  const getLiveAnchorPoint = useCallback(
+    (elementOrBlockId, side) => {
+      const s = String(side || 'right');
+      const OUTSET = 10;
+      const anchorFromRect = (r) => {
+        let ax = r.right;
+        let ay = r.top + r.height / 2;
+        let dir = { x: 1, y: 0 };
+        if (s === 'top') {
+          ax = r.left + r.width / 2;
+          ay = r.top;
+          dir = { x: 0, y: -1 };
+        } else if (s === 'bottom') {
+          ax = r.left + r.width / 2;
+          ay = r.bottom;
+          dir = { x: 0, y: 1 };
+        } else if (s === 'left') {
+          ax = r.left;
+          ay = r.top + r.height / 2;
+          dir = { x: -1, y: 0 };
+        }
+        const deskP = getDeskPointFromClient?.(ax, ay);
+        return { x: Number(deskP?.x ?? 0) + dir.x * OUTSET, y: Number(deskP?.y ?? 0) + dir.y * OUTSET, dir };
+      };
+      if (typeof elementOrBlockId === 'string' && elementOrBlockId.startsWith('block:')) {
+        const block = (materialBlocksRef?.current || []).find((b) => String(b.id) === String(elementOrBlockId.slice(6)));
+        if (!block) return null;
+        const node = materialBlockNodeRef?.current?.get?.(block.id);
+        if (node && canvasRef?.current) return anchorFromRect(node.getBoundingClientRect());
+        return getAnchorPoint(
+          { x: block.x ?? 0, y: block.y ?? 0, width: Math.max(160, block.width ?? 280), height: Math.max(120, block.height ?? 160) },
+          side
+        );
+      }
+      const k = idKey?.(elementOrBlockId);
+      if (!k) return null;
+      const node = elementNodeCacheRef?.current?.get?.(k);
+      if (node && canvasRef?.current) return anchorFromRect(node.getBoundingClientRect());
+      const el = getElementByIdFromRef?.(elementOrBlockId);
+      return el ? getAnchorPoint(el, side) : null;
+    },
+    [getDeskPointFromClient, getElementByIdFromRef, getAnchorPoint, materialBlocksRef, materialBlockNodeRef, canvasRef, elementNodeCacheRef, idKey]
+  );
+
   const flushConnectorDraft = useCallback(() => {
     connectorDraftRafRef.current = null;
     const cur = connectorDraftRef.current;
@@ -460,11 +504,44 @@ export function useConnectors({
       const idNum = connectorId;
       const el = elementsRef?.current?.find?.((x) => x?.id === idNum) || elements?.find?.((x) => x?.id === idNum);
       if (!el) return;
+      const target = e.target;
+      try {
+        if (target?.setPointerCapture) target.setPointerCapture(e.pointerId);
+      } catch (_) {}
       const before = snapshotForHistory?.(el);
       const pointerId = e.pointerId;
       const cleanup = (onMove, onUp) => {
+        try {
+          if (target?.releasePointerCapture) target.releasePointerCapture(pointerId);
+        } catch (_) {}
         window.removeEventListener('pointermove', onMove, true);
         window.removeEventListener('pointerup', onUp, true);
+      };
+      const fromId = (d) => (d?.blockId != null ? `block:${d.blockId}` : d?.elementId);
+      let bendRafScheduled = false;
+      let pendingBend = null;
+      const flushBend = () => {
+        bendRafScheduled = false;
+        const bend = pendingBend;
+        pendingBend = null;
+        if (bend == null) return;
+        setElements?.((prev) =>
+          prev.map((e) => {
+            if (!sameId(e.id, idNum)) return e;
+            const data = e?.connector?.data || e?.Connector?.data || {};
+            const nextData = { ...data, bend };
+            const child = e?.connector ?? e?.Connector ?? {};
+            const nextChild = { ...child, data: nextData };
+            return { ...e, connector: nextChild, Connector: nextChild };
+          })
+        );
+      };
+      const scheduleBend = (nextBend) => {
+        pendingBend = nextBend;
+        if (!bendRafScheduled) {
+          bendRafScheduled = true;
+          requestAnimationFrame(flushBend);
+        }
       };
       const onMove = (ev) => {
         if (ev.pointerId !== pointerId) return;
@@ -472,26 +549,35 @@ export function useConnectors({
         const data = curEl?.connector?.data || curEl?.Connector?.data || {};
         const from = data?.from || {};
         const to = data?.to || {};
-        const list = elementsRef?.current || [];
-        const fromEl = list.find((x) => x?.id === from.elementId);
-        const toEl = list.find((x) => x?.id === to.elementId);
-        if (!fromEl || !toEl) return;
-        const a0 = getAnchorPoint(fromEl, from.side);
-        const a1 = getAnchorPoint(toEl, to.side);
+        const fid = fromId(from);
+        const tid = fromId(to);
+        if (!fid || !tid || !from?.side || !to?.side) return;
+        const a0 = getLiveAnchorPoint(fid, from.side);
+        const a1 = getLiveAnchorPoint(tid, to.side);
+        if (!a0 || !a1) return;
         const { mid } = computeConnectorPathFromAnchors(a0, a1, data?.bend);
         const deskP = getDeskPointFromClient?.(ev.clientX, ev.clientY);
         const nextBend = { x: deskP.x - mid.x, y: deskP.y - mid.y };
-        const nextData = { ...data, bend: nextBend };
-        const child = curEl?.connector ?? curEl?.Connector ?? {};
-        const nextChild = { ...child, data: nextData };
-        updateLocalElementRef?.current?.(idNum, { connector: nextChild, Connector: nextChild });
+        scheduleBend(nextBend);
       };
       const onUp = async (ev) => {
         if (ev.pointerId !== pointerId) return;
         cleanup(onMove, onUp);
         setConnectorsFollowDuringDrag(false);
+        bendRafScheduled = false;
         const curEl = elementsRef?.current?.find?.((x) => x?.id === idNum) || el;
-        const data = curEl?.connector?.data || curEl?.Connector?.data || {};
+        let data = curEl?.connector?.data || curEl?.Connector?.data || {};
+        if (pendingBend != null) {
+          data = { ...data, bend: pendingBend };
+          setElements?.((prev) =>
+            prev.map((e) => {
+              if (!sameId(e.id, idNum)) return e;
+              const nextChild = { ...(e?.connector ?? e?.Connector ?? {}), data };
+              return { ...e, connector: nextChild, Connector: nextChild };
+            })
+          );
+        }
+        pendingBend = null;
         try {
           const updated = await updateElement(idNum, { payload: { data } });
           const vm = elementToVm?.(updated);
@@ -514,9 +600,8 @@ export function useConnectors({
       elements,
       snapshotForHistory,
       getDeskPointFromClient,
-      getAnchorPoint,
+      getLiveAnchorPoint,
       computeConnectorPathFromAnchors,
-      updateLocalElementRef,
       updateElement,
       elementToVm,
       setElements,
@@ -525,50 +610,6 @@ export function useConnectors({
       pushHistory,
       snapshotEquals,
     ]
-  );
-
-  const getLiveAnchorPoint = useCallback(
-    (elementOrBlockId, side) => {
-      const s = String(side || 'right');
-      const OUTSET = 10;
-      const anchorFromRect = (r) => {
-        let ax = r.right;
-        let ay = r.top + r.height / 2;
-        let dir = { x: 1, y: 0 };
-        if (s === 'top') {
-          ax = r.left + r.width / 2;
-          ay = r.top;
-          dir = { x: 0, y: -1 };
-        } else if (s === 'bottom') {
-          ax = r.left + r.width / 2;
-          ay = r.bottom;
-          dir = { x: 0, y: 1 };
-        } else if (s === 'left') {
-          ax = r.left;
-          ay = r.top + r.height / 2;
-          dir = { x: -1, y: 0 };
-        }
-        const deskP = getDeskPointFromClient?.(ax, ay);
-        return { x: Number(deskP?.x ?? 0) + dir.x * OUTSET, y: Number(deskP?.y ?? 0) + dir.y * OUTSET, dir };
-      };
-      if (typeof elementOrBlockId === 'string' && elementOrBlockId.startsWith('block:')) {
-        const block = (materialBlocksRef?.current || []).find((b) => String(b.id) === String(elementOrBlockId.slice(6)));
-        if (!block) return null;
-        const node = materialBlockNodeRef?.current?.get?.(block.id);
-        if (node && canvasRef?.current) return anchorFromRect(node.getBoundingClientRect());
-        return getAnchorPoint(
-          { x: block.x ?? 0, y: block.y ?? 0, width: Math.max(160, block.width ?? 280), height: Math.max(120, block.height ?? 160) },
-          side
-        );
-      }
-      const k = idKey?.(elementOrBlockId);
-      if (!k) return null;
-      const node = elementNodeCacheRef?.current?.get?.(k);
-      if (node && canvasRef?.current) return anchorFromRect(node.getBoundingClientRect());
-      const el = getElementByIdFromRef?.(elementOrBlockId);
-      return el ? getAnchorPoint(el, side) : null;
-    },
-    [getDeskPointFromClient, getElementByIdFromRef, getAnchorPoint, materialBlocksRef, materialBlockNodeRef, canvasRef, elementNodeCacheRef, idKey]
   );
 
   const connectorElements = useMemo(() => {

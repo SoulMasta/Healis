@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, Bold, List, Code, Heading2, Plus, Type, Image, FileText, Link } from 'lucide-react';
+import { X, Bold, List, Code, Heading2, Undo2, Redo2, MoreVertical, Paperclip, PenLine, ChevronLeft, Italic, Underline, Strikethrough, AlignLeft, AlignCenter, AlignRight, ListOrdered, Copy, Upload, Trash2, LayoutGrid, ChevronRight } from 'lucide-react';
 import {
   updateMaterialCard,
   uploadMaterialCardFile,
@@ -40,13 +40,21 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const saveTimeoutRef = useRef(null);
 
   const cardId = card?.id;
-  const [fabOpen, setFabOpen] = useState(false);
   const [fullscreenImg, setFullscreenImg] = useState(null);
   const [fullscreenImgs, setFullscreenImgs] = useState([]);
   const [docViewer, setDocViewer] = useState(null);
   const [linkDialog, setLinkDialog] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [formatSheetOpen, setFormatSheetOpen] = useState(false);
+  const [formatActive, setFormatActive] = useState({ bold: false, italic: false, underline: false, strikeThrough: false });
+  const [photoMenu, setPhotoMenu] = useState(null);
+  const [photoMenuPreviewOpen, setPhotoMenuPreviewOpen] = useState(false);
+  const photoLongPressRef = useRef(null);
+  const photoLongPressHandledRef = useRef(false);
   const photoInputRef = useRef(null);
   const docInputRef = useRef(null);
+  const titleInputRef = useRef(null);
+  const mobileLayout = Boolean(isMobile);
 
   useEffect(() => {
     setTitle(card?.title ?? '');
@@ -56,10 +64,24 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sync only when switching card (card.id)
   }, [card?.id]);
 
+  const EMPTY_HEADING_HTML = '<div class="mobile-first-heading" data-block="heading"><br></div>';
   useLayoutEffect(() => {
-    if (contentRef.current && card?.id != null) contentRef.current.innerHTML = card?.content ?? '';
+    if (!contentRef.current || card?.id == null) return;
+    const raw = (card?.content ?? '').trim();
+    contentRef.current.innerHTML = !raw || raw === '<br>' ? EMPTY_HEADING_HTML : card?.content ?? '';
     // eslint-disable-next-line react-hooks/exhaustive-deps -- set content only on card open to avoid overwriting edits
   }, [card?.id]);
+
+  const isInHeadingBlock = useCallback(() => {
+    const sel = document.getSelection();
+    if (!sel?.anchorNode || !contentRef.current?.contains(sel.anchorNode)) return false;
+    let n = sel.anchorNode;
+    while (n && n !== contentRef.current) {
+      if (n.nodeType === 1 && (n.getAttribute?.('data-block') === 'heading' || n.classList?.contains('mobile-first-heading'))) return true;
+      n = n.parentNode;
+    }
+    return false;
+  }, []);
 
   const updateMutation = useMutation({
     mutationFn: (payload) => {
@@ -104,6 +126,27 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => saveContent(html), AUTOSAVE_DELAY_MS);
   }, [saveContent]);
+
+  const handleContentKeyDown = useCallback(
+    (e) => {
+      if (!mobileLayout || e.key !== 'Enter') return;
+      if (!isInHeadingBlock()) return;
+      e.preventDefault();
+      const el = contentRef.current;
+      const heading = el?.querySelector?.('[data-block="heading"], .mobile-first-heading');
+      const next = document.createElement('div');
+      next.innerHTML = '<br>';
+      heading?.insertAdjacentElement('afterend', next);
+      const r = document.createRange();
+      r.setStart(next, 0);
+      r.collapse(true);
+      const sel = document.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(r);
+      handleContentInput();
+    },
+    [mobileLayout, isInHeadingBlock, handleContentInput]
+  );
 
   const flushContentSave = useCallback(() => {
     if (saveTimeoutRef.current) {
@@ -198,6 +241,16 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     onClose();
   }, [cardId, card?.content, card?.title, title, updateMutation, onClose]);
 
+  const setSelectionAfter = useCallback((node) => {
+    const sel = document.getSelection();
+    if (!sel || !node) return;
+    const range = document.createRange();
+    range.setStartAfter(node);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }, []);
+
   const insertAtCursor = useCallback((html) => {
     const el = contentRef.current;
     if (!el) return;
@@ -206,27 +259,51 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     handleContentInput();
   }, [handleContentInput]);
 
-  const addHeading = useCallback(() => {
-    setFabOpen(false);
-    document.execCommand('formatBlock', false, 'h2');
-    contentRef.current?.focus();
-    handleContentInput();
-  }, [handleContentInput]);
+  const insertMediaAtCursor = useCallback(
+    (html, selector) => {
+      const el = contentRef.current;
+      if (!el) return;
+      el.focus();
+      document.execCommand('insertHTML', false, html);
+      handleContentInput();
+      requestAnimationFrame(() => {
+        const nodes = el.querySelectorAll(selector);
+        const last = nodes[nodes.length - 1];
+        if (last) {
+          setSelectionAfter(last);
+          last.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      });
+    },
+    [handleContentInput, setSelectionAfter]
+  );
 
   const handlePhotoSelected = useCallback(
     (e) => {
       const file = e.target?.files?.[0];
       e.target.value = '';
       if (!file || !isImageFile(file)) return;
-      setFabOpen(false);
       uploadMutation.mutate(file, {
         onSuccess: (data) => {
           const url = resolveFileUrl(data?.file_url);
-          if (url) insertAtCursor(`<img src="${url}" alt="" style="max-width:100%;height:auto;" loading="lazy" />`);
+          if (url) {
+            const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:100%;height:auto;" loading="lazy" />`;
+            insertMediaAtCursor(html, 'img.inline-photo');
+          }
         },
       });
     },
-    [uploadMutation, insertAtCursor]
+    [uploadMutation, insertMediaAtCursor]
+  );
+
+  const insertDocCard = useCallback(
+    (url, filename, attachmentId) => {
+      const safeUrl = url.replace(/"/g, '&quot;');
+      const name = (filename || 'Документ').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const html = `<span class="inline-doc-card" contenteditable="false" data-attachment-id="${attachmentId}"><a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="inline-doc-card-link"><span class="inline-doc-card-icon">📄</span><span class="inline-doc-card-name">${name}</span></a></span>`;
+      insertMediaAtCursor(html, '.inline-doc-card');
+    },
+    [insertMediaAtCursor]
   );
 
   const handleDocSelected = useCallback(
@@ -234,15 +311,19 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       const file = e.target?.files?.[0];
       e.target.value = '';
       if (!file) return;
-      setFabOpen(false);
-      uploadMutation.mutate(file);
+      uploadMutation.mutate(file, {
+        onSuccess: (data) => {
+          const url = resolveFileUrl(data?.file_url);
+          const name = data?.file_url?.split?.('/')?.pop() || file.name || 'Документ';
+          if (url) insertDocCard(url, name, data?.id);
+        },
+      });
     },
-    [uploadMutation]
+    [uploadMutation, insertDocCard]
   );
 
   const addLink = useCallback(
     (url, title) => {
-      setFabOpen(false);
       setLinkDialog(false);
       if (!url?.trim()) return;
       const text = title?.trim() || url.trim();
@@ -251,6 +332,75 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     [insertAtCursor]
   );
 
+  const LONG_PRESS_MS = 450;
+  const openPhotoMenu = useCallback((src, previewSize) => {
+    photoLongPressHandledRef.current = true;
+    setPhotoMenu({ src, previewSize: previewSize || 'large' });
+    setPhotoMenuPreviewOpen(false);
+  }, []);
+  const closePhotoMenu = useCallback(() => { setPhotoMenu(null); setPhotoMenuPreviewOpen(false); }, []);
+
+  const copyImageToClipboard = useCallback((src) => {
+    closePhotoMenu();
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0);
+        canvas.toBlob((blob) => {
+          if (blob && navigator.clipboard?.write) navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        }, 'image/png');
+      } catch (_) {}
+    };
+    img.onerror = () => {};
+    img.src = src;
+  }, [closePhotoMenu]);
+
+  const setPhotoPreviewSize = useCallback((size) => {
+    if (!photoMenu?.src) return;
+    const el = contentRef.current && Array.from(contentRef.current.querySelectorAll('img')).find((i) => i.src === photoMenu.src);
+    if (el) {
+      el.setAttribute('data-preview-size', size);
+      el.style.maxWidth = size === 'small' ? '160px' : '100%';
+      el.classList.add('inline-photo');
+      handleContentInput();
+      flushContentSave();
+    }
+    setPhotoMenu((m) => (m ? { ...m, previewSize: size } : null));
+    setPhotoMenuPreviewOpen(false);
+    closePhotoMenu();
+  }, [photoMenu?.src, closePhotoMenu, handleContentInput, flushContentSave]);
+
+  const handleContentPointerDown = useCallback(
+    (e) => {
+      const img = e.target?.closest?.('img');
+      if (!img?.src || !mobileLayout || !contentRef.current?.contains(img)) return;
+      photoLongPressRef.current = setTimeout(() => {
+        photoLongPressRef.current = null;
+        openPhotoMenu(img.src, img.getAttribute('data-preview-size') || 'large');
+      }, LONG_PRESS_MS);
+    },
+    [mobileLayout, openPhotoMenu]
+  );
+
+  const handleContentPointerUp = useCallback(() => {
+    if (photoLongPressRef.current) {
+      clearTimeout(photoLongPressRef.current);
+      photoLongPressRef.current = null;
+    }
+  }, []);
+
+  const handleContentPointerCancel = useCallback(() => {
+    if (photoLongPressRef.current) {
+      clearTimeout(photoLongPressRef.current);
+      photoLongPressRef.current = null;
+    }
+  }, []);
+
   const openFullscreenImage = useCallback((src, allSrcs) => {
     setFullscreenImgs(Array.isArray(allSrcs) ? allSrcs : [src]);
     setFullscreenImg(src);
@@ -258,57 +408,89 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
 
   const closeFullscreenImage = useCallback(() => setFullscreenImg(null), []);
 
-  const docAttachments = attachments.filter((a) => !/\.(png|jpe?g|webp|gif)$/i.test(a.file_url || ''));
-
-  const mobileLayout = Boolean(isMobile);
-
-  useEffect(() => {
-    if (!fabOpen) return;
-    const close = () => setFabOpen(false);
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [fabOpen]);
-
-  const fabMenu = fabOpen && (
-    <div className={styles.fabMenu} role="menu">
-      <button type="button" className={styles.fabMenuItem} onClick={addHeading}>
-        <Type size={18} /> Заголовок
-      </button>
-      <button type="button" className={styles.fabMenuItem} onClick={() => photoInputRef.current?.click()}>
-        <Image size={18} /> Фото
-      </button>
-      <button type="button" className={styles.fabMenuItem} onClick={() => docInputRef.current?.click()}>
-        <FileText size={18} /> Документ
-      </button>
-      <button type="button" className={styles.fabMenuItem} onClick={() => { setFabOpen(false); setLinkDialog(true); }}>
-        <Link size={18} /> Ссылка
-      </button>
-    </div>
+  const attachInputRef = useRef(null);
+  const handleAttachSelected = useCallback(
+    (e) => {
+      const file = e.target?.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      if (isImageFile(file)) {
+        uploadMutation.mutate(file, {
+          onSuccess: (data) => {
+            const url = resolveFileUrl(data?.file_url);
+            if (url) {
+              const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:100%;height:auto;" loading="lazy" />`;
+              insertMediaAtCursor(html, 'img.inline-photo');
+            }
+          },
+        });
+      } else {
+        uploadMutation.mutate(file, {
+          onSuccess: (data) => {
+            const url = resolveFileUrl(data?.file_url);
+            const name = data?.file_url?.split?.('/')?.pop() || file.name || 'Документ';
+            if (url) insertDocCard(url, name, data?.id);
+          },
+        });
+      }
+    },
+    [uploadMutation, insertMediaAtCursor, insertDocCard]
   );
 
   return (
     <div className={`${styles.editorWrap} ${mobileLayout ? styles.mobileWrap : ''}`}>
       <input ref={photoInputRef} type="file" accept="image/*" className={styles.hiddenInput} onChange={handlePhotoSelected} />
       <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" className={styles.hiddenInput} onChange={handleDocSelected} />
+      <input ref={attachInputRef} type="file" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" className={styles.hiddenInput} onChange={handleAttachSelected} />
 
       <header className={styles.editorHeader}>
         {mobileLayout && onBack ? (
-          <button type="button" className={styles.backBtn} onClick={onBack} aria-label="Назад">
-            ←
+          <button type="button" className={styles.mobileBackBtn} onClick={onBack} aria-label="Назад">
+            <ChevronLeft size={24} strokeWidth={2} />
           </button>
         ) : null}
         <input
+          ref={titleInputRef}
           type="text"
           className={styles.editorTitle}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          onBlur={() => saveTitle(title)}
+          onFocus={() => setIsEditing(true)}
+          onBlur={() => {
+            saveTitle(title);
+            setTimeout(() => setIsEditing(document.activeElement === titleInputRef.current || contentRef.current?.contains(document.activeElement)), 0);
+          }}
           placeholder="Название"
           aria-label="Название"
         />
-        <button type="button" className={styles.closeBtn} onClick={handleClose} aria-label="Закрыть">
-          <X size={18} />
-        </button>
+        {mobileLayout ? (
+          <div className={styles.mobileHeaderRight}>
+            {isEditing ? (
+              <>
+                <button type="button" className={styles.mobileHeaderIconBtn} onClick={() => execCmd('undo')} aria-label="Отменить">
+                  <Undo2 size={20} />
+                </button>
+                <button type="button" className={styles.mobileHeaderIconBtn} onClick={() => execCmd('redo')} aria-label="Повторить">
+                  <Redo2 size={20} />
+                </button>
+                <button type="button" className={styles.mobileHeaderIconBtn} onClick={() => {}} aria-label="Настройки">
+                  <MoreVertical size={20} />
+                </button>
+                <button type="button" className={styles.mobileDoneBtn} onClick={() => { contentRef.current?.blur(); titleInputRef.current?.blur(); setIsEditing(false); }}>
+                  Готово
+                </button>
+              </>
+            ) : (
+              <button type="button" className={styles.mobileHeaderIconBtn} onClick={() => {}} aria-label="Настройки">
+                <MoreVertical size={20} />
+              </button>
+            )}
+          </div>
+        ) : (
+          <button type="button" className={styles.closeBtn} onClick={handleClose} aria-label="Закрыть">
+            <X size={18} />
+          </button>
+        )}
       </header>
 
       <div className={styles.main}>
@@ -335,52 +517,29 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
             contentEditable
             suppressContentEditableWarning
             onInput={handleContentInput}
-            onBlur={() => flushContentSave()}
+            onKeyDown={handleContentKeyDown}
+            onPointerDown={handleContentPointerDown}
+            onPointerUp={handleContentPointerUp}
+            onPointerCancel={handleContentPointerCancel}
+            onFocus={() => setIsEditing(true)}
+            onBlur={() => {
+              flushContentSave();
+              setTimeout(() => setIsEditing(document.activeElement === titleInputRef.current || contentRef.current?.contains(document.activeElement)), 0);
+            }}
             onClick={(e) => {
               const img = e.target?.closest?.('img');
-              if (img?.src && mobileLayout) {
+              if (!img?.src || !mobileLayout || !contentRef.current?.contains(img)) return;
+              if (photoLongPressHandledRef.current) {
+                photoLongPressHandledRef.current = false;
                 e.preventDefault();
-                e.stopPropagation();
-                const imgs = contentRef.current?.querySelectorAll?.('img');
-                openFullscreenImage(img.src, imgs ? Array.from(imgs).map((i) => i.src) : [img.src]);
+                return;
               }
+              e.preventDefault();
+              e.stopPropagation();
+              const imgs = contentRef.current?.querySelectorAll?.('img');
+              openFullscreenImage(img.src, imgs ? Array.from(imgs).map((i) => i.src) : [img.src]);
             }}
           />
-          {mobileLayout && docAttachments.length > 0 && (
-            <div className={styles.inlineDocs}>
-              {docAttachments.map((f) => (
-                <div key={f.id} className={styles.docCard}>
-                  <button
-                    type="button"
-                    className={styles.docCardBtn}
-                    onClick={() => setDocViewer(resolveFileUrl(f.file_url))}
-                  >
-                    <FileText size={20} />
-                    <span>{f.file_url?.split('/').pop() || 'Документ'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.docRemove}
-                    onClick={() => deleteFileMutation.mutate(f.id)}
-                    aria-label="Удалить"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {mobileLayout && (
-            <footer className={styles.mobileMeta}>
-              {(createdAt || updatedAt || tags.length > 0) && (
-                <div className={styles.metaMuted}>
-                  {createdAt && <span>{new Date(createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })}</span>}
-                  {updatedAt && createdAt !== updatedAt && <span> · Изм. {new Date(updatedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}</span>}
-                  {tags.length > 0 && <span> · {tags.join(', ')}</span>}
-                </div>
-              )}
-            </footer>
-          )}
         </div>
 
         {!mobileLayout && (
@@ -445,12 +604,103 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       </div>
 
       {mobileLayout && (
-        <>
-          <button type="button" className={styles.fab} onClick={() => setFabOpen((o) => !o)} aria-label="Добавить" aria-expanded={fabOpen}>
-            <Plus size={24} />
+        <div className={styles.mobileToolbar}>
+          {isEditing && (
+            <button
+              type="button"
+              className={styles.mobileToolbarBtn}
+              onClick={() => {
+                try {
+                  setFormatActive({
+                    bold: document.queryCommandState('bold'),
+                    italic: document.queryCommandState('italic'),
+                    underline: document.queryCommandState('underline'),
+                    strikeThrough: document.queryCommandState('strikeThrough'),
+                  });
+                } catch (_) {}
+                setFormatSheetOpen(true);
+              }}
+              aria-label="Форматирование"
+            >
+              <span className={styles.aaIcon}>Aa</span>
+            </button>
+          )}
+          <button type="button" className={styles.mobileToolbarBtn} onClick={() => { execCmd('insertUnorderedList'); contentRef.current?.focus(); }} aria-label="Список">
+            <List size={22} />
           </button>
-          {fabMenu}
-        </>
+          <button type="button" className={styles.mobileToolbarBtn} onClick={() => attachInputRef.current?.click()} aria-label="Прикрепить фото или файл">
+            <Paperclip size={22} />
+          </button>
+          <button type="button" className={styles.mobileToolbarBtn} onClick={() => {}} aria-label="Рисование">
+            <PenLine size={22} />
+          </button>
+        </div>
+      )}
+
+      {mobileLayout && formatSheetOpen && (
+        <div className={styles.formatSheetOverlay} role="presentation">
+          <div className={styles.formatSheet}>
+            <div className={styles.formatSheetHeader}>
+              <span className={styles.formatSheetTitle}>Форматирование</span>
+              <button type="button" className={styles.formatSheetClose} onClick={() => setFormatSheetOpen(false)} aria-label="Закрыть">
+                <X size={20} />
+              </button>
+            </div>
+            <div className={styles.formatSheetRow}>
+              <button type="button" className={styles.formatPill} onClick={() => { execCmd('formatBlock', 'h2'); contentRef.current?.focus(); setFormatSheetOpen(false); }}>Заголовок</button>
+              <button type="button" className={styles.formatPill} onClick={() => { execCmd('formatBlock', 'h3'); contentRef.current?.focus(); setFormatSheetOpen(false); }}>Подзаголовок</button>
+              <button type="button" className={styles.formatPillActive} onClick={() => { execCmd('formatBlock', 'p'); contentRef.current?.focus(); setFormatSheetOpen(false); }}>Основной текст</button>
+            </div>
+            <div className={styles.formatSheetRow}>
+              <button type="button" className={`${styles.formatIconBtn} ${formatActive.bold ? styles.formatIconBtnActive : ''}`} onClick={() => { execCmd('bold'); setTimeout(() => setFormatActive((a) => ({ ...a, bold: document.queryCommandState('bold') })), 0); }} aria-label="Жирный"><Bold size={20} /></button>
+              <button type="button" className={`${styles.formatIconBtn} ${formatActive.italic ? styles.formatIconBtnActive : ''}`} onClick={() => { execCmd('italic'); setTimeout(() => setFormatActive((a) => ({ ...a, italic: document.queryCommandState('italic') })), 0); }} aria-label="Курсив"><Italic size={20} /></button>
+              <button type="button" className={`${styles.formatIconBtn} ${formatActive.underline ? styles.formatIconBtnActive : ''}`} onClick={() => { execCmd('underline'); setTimeout(() => setFormatActive((a) => ({ ...a, underline: document.queryCommandState('underline') })), 0); }} aria-label="Подчёркивание"><Underline size={20} /></button>
+              <button type="button" className={`${styles.formatIconBtn} ${formatActive.strikeThrough ? styles.formatIconBtnActive : ''}`} onClick={() => { execCmd('strikeThrough'); setTimeout(() => setFormatActive((a) => ({ ...a, strikeThrough: document.queryCommandState('strikeThrough') })), 0); }} aria-label="Зачёркивание"><Strikethrough size={20} /></button>
+            </div>
+            <div className={styles.formatSheetRow}>
+              <button type="button" className={styles.formatIconBtn} onClick={() => execCmd('insertUnorderedList')} aria-label="Маркированный список"><List size={20} /></button>
+              <button type="button" className={styles.formatIconBtn} onClick={() => execCmd('insertOrderedList')} aria-label="Нумерованный список"><ListOrdered size={20} /></button>
+              <button type="button" className={styles.formatIconBtn} onClick={() => execCmd('justifyLeft')} aria-label="По левому краю"><AlignLeft size={20} /></button>
+              <button type="button" className={styles.formatIconBtn} onClick={() => execCmd('justifyCenter')} aria-label="По центру"><AlignCenter size={20} /></button>
+              <button type="button" className={styles.formatIconBtn} onClick={() => execCmd('justifyRight')} aria-label="По правому краю"><AlignRight size={20} /></button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mobileLayout && photoMenu && (
+        <div className={styles.photoMenuOverlay} onClick={closePhotoMenu} role="presentation">
+          <div className={styles.photoMenuCenter} onClick={(e) => e.stopPropagation()}>
+            <img src={photoMenu.src} alt="" className={styles.photoMenuImg} />
+          </div>
+          <div className={styles.photoMenuSheet} onClick={(e) => e.stopPropagation()}>
+            <button type="button" className={styles.photoMenuItem} onClick={() => { copyImageToClipboard(photoMenu.src); }}>
+              <Copy size={18} /> Скопировать
+            </button>
+            <button type="button" className={styles.photoMenuItem} onClick={() => { closePhotoMenu(); if (navigator.share) fetch(photoMenu.src).then((r) => r.blob()).then((b) => { const f = new File([b], 'image.png', { type: 'image/png' }); navigator.share({ files: [f] }); }); }}>
+              <Upload size={18} /> Поделиться
+            </button>
+            <div className={styles.photoMenuDropdown}>
+              <button type="button" className={styles.photoMenuItemPreview} onClick={() => setPhotoMenuPreviewOpen((o) => !o)} aria-expanded={photoMenuPreviewOpen}>
+                <LayoutGrid size={18} className={styles.photoMenuPreviewIcon} />
+                <span className={styles.photoMenuItemPreviewText}>
+                  <span className={styles.photoMenuItemPreviewMain}>Режим предпросмотра</span>
+                  <span className={styles.photoMenuItemPreviewSub}>{photoMenu.previewSize === 'small' ? 'Мелкий' : 'Крупный'}</span>
+                </span>
+                <ChevronRight size={18} className={styles.photoMenuPreviewChevron} />
+              </button>
+              {photoMenuPreviewOpen && (
+                <div className={styles.photoMenuDropdownList}>
+                  <button type="button" className={styles.photoMenuDropdownItem} onClick={() => setPhotoPreviewSize('large')}>Крупный</button>
+                  <button type="button" className={styles.photoMenuDropdownItem} onClick={() => setPhotoPreviewSize('small')}>Мелкий</button>
+                </div>
+              )}
+            </div>
+            <button type="button" className={styles.photoMenuItemDanger} onClick={() => { const el = contentRef.current && Array.from(contentRef.current.querySelectorAll('img')).find((i) => i.src === photoMenu.src); if (el) { el.remove(); handleContentInput(); flushContentSave(); } closePhotoMenu(); }}>
+              <Trash2 size={18} /> Удалить
+            </button>
+          </div>
+        </div>
       )}
 
       {fullscreenImg && (

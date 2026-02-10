@@ -162,6 +162,12 @@
   opacity: 1;
 }
 
+@media (max-width: 768px) {
+  .cardRow .dotsBtn {
+    opacity: 1;
+  }
+}
+
 .cardRowBtn {
   flex: 1;
   display: flex;
@@ -207,12 +213,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: 500;
-}
-
-.cardDate {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--muted, #64748b);
 }
 
 .empty {

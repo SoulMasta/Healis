@@ -275,22 +275,45 @@ class ElementsController {
   }
 
   async delete(req, res) {
+    const t = await sequelize.transaction();
     try {
       const { elementId } = req.params;
       const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: 'Not authorized' });
-      const element = await Element.findByPk(elementId);
-      if (!element) return res.status(404).json({ error: 'Element not found' });
+      if (!userId) {
+        await t.rollback();
+        return res.status(401).json({ error: 'Not authorized' });
+      }
+      const element = await Element.findByPk(elementId, { transaction: t });
+      if (!element) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Element not found' });
+      }
       const deskId = element.deskId;
 
-      const desk = await Desk.findByPk(element.deskId);
-      if (!desk) return res.status(404).json({ error: 'Element not found' });
+      const desk = await Desk.findByPk(element.deskId, { transaction: t });
+      if (!desk) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Element not found' });
+      }
       const canManage = await canManageDesk(desk, userId);
-      if (!canManage) return res.status(403).json({ error: 'Forbidden' });
-      await element.destroy(); // cascades to child rows
+      if (!canManage) {
+        await t.rollback();
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      // Delete type-specific child row first (e.g. Frame) to avoid FK violation:
+      // DB constraint frames_elementId_fkey may not have ON DELETE CASCADE
+      const ChildModel = TYPE_TO_MODEL[element.type];
+      if (ChildModel) {
+        await ChildModel.destroy({ where: { elementId }, transaction: t });
+      }
+      await element.destroy({ transaction: t });
+
+      await t.commit();
       emitToDesk(Number(deskId), 'element:deleted', { deskId, elementId: Number(elementId) });
       return res.json({ message: 'Element deleted successfully' });
     } catch (error) {
+      await t.rollback();
       return res.status(500).json({ error: error.message });
     }
   }

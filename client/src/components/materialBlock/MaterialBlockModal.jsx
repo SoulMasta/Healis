@@ -319,7 +319,11 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
         <div
           ref={menuRef}
           className={styles.dropdown}
-          style={{ top: menuPos.y + 8, left: menuPos.x - 6 }}
+          style={
+            isMobile
+              ? { top: menuPos.y + 8, left: Math.max(12, (menuPos.x ?? 0) - 240) }
+              : { top: menuPos.y + 8, left: menuPos.x - 6 }
+          }
           role="menu"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}

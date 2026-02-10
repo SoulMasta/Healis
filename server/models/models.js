@@ -275,6 +275,8 @@ const Frame = sequelize.define('frame', {
     primaryKey: true,
     allowNull: false,
     references: { model: Element, key: 'elementId' },
+    onDelete: 'CASCADE',
+    onUpdate: 'CASCADE',
   },
   title: { type: DataTypes.STRING, allowNull: false, defaultValue: 'Frame' },
 });

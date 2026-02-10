@@ -428,6 +428,14 @@
   background: rgba(15, 23, 42, 0.06);
 }
 
+.mobileTopIcons {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-evenly;
+  gap: 8px;
+}
+
 .mobileBoardTitle {
   flex: 1;
   min-width: 0;
@@ -1380,6 +1388,11 @@
   stroke-width: 2px;
   cursor: grab;
   pointer-events: auto;
+  touch-action: none;
+}
+
+.connectorBendHandle:active {
+  cursor: grabbing;
 }
 
 .connectorEndpointsBox {

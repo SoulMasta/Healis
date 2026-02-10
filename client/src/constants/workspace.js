@@ -30,7 +30,7 @@ export const TOOLS = [
   { id: 'frame', label: 'Frame', Icon: Frame, hotspot: [12, 12], fallbackCursor: 'crosshair' },
   { id: 'note', label: 'Note', Icon: Square, hotspot: [12, 12], fallbackCursor: 'copy' },
   { id: 'text', label: 'Text', Icon: Type, hotspot: [8, 18], fallbackCursor: 'text' },
-  { id: 'material_block', label: 'Блок материалов', Icon: BookMarked, hotspot: [2, 2], fallbackCursor: 'pointer' },
+  { id: 'material_block', label: 'materialBlock', Icon: BookMarked, hotspot: [2, 2], fallbackCursor: 'pointer' },
   { id: 'pen', label: 'Pen', Icon: PenLine, hotspot: [2, 20], fallbackCursor: 'crosshair' },
   { id: 'eraser', label: 'Eraser', Icon: Eraser, hotspot: [2, 20], fallbackCursor: 'crosshair' },
   { id: 'attach', label: 'Attach file', Icon: Paperclip, hotspot: [2, 2], fallbackCursor: 'pointer' },

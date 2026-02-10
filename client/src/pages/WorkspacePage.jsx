@@ -8,7 +8,6 @@ import {
   ChevronDown,
   Eraser,
   Home,
-  MoreVertical,
   Share2,
   Spline,
   MessageCircle,
@@ -35,6 +34,7 @@ import {
 } from '../http/elementsAPI';
 import {
   getMaterialBlocksByDesk,
+  createMaterialBlock,
   updateMaterialBlock,
   deleteMaterialBlock,
 } from '../http/materialBlocksAPI';
@@ -1602,45 +1602,71 @@ export default function WorkspacePage() {
       setPresentUserIds(next);
     });
 
+    const wsBatchRef = { current: [] };
+    let wsFlushScheduled = false;
+    const scheduleWsFlush = () => {
+      if (wsFlushScheduled) return;
+      wsFlushScheduled = true;
+      requestAnimationFrame(() => {
+        wsFlushScheduled = false;
+        const batch = wsBatchRef.current.splice(0);
+        if (batch.length === 0) return;
+        setElements((prev) => {
+          let next = prev;
+          for (const op of batch) {
+            if (op.type === 'created') next = upsertById(next, op.vm);
+            else if (op.type === 'updated') next = next.map((e) => (sameId(e.id, op.vm.id) ? { ...e, ...op.vm } : e));
+            else if (op.type === 'deleted') next = next.filter((e) => !sameId(e.id, op.elementId));
+            else if (op.type === 'note') next = next.map((el) => (sameId(el.id, op.elementId) ? { ...el, content: String(op.text ?? '') } : el));
+            else if (op.type === 'reactions') next = next.map((el) => (sameId(el.id, op.elementId) ? { ...el, reactions: op.reactions } : el));
+          }
+          return next;
+        });
+      });
+    };
+
     socket.on('note:updated', (msg = {}) => {
       if (Number(msg.deskId) !== Number(deskId)) return;
       const elementId = msg.elementId;
       if (!idKey(elementId)) return;
-      // Guard against out-of-order websocket delivery: never apply an older version over a newer local state.
       if (msg.version != null) {
         const incomingV = Number(msg.version);
         const curV = noteVersionsRef.current.get(idKey(elementId));
         if (curV != null && Number.isFinite(incomingV) && incomingV <= curV) return;
         noteVersionsRef.current.set(idKey(elementId), incomingV);
       }
-      setElements((prev) => prev.map((el) => (sameId(el.id, elementId) ? { ...el, content: String(msg.text ?? '') } : el)));
+      wsBatchRef.current.push({ type: 'note', elementId, text: msg.text });
+      scheduleWsFlush();
     });
 
     socket.on('element:created', (raw) => {
       const vm = elementToVm(raw);
       if (!vm?.id) return;
-      setElements((prev) => upsertById(prev, vm));
+      wsBatchRef.current.push({ type: 'created', vm });
+      scheduleWsFlush();
     });
 
     socket.on('element:updated', (raw) => {
       const vm = elementToVm(raw);
       if (!vm?.id) return;
-      setElements((prev) => prev.map((e) => (sameId(e.id, vm.id) ? { ...e, ...vm } : e)));
+      wsBatchRef.current.push({ type: 'updated', vm });
+      scheduleWsFlush();
     });
 
     socket.on('element:reactions', (msg = {}) => {
       if (Number(msg.deskId) !== Number(deskId)) return;
       const elementId = msg.elementId;
       if (!idKey(elementId)) return;
-      const reactions = normalizeReactions(msg.reactions);
-      setElements((prev) => prev.map((el) => (sameId(el.id, elementId) ? { ...el, reactions } : el)));
+      wsBatchRef.current.push({ type: 'reactions', elementId, reactions: normalizeReactions(msg.reactions) });
+      scheduleWsFlush();
     });
 
     socket.on('element:deleted', (msg = {}) => {
       if (Number(msg.deskId) !== Number(deskId)) return;
       const elementId = msg.elementId;
       if (!idKey(elementId)) return;
-      setElements((prev) => prev.filter((e) => !sameId(e.id, elementId)));
+      wsBatchRef.current.push({ type: 'deleted', elementId });
+      scheduleWsFlush();
       setEditingElementId((cur) => (sameId(cur, elementId) ? null : cur));
       setSelectedElementIds((cur) => {
         const k = idKey(elementId);
@@ -1955,24 +1981,23 @@ export default function WorkspacePage() {
                   {boardTitle}
                 </div>
               )}
-              <button
-                type="button"
-                className={styles.mobileTopIconBtn}
-                aria-label="Search"
-                ref={searchBtnRef}
-                onClick={() => setSearchOpen(true)}
-              >
-                <Search size={20} />
-              </button>
-              <div className={styles.mobileAvatarWrap} aria-label="Profile">
-                <UserMenu variant="bare" avatarSize="compact" />
+              <div className={styles.mobileTopIcons}>
+                <button
+                  type="button"
+                  className={styles.mobileTopIconBtn}
+                  aria-label="Search"
+                  ref={searchBtnRef}
+                  onClick={() => setSearchOpen(true)}
+                >
+                  <Search size={20} />
+                </button>
+                <div className={styles.mobileAvatarWrap} aria-label="Profile">
+                  <UserMenu variant="bare" avatarSize="compact" />
+                </div>
+                <button type="button" className={styles.mobileTopIconBtn} aria-label="Share board" onClick={shareBoard}>
+                  <Share2 size={20} />
+                </button>
               </div>
-              <button type="button" className={styles.mobileTopIconBtn} aria-label="Share board" onClick={shareBoard}>
-                <Share2 size={20} />
-              </button>
-              <button type="button" className={styles.mobileTopIconBtn} aria-label="Board settings">
-                <MoreVertical size={20} />
-              </button>
             </div>
             {workspace?.groupId ? (
               <MembersMenu
@@ -2210,6 +2235,24 @@ export default function WorkspacePage() {
             />
 
             <div className={styles.historyPanel} aria-label="History">
+              {selectedConnectorId ? (
+                <button
+                  type="button"
+                  className={styles.historyBtn}
+                  aria-label="Удалить линию"
+                  title="Удалить (Delete)"
+                  onClick={() => {
+                    const idToDelete = selectedConnectorId;
+                    if (!idToDelete) return;
+                    setSelectedConnectorId(null);
+                    deleteElement(idToDelete)
+                      .then(() => setElements((prev) => prev.filter((x) => !sameId(x.id, idToDelete))))
+                      .catch(() => {});
+                  }}
+                >
+                  <Trash2 size={18} />
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={styles.historyBtn}
@@ -2403,6 +2446,42 @@ export default function WorkspacePage() {
                               createNoteOrTextAtDeskPoint(toolId, centerDesk, { beginEdit: true, anchor: 'center' });
                               setMobileToolsOpen(false);
                               setMobileLinkOpen(false);
+                              return;
+                            }
+                            if (toolId === 'frame') {
+                              const rect = canvasRef.current?.getBoundingClientRect?.();
+                              if (!rect) return;
+                              const centerDesk = getDeskPointFromClient(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                              const w = 200;
+                              const h = 120;
+                              createFrameAtDeskRectRef.current?.({
+                                left: centerDesk.x - w / 2,
+                                top: centerDesk.y - h / 2,
+                                width: w,
+                                height: h,
+                              });
+                              setMobileToolsOpen(false);
+                              setMobileLinkOpen(false);
+                              return;
+                            }
+                            if (toolId === 'material_block') {
+                              const deskId = workspace?.id ?? workspace?.deskId ?? id;
+                              if (!deskId) return;
+                              const rect = canvasRef.current?.getBoundingClientRect?.();
+                              if (!rect) return;
+                              const centerDesk = getDeskPointFromClient(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                              setActionError(null);
+                              createMaterialBlock(deskId, { x: Math.round(centerDesk.x), y: Math.round(centerDesk.y) })
+                                .then((newBlock) => {
+                                  setMaterialBlocks((prev) => [...prev, newBlock]);
+                                  setSelectedMaterialBlockId(newBlock.id);
+                                  setMobileToolsOpen(false);
+                                  setMobileLinkOpen(false);
+                                })
+                                .catch((err) => {
+                                  setActionError(err?.response?.data?.error || err?.message || 'Не удалось создать блок');
+                                  window.setTimeout(() => setActionError(null), 4000);
+                                });
                               return;
                             }
                             if (toolId === 'pen' || toolId === 'eraser') {

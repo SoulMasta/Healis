@@ -30,7 +30,7 @@ export function useWorkspaceHistory({
       if (!entry) return;
       const store = historyRef.current;
       store.past.push(entry);
-      if (store.past.length > 120) store.past.splice(0, store.past.length - 120);
+      if (store.past.length > 10) store.past.splice(0, store.past.length - 10);
       store.future = [];
       updateHistoryMeta();
     },

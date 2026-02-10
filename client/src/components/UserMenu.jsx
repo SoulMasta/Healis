@@ -127,7 +127,14 @@ export default function UserMenu({ variant = 'default', iconClickMode = 'menu', 
       </button>
 
       {open ? (
-        <div className={styles.menu} role="menu">
+        <>
+          <div
+            className={styles.menuBackdrop}
+            role="presentation"
+            aria-hidden="true"
+            onPointerDown={() => setOpen(false)}
+          />
+          <div className={styles.menu} role="menu">
           <div className={styles.menuHeader}>
             <div className={styles.menuAvatar} aria-hidden="true">
               {avatarUrl ? <img className={styles.menuAvatarImg} src={avatarUrl} alt="" /> : initial}
@@ -154,6 +161,7 @@ export default function UserMenu({ variant = 'default', iconClickMode = 'menu', 
             </button>
           </div>
         </div>
+        </>
       ) : null}
     </div>
   );

@@ -153,6 +153,12 @@
   color: var(--muted);
 }
 
+.menuBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+}
+
 .menu {
   position: absolute;
   top: calc(100% + 10px);
