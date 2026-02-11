@@ -36,6 +36,7 @@ function makeInviteCode(len = 10) {
 // If deployed behind a proxy (Railway/Nginx), this enables correct req.ip / secure cookies.
 app.set('trust proxy', 1);
 
+// Middleware order: cors → OPTIONS short-circuit → express.json → cookieParser → routes → errorHandler (last).
 // CORS: must be first, before any routes. credentials:true requires explicit origin (no wildcard).
 const isDev = process.env.NODE_ENV !== 'production';
 const allowedOrigins = [
@@ -57,12 +58,17 @@ function corsOrigin(origin, cb) {
 }
 app.use(
   cors({
-    origin: true,
+    origin: corsOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
+// Preflight: OPTIONS always 200 so CORS headers from cors() are sent and auth is never hit.
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  next();
+});
 app.use(express.json());
 app.use(cookieParser());
 
