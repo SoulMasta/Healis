@@ -1,4 +1,7 @@
-require('dotenv').config();
+// .env only locally; production uses Railway env vars (do not overwrite process.env).
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
 const crypto = require('crypto');
 const sequelize = require('./db');
 require('./models/models');
@@ -21,7 +24,13 @@ const aiRoutes = require('./routes/aiRouter');
 const { startCalendarNotificationWorker } = require('./services/calendarNotificationWorker');
 const { startCleanup: startRateLimitCleanup } = require('./middleware/rateLimit');
 
-const PORT = Number(process.env.PORT) || 5000;
+// Production: use only process.env.PORT (Railway sets it). Local: fallback 5000. Never assign to process.env.PORT.
+const isProduction = process.env.NODE_ENV === 'production';
+const port = isProduction ? Number(process.env.PORT) : (Number(process.env.PORT) || 5000);
+if (isProduction && (!port || port <= 0)) {
+  console.error('PORT is required in production (Railway sets it).');
+  process.exit(1);
+}
 const app = express();
 
 function makeInviteCode(len = 10) {
@@ -97,7 +106,7 @@ app.get('/api/health', async (req, res) => {
   res.json({
     ok: true,
     service: 'healis-server',
-    port: PORT,
+    port,
     db,
     time: new Date().toISOString(),
   });
@@ -390,9 +399,9 @@ async function start() {
     startCalendarNotificationWorker({ intervalMs: 60_000 });
     startRateLimitCleanup(5 * 60_000);
 
-    server.listen(PORT, '0.0.0.0', () => {
+    server.listen(port, '0.0.0.0', () => {
       // eslint-disable-next-line no-console
-      console.log(`Server started: http://0.0.0.0:${PORT}`);
+      console.log(`Server started: http://0.0.0.0:${port}`);
     });
   } catch (error) {
     console.error('DB connection failed:', error.message);
