@@ -40,7 +40,7 @@ app.set('trust proxy', 1);
 const isDev = process.env.NODE_ENV !== 'production';
 const allowedOrigins = [
   'https://healis.vercel.app',
-  /^https:\/\/healis-[\w.-]+\.vercel\.app$/,
+  /^https:\/\/(healis|healis-[\w.-]+)\.vercel\.app$/, // prod + all healis preview
   ...(isDev ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : []),
 ];
 const envOrigins = [process.env.CORS_ORIGINS, process.env.CORS_ORIGIN, process.env.CLIENT_URL]
@@ -130,6 +130,12 @@ app.use((req, res) => {
   return res.sendFile(indexPath, (err) => {
     if (err) return res.status(404).json({ error: 'Not found' });
   });
+});
+
+// Error handler — last middleware
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
 async function start() {

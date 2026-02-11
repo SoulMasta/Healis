@@ -80,8 +80,7 @@ function cookieOptions() {
     path: '/api/user',
     maxAge: REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   };
-  // PWA cross-origin: frontend (Vercel) and backend (Railway) different origins;
-  // SameSite=None;Secure required. Do not set domain - cookie follows API origin.
+  // Cross-origin (Vercel↔Railway): SameSite=None;Secure required. Do not set domain.
   return opts;
 }
 
