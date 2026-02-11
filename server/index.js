@@ -57,7 +57,7 @@ function corsOrigin(origin, cb) {
 }
 app.use(
   cors({
-    origin: corsOrigin,
+    origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
