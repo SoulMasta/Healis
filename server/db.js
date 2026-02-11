@@ -8,7 +8,7 @@ const pool = {
   acquire: 30_000,
 };
 
-// Production (Render): используем DATABASE_URL. Development: локальные DB_*.
+// Production (e.g. Railway): DATABASE_URL. Development: локальные DB_*.
 const isProduction = process.env.NODE_ENV === 'production';
 const databaseUrl = process.env.DATABASE_URL;
 

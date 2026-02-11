@@ -8,7 +8,6 @@ const linkPreviewCtrl = require('../controllers/linkPreviewCtrl');
 const commentsCtrl = require('../controllers/commentsCtrl');
 const materialBlocksCtrl = require('../controllers/materialBlocksCtrl');
 const authMiddleware = require('../middleware/authMiddleware');
-const { upload, uploadCardFile } = require('../middleware/uploadMiddleware');
 
 const router = express.Router();
 
@@ -43,14 +42,8 @@ router.post('/elements/:elementId/versions/:version/restore', authMiddleware, no
 router.get('/elements/:elementId/comments', authMiddleware, commentsCtrl.listByElement);
 router.post('/elements/:elementId/comments', authMiddleware, commentsCtrl.create);
 
-// Upload a file for a desk (returns a URL that can be used in a `document` element)
-// We wrap multer to return a clean 400 on validation issues (unsupported type, size limit, etc).
-router.post('/desk/:deskId/upload', authMiddleware, (req, res, next) => {
-  upload.single('file')(req, res, (err) => {
-    if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
-    return next();
-  });
-}, uploadsCtrl.uploadToDesk);
+// Save a file URL for a desk (file is uploaded to Supabase by frontend)
+router.post('/desk/:deskId/upload', authMiddleware, uploadsCtrl.uploadToDesk);
 
 // Link preview (OpenGraph/Twitter/meta) for creating `link` elements.
 router.post('/link/preview', authMiddleware, linkPreviewCtrl.preview);
@@ -66,17 +59,8 @@ router.post('/material-blocks/:blockId/cards', authMiddleware, materialBlocksCtr
 router.get('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.getCard);
 router.put('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.updateCard);
 router.delete('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.deleteCard);
-router.post(
-  '/material-cards/:cardId/upload',
-  authMiddleware,
-  (req, res, next) => {
-    uploadCardFile.single('file')(req, res, (err) => {
-      if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
-      return next();
-    });
-  },
-  materialBlocksCtrl.uploadCardFile
-);
+// Save a file URL for a material card (file is uploaded to Supabase by frontend)
+router.post('/material-cards/:cardId/upload', authMiddleware, materialBlocksCtrl.uploadCardFile);
 router.post('/material-cards/:cardId/links', authMiddleware, materialBlocksCtrl.addCardLink);
 router.delete('/material-links/:linkId', authMiddleware, materialBlocksCtrl.deleteCardLink);
 router.delete('/material-files/:fileId', authMiddleware, materialBlocksCtrl.deleteCardFile);

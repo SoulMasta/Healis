@@ -1,19 +1,15 @@
-const path = require('path');
 const { Desk } = require('../models/models');
 const { canManageDesk } = require('../utils/deskAccess');
 
-function fixMojibakeName(name) {
-  const s = String(name || '');
-  const looksMojibake = /[ÐÑ]/.test(s) && !/[А-Яа-яЁё]/.test(s);
-  if (!looksMojibake) return s.normalize('NFC');
-  try {
-    return Buffer.from(s, 'latin1').toString('utf8').normalize('NFC');
-  } catch {
-    return s.normalize('NFC');
-  }
-}
-
+/**
+ * UploadsController - handles saving file URLs to the database
+ * Files are uploaded directly to Supabase Storage from the frontend
+ * Backend only receives and stores the resulting public URLs
+ */
 class UploadsController {
+  /**
+   * Save a file URL for a desk (file already uploaded to Supabase by frontend)
+   */
   async uploadToDesk(req, res) {
     try {
       const { deskId } = req.params;
@@ -25,20 +21,16 @@ class UploadsController {
       const canManage = await canManageDesk(desk, userId);
       if (!canManage) return res.status(403).json({ error: 'Forbidden' });
 
-      const file = req.file;
-      if (!file) return res.status(400).json({ error: 'No file provided' });
+      const { url, originalName, mimeType, size } = req.body || {};
+      if (!url) return res.status(400).json({ error: 'No URL provided' });
 
-      // Build a stable public URL (served by /uploads static)
-      const filename = path.basename(file.filename);
-      const url = `/uploads/${userId}/${deskId}/${encodeURIComponent(filename)}`;
-      const originalName = fixMojibakeName(file.originalname);
-
+      // Return the file info (URL is already a Supabase public URL)
       return res.status(201).json({
         url,
-        title: originalName,
-        originalName,
-        mimeType: file.mimetype,
-        size: file.size,
+        title: originalName || 'File',
+        originalName: originalName || 'File',
+        mimeType: mimeType || null,
+        size: size || null,
       });
     } catch (error) {
       return res.status(500).json({ error: error.message });

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { uploadFile } from './uploadService';
 
 const API_BASE = '/api/user';
 
@@ -185,12 +186,28 @@ export async function updateProfile(payload) {
   return res.data;
 }
 
-export async function uploadAvatar(file) {
-  const form = new FormData();
-  form.append('avatar', file);
-  const res = await axios.post(`${API_BASE}/avatar`, form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
+/**
+ * Upload an avatar to Supabase and save the URL to the backend
+ * @param {File} file - Avatar image file
+ * @param {Object} options - Upload options
+ * @param {function} options.onProgress - Progress callback (0-100)
+ * @returns {Promise<{profile: Object, token: string}>}
+ */
+export async function uploadAvatar(file, options = {}) {
+  const { onProgress } = options;
+
+  // Upload to Supabase Storage
+  const uploaded = await uploadFile(file, {
+    folder: 'avatars',
+    onProgress,
+    isAvatar: true,
   });
+
+  // Save the URL to the backend
+  const res = await axios.post(`${API_BASE}/avatar`, {
+    avatarUrl: uploaded.url,
+  });
+
   applyTokenFromResponse(res.data);
   return res.data;
 }

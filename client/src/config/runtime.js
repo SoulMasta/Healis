@@ -1,4 +1,4 @@
-const DEFAULT_PROD_API_URL = 'https://healis.onrender.com';
+const DEFAULT_PROD_API_URL = 'https://healis-production.up.railway.app';
 
 function normalizeUrl(url) {
   const s = String(url || '').trim();

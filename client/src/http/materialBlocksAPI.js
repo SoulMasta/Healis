@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { uploadFile } from './uploadService';
 
 const API_BASE = '/workspace';
 
@@ -59,10 +60,30 @@ export async function deleteMaterialCard(cardId) {
   return res.data;
 }
 
-export async function uploadMaterialCardFile(cardId, file) {
-  const form = new FormData();
-  form.append('file', file);
-  const res = await axios.post(`${API_BASE}/material-cards/${cardId}/upload`, form);
+/**
+ * Upload a file to Supabase and save the URL to a material card
+ * @param {string} cardId - Material card ID
+ * @param {File} file - File to upload
+ * @param {Object} options - Upload options
+ * @param {function} options.onProgress - Progress callback (0-100)
+ * @returns {Promise<{id: number, file_url: string, file_type: string, size: number}>}
+ */
+export async function uploadMaterialCardFile(cardId, file, options = {}) {
+  const { onProgress } = options;
+
+  // Upload to Supabase Storage
+  const uploaded = await uploadFile(file, {
+    folder: `cards/${cardId}`,
+    onProgress,
+  });
+
+  // Save the URL to the backend
+  const res = await axios.post(`${API_BASE}/material-cards/${cardId}/upload`, {
+    url: uploaded.url,
+    fileType: uploaded.type,
+    size: uploaded.size,
+  });
+
   return res.data;
 }
 

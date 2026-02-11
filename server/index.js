@@ -33,7 +33,7 @@ function makeInviteCode(len = 10) {
   return out;
 }
 
-// If deployed behind a proxy (Railway/Render/Nginx), this enables correct req.ip / secure cookies.
+// If deployed behind a proxy (Railway/Nginx), this enables correct req.ip / secure cookies.
 app.set('trust proxy', 1);
 
 const allowedOrigins = String(process.env.CLIENT_ORIGIN || '')
@@ -41,10 +41,25 @@ const allowedOrigins = String(process.env.CLIENT_ORIGIN || '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (allowedOrigins.length === 0) return true; // no list = allow all (e.g. dev)
+  try {
+    const u = new URL(origin);
+    if (allowedOrigins.includes(origin)) return true;
+    if (u.hostname.endsWith('.vercel.app')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 app.use(
   cors({
-    origin: allowedOrigins.length ? allowedOrigins : true,
+    origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 app.use(express.json());
@@ -91,8 +106,8 @@ app.use('/api/calendar', calendarRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/ai', aiRoutes);
 
-// Serve uploaded files (documents, images, etc.)
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Note: File uploads are now handled by Supabase Storage
+// Old /uploads static serving removed - all files served from Supabase public URLs
 
 // Root -> Home
 app.get('/', (req, res) => res.redirect('/home'));

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { uploadFile } from './uploadService';
 
 const API_BASE = '/workspace';
 
@@ -35,10 +36,31 @@ export async function deleteElement(elementId) {
   return res.data;
 }
 
-export async function uploadFileToDesk(deskId, file) {
-  const form = new FormData();
-  form.append('file', file);
-  const res = await axios.post(`${API_BASE}/desk/${deskId}/upload`, form);
+/**
+ * Upload a file to Supabase and save the URL to the backend
+ * @param {string} deskId - Desk ID
+ * @param {File} file - File to upload
+ * @param {Object} options - Upload options
+ * @param {function} options.onProgress - Progress callback (0-100)
+ * @returns {Promise<{url: string, title: string, originalName: string, mimeType: string, size: number}>}
+ */
+export async function uploadFileToDesk(deskId, file, options = {}) {
+  const { onProgress } = options;
+
+  // Upload to Supabase Storage
+  const uploaded = await uploadFile(file, {
+    folder: `desks/${deskId}`,
+    onProgress,
+  });
+
+  // Save the URL to the backend
+  const res = await axios.post(`${API_BASE}/desk/${deskId}/upload`, {
+    url: uploaded.url,
+    originalName: uploaded.originalName,
+    mimeType: uploaded.type,
+    size: uploaded.size,
+  });
+
   return res.data;
 }
 

@@ -1,4 +1,3 @@
-const path = require('path');
 const { Op } = require('sequelize');
 const {
   Desk,
@@ -399,6 +398,9 @@ class MaterialBlocksController {
     }
   }
 
+  /**
+   * Save file URL for a material card (file already uploaded to Supabase by frontend)
+   */
   async uploadCardFile(req, res) {
     try {
       const cardIdRaw = req.params.cardId;
@@ -414,17 +416,16 @@ class MaterialBlocksController {
       const card = await MaterialCard.findByPk(cardId);
       if (!card) return res.status(404).json({ error: 'Card not found' });
 
-      const file = req.file;
-      if (!file) return res.status(400).json({ error: 'No file provided' });
+      const { url, fileType, size } = req.body || {};
+      if (!url) return res.status(400).json({ error: 'No URL provided' });
 
-      const filename = file.filename || path.basename(file.path || '');
-      const fileUrl = `/uploads/${userId}/card/${card.id}/${encodeURIComponent(filename)}`;
       const mf = await MaterialFile.create({
         cardId: card.id,
-        fileUrl,
-        fileType: file.mimetype || null,
-        size: file.size || null,
+        fileUrl: url,
+        fileType: fileType || null,
+        size: size || null,
       });
+
       return res.status(201).json({
         id: mf.id,
         file_url: mf.fileUrl,

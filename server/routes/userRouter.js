@@ -3,7 +3,6 @@ const router = new Router();
 const userController = require('../controllers/userController');
 const authMiddleware = require('../middleware/authMiddleware');
 const { createRateLimit } = require('../middleware/rateLimit');
-const { uploadAvatar } = require('../middleware/uploadMiddleware');
 
 const authBurstLimit = createRateLimit({ windowMs: 5 * 60_000, max: 10, keyPrefix: 'auth' });
 const refreshLimit = createRateLimit({ windowMs: 5 * 60_000, max: 60, keyPrefix: 'refresh' });
@@ -18,16 +17,7 @@ router.get('/auth', authMiddleware, userController.check);
 // Profile
 router.get('/profile', authMiddleware, userController.getProfile);
 router.patch('/profile', authMiddleware, userController.updateProfile);
-router.post(
-  '/avatar',
-  authMiddleware,
-  (req, res, next) => {
-    uploadAvatar.single('avatar')(req, res, (err) => {
-      if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
-      return next();
-    });
-  },
-  userController.uploadAvatar
-);
+// Save avatar URL (file is uploaded to Supabase by frontend)
+router.post('/avatar', authMiddleware, userController.uploadAvatar);
 
 module.exports = router;

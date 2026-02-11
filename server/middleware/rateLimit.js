@@ -1,5 +1,5 @@
 // DB-backed rate limiter (no in-memory state). Survives restarts and cold start.
-// For auth routes: avoids Map/process state loss on Render redeploy.
+// For auth routes: avoids Map/process state loss on platform redeploy (e.g. Railway).
 
 const sequelize = require('../db');
 

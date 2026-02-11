@@ -1,6 +1,5 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const path = require('path');
 const { OAuth2Client } = require('google-auth-library');
 const { User, RefreshToken } = require('../models/models');
 const { randomToken, hashToken } = require('../utils/authTokens');
@@ -81,7 +80,7 @@ function cookieOptions() {
     path: '/api/user',
     maxAge: REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   };
-  // PWA cross-origin: frontend (Vercel) and backend (Render) different origins;
+  // PWA cross-origin: frontend (Vercel) and backend (Railway) different origins;
   // SameSite=None;Secure required. Do not set domain - cookie follows API origin.
   return opts;
 }
@@ -210,6 +209,9 @@ class UserController {
     }
   }
 
+  /**
+   * Save avatar URL (file already uploaded to Supabase by frontend)
+   */
   async uploadAvatar(req, res) {
     try {
       const userId = req.user?.id;
@@ -218,13 +220,10 @@ class UserController {
       const user = await User.findByPk(userId);
       if (!user) return res.status(404).json({ error: 'User not found' });
 
-      const file = req.file;
-      if (!file) return res.status(400).json({ error: 'No file provided' });
+      const { avatarUrl } = req.body || {};
+      if (!avatarUrl) return res.status(400).json({ error: 'No avatar URL provided' });
 
-      const filename = path.basename(file.filename);
-      const url = `/uploads/${userId}/profile/${encodeURIComponent(filename)}`;
-
-      await user.update({ avatarUrl: url });
+      await user.update({ avatarUrl });
       const token = generateAccessToken(user);
       return res.status(201).json({ profile: serializeProfile(user), token });
     } catch (error) {
