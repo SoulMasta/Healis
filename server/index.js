@@ -390,9 +390,9 @@ async function start() {
     startCalendarNotificationWorker({ intervalMs: 60_000 });
     startRateLimitCleanup(5 * 60_000);
 
-    server.listen(PORT, () => {
+    server.listen(PORT, '0.0.0.0', () => {
       // eslint-disable-next-line no-console
-      console.log(`Server started: http://localhost:${PORT}`);
+      console.log(`Server started: http://0.0.0.0:${PORT}`);
     });
   } catch (error) {
     console.error('DB connection failed:', error.message);
