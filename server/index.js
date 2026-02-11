@@ -56,7 +56,7 @@ function isAllowedOrigin(origin) {
 
 app.use(
   cors({
-    origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+    origin: process.env.CLIENT_URL,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
