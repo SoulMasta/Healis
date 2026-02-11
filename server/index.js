@@ -1,4 +1,5 @@
 // .env only locally; production uses Railway env vars (do not overwrite process.env).
+console.log("PORT FROM ENV:", process.env.PORT);
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }

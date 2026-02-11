@@ -76,6 +76,20 @@ This section has moved here: [https://facebook.github.io/create-react-app/docs/a
 
 This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
 
+#### Environment variables (Vercel / Railway)
+
+Файл `.env` не попадает на хостинг. В панели хостинга добавьте переменные окружения и пересоберите проект:
+
+| Variable | Описание |
+|----------|----------|
+| `REACT_APP_API_URL` | URL бэкенда (например `https://healis-production.up.railway.app`) |
+| `REACT_APP_GOOGLE_CLIENT_ID` | Google OAuth Client ID |
+| `REACT_APP_SUPABASE_URL` | URL проекта Supabase (например `https://xxx.supabase.co`) |
+| `REACT_APP_SUPABASE_ANON_KEY` | Supabase anon (public) key |
+
+- **Vercel**: Project → Settings → Environment Variables → Add.
+- **Railway** (если фронт там): Project → Variables → Add.
+
 ### `npm run build` fails to minify
 
 This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)

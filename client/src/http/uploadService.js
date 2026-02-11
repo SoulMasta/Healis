@@ -71,6 +71,9 @@ function isAllowedExtension(filename, allowedSet = ALLOWED_EXTENSIONS) {
 export async function uploadFile(file, options = {}) {
   const { folder = '', onProgress, isAvatar = false } = options;
 
+  if (!supabase) {
+    throw new Error('Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY in your hosting (Vercel/Railway) Environment Variables.');
+  }
   if (!file) {
     throw new Error('No file provided');
   }
@@ -183,6 +186,9 @@ export async function uploadFiles(files, options = {}) {
  * @returns {Promise<void>}
  */
 export async function deleteFile(path) {
+  if (!supabase) {
+    throw new Error('Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY in your hosting (Vercel/Railway) Environment Variables.');
+  }
   if (!path) {
     throw new Error('No file path provided');
   }
