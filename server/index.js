@@ -36,27 +36,28 @@ function makeInviteCode(len = 10) {
 // If deployed behind a proxy (Railway/Nginx), this enables correct req.ip / secure cookies.
 app.set('trust proxy', 1);
 
-const allowedOrigins = String(process.env.CLIENT_ORIGIN || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-function isAllowedOrigin(origin) {
-  if (!origin) return true;
-  if (allowedOrigins.length === 0) return true; // no list = allow all (e.g. dev)
-  try {
-    const u = new URL(origin);
-    if (allowedOrigins.includes(origin)) return true;
-    if (u.hostname.endsWith('.vercel.app')) return true;
-    return false;
-  } catch {
-    return false;
-  }
+// CORS: must be first, before any routes. credentials:true requires explicit origin (no wildcard).
+const isDev = process.env.NODE_ENV !== 'production';
+const allowedOrigins = [
+  'https://healis.vercel.app',
+  /^https:\/\/healis-[\w.-]+\.vercel\.app$/,
+  ...(isDev ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : []),
+];
+const envOrigins = [process.env.CORS_ORIGINS, process.env.CORS_ORIGIN, process.env.CLIENT_URL]
+  .filter(Boolean)
+  .flatMap((s) => s.split(',').map((x) => x.trim()).filter(Boolean));
+function corsOrigin(origin, cb) {
+  if (!origin) return cb(null, true); // same-origin or non-browser
+  const allowed = allowedOrigins.find((o) =>
+    typeof o === 'string' ? o === origin : o.test(origin)
+  );
+  if (allowed) return cb(null, origin); // reflect origin for credentials
+  if (envOrigins.includes(origin)) return cb(null, origin);
+  return cb(null, false);
 }
-
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: corsOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -65,7 +66,7 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-// Health check proves frontend<->backend connectivity.
+// Public routes (no auth): health, manifest, static
 app.get('/api/health', async (req, res) => {
   const hasDbEnv = Boolean(
     process.env.DATABASE_URL ||
@@ -96,6 +97,14 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
+// manifest.json — public, no auth (backend may not have client build when frontend on Vercel)
+const clientBuildDir = path.join(__dirname, '..', 'client', 'build');
+app.get('/manifest.json', (req, res) => {
+  res.sendFile(path.join(clientBuildDir, 'manifest.json'), (err) => {
+    if (err) res.status(404).end();
+  });
+});
+
 // Mount "page" routes
 app.use('/home', homeRoutes);
 app.use('/workspace', workspaceRoutes);
@@ -113,7 +122,6 @@ app.use('/api/ai', aiRoutes);
 app.get('/', (req, res) => res.redirect('/home'));
 
 // Serve React build if present (production-style)
-const clientBuildDir = path.join(__dirname, '..', 'client', 'build');
 app.use(express.static(clientBuildDir));
 
 // SPA fallback: if someone hits /home etc after build, ensure index.html is served.
