@@ -86,8 +86,8 @@ app.use((req, res, next) => {
 const isDev = process.env.NODE_ENV !== 'production';
 const allowedOrigins = [
   'https://healis111.vercel.app',
-  // hyphen in class must be literal: [\w\-.] so all Vercel preview URLs (e.g. healis-dwpydj7q6-soulmastas-projects.vercel.app) match
-  /^https:\/\/(healis|healis-[\w\-.]+)\.vercel\.app$/,
+  // healis + healis111 and their previews (e.g. healis-xxx, healis111-xxx.vercel.app)
+  /^https:\/\/(healis|healis111)(-[\w\-.]+)?\.vercel\.app$/,
   ...(isDev ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : []),
 ];
 const envOrigins = [process.env.CORS_ORIGINS, process.env.CORS_ORIGIN, process.env.CLIENT_URL]
