@@ -397,11 +397,25 @@ class UserController {
   async refresh(req, res) {
     try {
       const raw = req.cookies?.refreshToken;
-      if (!raw) return res.status(401).json({ error: 'Not authorized' });
+      const origin = req.headers.origin;
+      // #region agent log
+      console.log('[DEBUG 401] refresh entry', { hasCookie: Boolean(raw), origin });
+      // #endregion
+      if (!raw) {
+        // #region agent log
+        console.log('[DEBUG 401] refresh 401 reason: noCookie');
+        // #endregion
+        return res.status(401).json({ error: 'Not authorized' });
+      }
 
       const tokenHash = hashToken(raw);
       const token = await RefreshToken.findOne({ where: { tokenHash } });
-      if (!token) return res.status(401).json({ error: 'Not authorized' });
+      if (!token) {
+        // #region agent log
+        console.log('[DEBUG 401] refresh 401 reason: tokenNotFound');
+        // #endregion
+        return res.status(401).json({ error: 'Not authorized' });
+      }
 
       // Reuse detection: revoked token presented again -> possible theft. Revoke all tokens for user.
       if (token.revokedAt) {
@@ -410,15 +424,26 @@ class UserController {
           { where: { userId: token.userId } }
         );
         res.clearCookie('refreshToken', { path: '/api/user' });
+        // #region agent log
+        console.log('[DEBUG 401] refresh 401 reason: revoked');
+        // #endregion
         return res.status(401).json({ error: 'Not authorized' });
       }
 
       if (token.expiresAt && new Date(token.expiresAt).getTime() <= Date.now()) {
+        // #region agent log
+        console.log('[DEBUG 401] refresh 401 reason: expired');
+        // #endregion
         return res.status(401).json({ error: 'Not authorized' });
       }
 
       const user = await User.findByPk(token.userId);
-      if (!user) return res.status(401).json({ error: 'Not authorized' });
+      if (!user) {
+        // #region agent log
+        console.log('[DEBUG 401] refresh 401 reason: noUser');
+        // #endregion
+        return res.status(401).json({ error: 'Not authorized' });
+      }
 
       const nextRefresh = await issueRefreshToken({ userId: user.id, req });
       await token.update({ revokedAt: new Date(), replacedByTokenHash: nextRefresh.tokenHash });

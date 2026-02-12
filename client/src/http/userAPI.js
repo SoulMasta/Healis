@@ -6,6 +6,23 @@ const API_BASE = '/api/user';
 // Access token only in memory (survives tab refresh via refresh cookie, no XSS via localStorage).
 let accessToken = null;
 
+const HAS_SESSION_KEY = 'healis:hasSession';
+
+export function hasStoredSession() {
+  try {
+    return localStorage.getItem(HAS_SESSION_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setSessionFlag(on) {
+  try {
+    if (on) localStorage.setItem(HAS_SESSION_KEY, '1');
+    else localStorage.removeItem(HAS_SESSION_KEY);
+  } catch {}
+}
+
 function getDeviceId() {
   try {
     const s = localStorage.getItem('healis:deviceId');
@@ -38,6 +55,7 @@ export function getToken() {
 export function logout() {
   accessToken = null;
   setAuthToken(null);
+  setSessionFlag(false);
   notifyTokenChanged();
 }
 
@@ -53,6 +71,7 @@ export async function registration(payload) {
   const token = res.data?.token;
   if (token) {
     setAuthToken(token);
+    setSessionFlag(true);
     notifyTokenChanged();
   }
   return res.data;
@@ -63,6 +82,7 @@ export async function login(email, password) {
   const token = res.data?.token;
   if (token) {
     setAuthToken(token);
+    setSessionFlag(true);
     notifyTokenChanged();
   }
   return res.data;
@@ -73,6 +93,7 @@ export async function googleAuth(credential) {
   const token = res.data?.token;
   if (token) {
     setAuthToken(token);
+    setSessionFlag(true);
     notifyTokenChanged();
   }
   return res.data;
@@ -80,7 +101,20 @@ export async function googleAuth(credential) {
 
 // Get a new access token using httpOnly refresh cookie (server rotates refresh token).
 export async function refreshAuth() {
-  const res = await axios.post(`${API_BASE}/refresh`, null, authHeaders());
+  // #region agent log
+  const runId = 'refresh';
+  fetch('http://127.0.0.1:7242/ingest/45c433a3-fa5c-4697-b19e-a367061682dc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'userAPI.js:refreshAuth',message:'refreshAuth called',data:{runId},hypothesisId:'H1,H5',timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  let res;
+  try {
+    res = await axios.post(`${API_BASE}/refresh`, null, authHeaders());
+  } catch (e) {
+    // #region agent log
+    const status = e?.response?.status;
+    fetch('http://127.0.0.1:7242/ingest/45c433a3-fa5c-4697-b19e-a367061682dc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'userAPI.js:refreshAuth',message:'refreshAuth failed',data:{runId,status,status401:status===401},hypothesisId:status===401?'H1,H2,H3':undefined,timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    throw e;
+  }
   const newToken = res.data?.token;
   if (newToken) {
     setAuthToken(newToken);
@@ -146,7 +180,10 @@ axios.interceptors.response.use(
       return axios(original);
     } catch (e) {
       // Only logout when refresh returned 401 (no valid refresh cookie). Never logout on 5xx/network.
-      if (e?.response?.status === 401) logout();
+      if (e?.response?.status === 401) {
+        setSessionFlag(false);
+        logout();
+      }
       return Promise.reject(e);
     }
   }

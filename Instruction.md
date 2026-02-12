@@ -118,3 +118,10 @@ REQUEST REACHED EXPRESS
   /^https:\/\/(healis|healis-[\w\-.]+)\.vercel\.app$/
 ] | envOrigins: [ 'https://healis.vercel.app' ]
 
+---
+## 401 на деплое (Vercel + Railway)
+
+**Manifest 401:** Если manifest.json и другие статичные запросы к домену Vercel возвращают 401 — это Vercel Deployment Protection. Решение: Vercel Dashboard → Project → Settings → Deployment Protection → отключить или открыть доступ для нужного домена.
+
+**Refresh 401:** Для гостей (без логина) запрос POST /api/user/refresh вызывался при каждой загрузке и возвращал 401 (нет cookie). Теперь refresh при старте и по таймеру вызывается только при наличии флага сессии (устанавливается при login/registration/google, сбрасывается при logout), чтобы не слать лишние запросы и не получать 401 в консоли.
+

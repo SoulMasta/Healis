@@ -13,7 +13,7 @@ import ToastHost from '../components/ToastHost';
 import { useEventReminderNotifications } from '../hooks/useEventReminderNotifications';
 import { useRealtimeNotifications } from '../hooks/useRealtimeNotifications';
 import { applyThemePreference, loadPreferences, PREFERENCES_STORAGE_KEY } from '../utils/preferences';
-import { refreshAuth } from '../http/userAPI';
+import { refreshAuth, hasStoredSession } from '../http/userAPI';
 
 export default function App() {
   const { isMobile } = useBreakpoints();
@@ -35,8 +35,9 @@ export default function App() {
   }, []);
 
   React.useEffect(() => {
-    let cancelled = false;
+    if (!hasStoredSession()) return;
 
+    let cancelled = false;
     const tick = async () => {
       try {
         await refreshAuth();
@@ -45,9 +46,7 @@ export default function App() {
       }
     };
 
-    // Refresh once on app start (helps keep auth from "falling off").
     tick();
-
     const intervalId = window.setInterval(() => {
       if (cancelled) return;
       tick();
