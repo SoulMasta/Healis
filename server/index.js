@@ -1,8 +1,18 @@
 // .env only locally; production uses Railway env vars (do not overwrite process.env).
-console.log("PORT FROM ENV:", process.env.PORT);
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }
+
+// #region agent log
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err?.message || err);
+  if (err?.stack) console.error(err.stack);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[unhandledRejection]', reason);
+});
+// #endregion
+
 const crypto = require('crypto');
 const sequelize = require('./db');
 require('./models/models');
@@ -46,17 +56,44 @@ function makeInviteCode(len = 10) {
 // If deployed behind a proxy (Railway/Nginx), this enables correct req.ip / secure cookies.
 app.set('trust proxy', 1);
 
+// ——— 1. Global logger: all incoming requests ———
+app.use((req, res, next) => {
+  console.log('[REQUEST]', {
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    origin: req.headers.origin,
+    timestamp: new Date().toISOString(),
+  });
+  next();
+});
+
+// ——— 2. REQUEST REACHED EXPRESS ———
+app.use((req, res, next) => {
+  console.log('REQUEST REACHED EXPRESS');
+  next();
+});
+
 // Middleware order: cors → OPTIONS short-circuit → express.json → cookieParser → routes → errorHandler (last).
 // CORS: must be first, before any routes. credentials:true requires explicit origin (no wildcard).
 const isDev = process.env.NODE_ENV !== 'production';
 const allowedOrigins = [
   'https://healis.vercel.app',
-  /^https:\/\/(healis|healis-[\w.-]+)\.vercel\.app$/, // prod + all healis preview
+  // hyphen in class must be literal: [\w\-.] so all Vercel preview URLs (e.g. healis-dwpydj7q6-soulmastas-projects.vercel.app) match
+  /^https:\/\/(healis|healis-[\w\-.]+)\.vercel\.app$/,
   ...(isDev ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : []),
 ];
 const envOrigins = [process.env.CORS_ORIGINS, process.env.CORS_ORIGIN, process.env.CLIENT_URL]
   .filter(Boolean)
   .flatMap((s) => s.split(',').map((x) => x.trim()).filter(Boolean));
+
+// ——— Before CORS: log origin and allowed list ———
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  console.log('[CORS BEFORE] origin:', origin, '| allowedOrigins:', allowedOrigins, '| envOrigins:', envOrigins);
+  next();
+});
+
 function corsOrigin(origin, cb) {
   if (!origin) return cb(null, true); // same-origin or non-browser
   const allowed = allowedOrigins.find((o) =>
@@ -74,6 +111,17 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
+
+// ——— After CORS: log origin, allowed, and response headers on finish ———
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = !origin || allowedOrigins.some((o) => (typeof o === 'string' ? o === origin : o.test(origin))) || envOrigins.includes(origin);
+  console.log('[CORS AFTER] origin:', origin, '| allowed:', allowed);
+  res.on('finish', () => {
+    console.log('[CORS AFTER] response headers:', res.getHeaders());
+  });
+  next();
+});
 // Preflight: OPTIONS always 200 so CORS headers from cors() are sent and auth is never hit.
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -82,7 +130,15 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(cookieParser());
 
-// Public routes (no auth): health, manifest, static
+// Public routes (no auth): health, debug, manifest, static
+app.get('/api/debug', (req, res) => {
+  res.json({
+    port: process.env.PORT,
+    env: process.env.NODE_ENV,
+    uptime: process.uptime(),
+  });
+});
+
 app.get('/api/health', async (req, res) => {
   const hasDbEnv = Boolean(
     process.env.DATABASE_URL ||
@@ -140,11 +196,15 @@ app.get('/', (req, res) => res.redirect('/home'));
 // Serve React build if present (production-style)
 app.use(express.static(clientBuildDir));
 
+// ——— 7. After routes: 404 logging (only when we actually respond 404) ———
 // SPA fallback: if someone hits /home etc after build, ensure index.html is served.
 app.use((req, res) => {
   const indexPath = path.join(clientBuildDir, 'index.html');
   return res.sendFile(indexPath, (err) => {
-    if (err) return res.status(404).json({ error: 'Not found' });
+    if (err) {
+      console.log('[404] Route not found:', req.method, req.url);
+      return res.status(404).json({ error: 'Not found' });
+    }
   });
 });
 
@@ -155,6 +215,18 @@ app.use((err, req, res, next) => {
 });
 
 async function start() {
+  const server = http.createServer(app);
+  initRealtime(server);
+  startCalendarNotificationWorker({ intervalMs: 60_000 });
+  startRateLimitCleanup(5 * 60_000);
+
+  server.listen(port, '0.0.0.0', () => {
+    console.log('[LISTEN] Server started: http://0.0.0.0:' + port);
+    console.log('[LISTEN] process.env.PORT:', process.env.PORT);
+    console.log('[LISTEN] process.env.RAILWAY_ENVIRONMENT:', process.env.RAILWAY_ENVIRONMENT);
+    console.log('[LISTEN] process.env keys:', Object.keys(process.env));
+  });
+
   try {
     await sequelize.authenticate();
 
@@ -394,16 +466,6 @@ async function start() {
     } catch {
       // ignore
     }
-
-    const server = http.createServer(app);
-    initRealtime(server);
-    startCalendarNotificationWorker({ intervalMs: 60_000 });
-    startRateLimitCleanup(5 * 60_000);
-
-    server.listen(port, '0.0.0.0', () => {
-      // eslint-disable-next-line no-console
-      console.log(`Server started: http://0.0.0.0:${port}`);
-    });
   } catch (error) {
     console.error('DB connection failed:', error.message);
   }
