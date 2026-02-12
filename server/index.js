@@ -146,6 +146,11 @@ app.get('/api/debug', (req, res) => {
   });
 });
 
+// Liveness: 200 immediately, no DB. Use this as Railway health check path so proxy stops returning 502.
+app.get('/api/health/live', (req, res) => {
+  res.status(200).json({ ok: true });
+});
+
 app.get('/api/health', async (req, res) => {
   const hasDbEnv = Boolean(
     process.env.DATABASE_URL ||
@@ -198,7 +203,11 @@ app.use('/api/ai', aiRoutes);
 // Old /uploads static serving removed - all files served from Supabase public URLs
 
 // Root -> Home
-app.get('/', (req, res) => res.redirect('/home'));
+// Railway health check uses Host: healthcheck.railway.app and expects 200 (302 = fail → 502)
+app.get('/', (req, res) => {
+  if (req.get('host') === 'healthcheck.railway.app') return res.status(200).json({ ok: true });
+  res.redirect('/home');
+});
 
 // Serve React build if present (production-style)
 app.use(express.static(clientBuildDir));
