@@ -1,7 +1,11 @@
+// Earliest possible log (stderr, no buffer) so Railway shows something if process starts
+process.stderr.write('[BOOT] index.js loading\n');
+
 // .env only locally; production uses Railway env vars (do not overwrite process.env).
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }
+process.stderr.write('[BOOT] dotenv done\n');
 
 // #region agent log
 process.on('uncaughtException', (err) => {
@@ -14,8 +18,11 @@ process.on('unhandledRejection', (reason, promise) => {
 // #endregion
 
 const crypto = require('crypto');
+process.stderr.write('[BOOT] requiring db\n');
 const sequelize = require('./db');
+process.stderr.write('[BOOT] requiring models\n');
 require('./models/models');
+process.stderr.write('[BOOT] models done\n');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
@@ -215,12 +222,14 @@ app.use((err, req, res, next) => {
 });
 
 async function start() {
+  process.stderr.write('[BOOT] start() entered\n');
   const server = http.createServer(app);
   initRealtime(server);
   startCalendarNotificationWorker({ intervalMs: 60_000 });
   startRateLimitCleanup(5 * 60_000);
 
   server.listen(port, '0.0.0.0', () => {
+    process.stderr.write('[LISTEN] Server listening on http://0.0.0.0:' + port + '\n');
     console.log('[LISTEN] Server started: http://0.0.0.0:' + port);
     console.log('[LISTEN] process.env.PORT:', process.env.PORT);
     console.log('[LISTEN] process.env.RAILWAY_ENVIRONMENT:', process.env.RAILWAY_ENVIRONMENT);
@@ -471,6 +480,10 @@ async function start() {
   }
 }
 
-start();
+process.stderr.write('[BOOT] calling start()\n');
+start().catch((err) => {
+  process.stderr.write('[BOOT] start() failed: ' + (err && err.message) + '\n');
+  console.error(err);
+});
 
 
