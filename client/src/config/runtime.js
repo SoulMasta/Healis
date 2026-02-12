@@ -12,15 +12,12 @@ function isLikelyVercelHost(hostname) {
 }
 
 export function getApiBaseUrl() {
-  const fromEnv = normalizeUrl(process.env.REACT_APP_API_URL);
-  if (fromEnv) return fromEnv;
-
-  // Helpful fallback for the common "frontend on Vercel, backend elsewhere" setup.
+  // When frontend is on Vercel, always use Railway backend (avoids stale REACT_APP_API_URL pointing to Render).
   if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) {
     return DEFAULT_PROD_API_URL;
   }
-
-  // Empty means: use same-origin (e.g. when backend is served with frontend or via reverse proxy).
+  const fromEnv = normalizeUrl(process.env.REACT_APP_API_URL);
+  if (fromEnv) return fromEnv;
   return '';
 }
 
