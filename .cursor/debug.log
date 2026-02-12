@@ -1,0 +1,2 @@
+{"location":"client/src/http/supabaseClient.js","message":"Supabase init","data":{"hasUrl":true,"hasKey":true,"urlLen":40,"willCreate":true},"timestamp":1770898700201,"hypothesisId":"H1"}
+{"location":"client/src/http/supabaseClient.js","message":"createClient ok","data":{},"timestamp":1770898700207,"hypothesisId":"H3"}

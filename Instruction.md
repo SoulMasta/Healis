@@ -119,6 +119,17 @@ REQUEST REACHED EXPRESS
 ] | envOrigins: [ 'https://healis.vercel.app' ]
 
 ---
+## Supabase и белый экран на Vercel
+
+Клиент (CRA) подставляет `REACT_APP_*` **на этапе сборки**. Если при билде на Vercel нет переменных — в бандле окажутся `undefined`, приложение может показать белый экран или ошибку «supabaseUrl is required».
+
+**Что сделать:** Vercel → Project → Settings → Environment Variables — добавить для окружения, в котором собирается фронт (Production / Preview):
+- `REACT_APP_SUPABASE_URL`
+- `REACT_APP_SUPABASE_ANON_KEY`
+
+После сохранения — **Redeploy** (желательно с опцией «Clear build cache»), чтобы сборка прошла уже с этими переменными.
+
+---
 ## 401 на деплое (Vercel + Railway)
 
 **Manifest 401:** Если manifest.json и другие статичные запросы к домену Vercel возвращают 401 — это Vercel Deployment Protection. Решение: Vercel Dashboard → Project → Settings → Deployment Protection → отключить или открыть доступ для нужного домена.
