@@ -1,2 +1,11 @@
 {"location":"client/src/http/supabaseClient.js","message":"Supabase init","data":{"hasUrl":true,"hasKey":true,"urlLen":40,"willCreate":true},"timestamp":1770898700201,"hypothesisId":"H1"}
 {"location":"client/src/http/supabaseClient.js","message":"createClient ok","data":{},"timestamp":1770898700207,"hypothesisId":"H3"}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926278673}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926283574}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926373335}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926424518}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926443552}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926457379}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926464450}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926498509}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770926879191}
