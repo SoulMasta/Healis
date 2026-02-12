@@ -85,7 +85,7 @@ app.use((req, res, next) => {
 // CORS: must be first, before any routes. credentials:true requires explicit origin (no wildcard).
 const isDev = process.env.NODE_ENV !== 'production';
 const allowedOrigins = [
-  'https://healis.vercel.app',
+  'https://healis111.vercel.app',
   // hyphen in class must be literal: [\w\-.] so all Vercel preview URLs (e.g. healis-dwpydj7q6-soulmastas-projects.vercel.app) match
   /^https:\/\/(healis|healis-[\w\-.]+)\.vercel\.app$/,
   ...(isDev ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : []),
