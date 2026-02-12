@@ -22,10 +22,12 @@ export function getApiBaseUrl() {
 }
 
 export function getSocketBaseUrl() {
+  // When frontend is on Vercel, socket must use Railway (same as API); ignore stale REACT_APP_SOCKET_URL.
+  if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) {
+    return DEFAULT_PROD_API_URL;
+  }
   const fromEnv = normalizeUrl(process.env.REACT_APP_SOCKET_URL);
   if (fromEnv) return fromEnv;
-
-  // Prefer API base if it exists (often same backend).
   const api = getApiBaseUrl();
   if (api) return api;
 
