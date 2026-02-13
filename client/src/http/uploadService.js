@@ -28,7 +28,7 @@ function generateUniqueFilename(originalName) {
   // ASCII-only: Supabase Storage rejects non-ASCII (Cyrillic, accents, etc.)
   const safeName = baseName
     .replace(/[/\\]/g, '_')
-    .replace(/[^a-zA-Z0-9_.\-]/g, '')
+    .replace(/[^a-zA-Z0-9_.-]/g, '')
     .slice(0, 80) || 'file';
 
   const timestamp = Date.now();
@@ -96,7 +96,7 @@ export async function uploadFile(file, options = {}) {
   // Defensive: ensure path is ASCII-only (Supabase rejects non-ASCII keys; also fixes old cached bundles)
   const pathParts = filePath.split('/');
   const lastSegment = pathParts.pop();
-  const safeLast = (lastSegment && lastSegment.replace(/[^a-zA-Z0-9_.\-]/g, '')) || 'file';
+  const safeLast = (lastSegment && lastSegment.replace(/[^a-zA-Z0-9_.-]/g, '')) || 'file';
   const ext = /\.([a-z0-9]+)$/i.exec(safeLast);
   const fallbackExt = getExtension(file.name).replace(/[^a-zA-Z0-9.]/g, '');
   pathParts.push(ext ? safeLast : `${safeLast}${fallbackExt.length > 1 ? fallbackExt : '.bin'}`);
