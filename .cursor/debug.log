@@ -1,0 +1,21 @@
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959250787}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959253601}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959257462}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959262960}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959273911}
+{"location":"uploadService.js:uploadFile","message":"upload path","data":{"originalName":"photo_2026-02-10_12-03-35 2.jpg","filePath":"desks/1/1770959274015-23fzezrq-photo_2026-02-10_12-03-352.jpg","folder":"desks/1"},"timestamp":1770959274015,"hypothesisId":"H1"}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959288429}
+{"location":"uploadService.js:uploadFile","message":"upload path","data":{"originalName":"watermark-removed-1768461774892.png","filePath":"desks/1/1770959288526-1egxeadr-watermark-removed-1768461774892.png","folder":"desks/1"},"timestamp":1770959288526,"hypothesisId":"H1"}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959303417}
+{"location":"uploadService.js:uploadFile","message":"upload path","data":{"originalName":"соед линии.jpg","filePath":"desks/1/1770959303489-zbr81bnt-file.jpg","folder":"desks/1"},"timestamp":1770959303489,"hypothesisId":"H1"}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959327620}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770959857614}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770960457481}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770961054207}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770961057090}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770961064430}
+{"location":"uploadService.js:uploadFile","message":"upload path","data":{"originalName":"12 (1).docx","filePath":"desks/1/1770961064540-hnxa9l4i-121.docx","folder":"desks/1"},"timestamp":1770961064540,"hypothesisId":"H1"}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770961077974}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770961080952}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770961194598}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1770961657300}

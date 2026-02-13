@@ -56,11 +56,21 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const titleInputRef = useRef(null);
   const mobileLayout = Boolean(isMobile);
   const [keyboardBottomOffset, setKeyboardBottomOffset] = useState(0);
+  const [toolbarViewportStyle, setToolbarViewportStyle] = useState(null);
 
   useEffect(() => {
     if (!mobileLayout || typeof window === 'undefined' || !window.visualViewport) return;
     const vv = window.visualViewport;
-    const update = () => setKeyboardBottomOffset(Math.max(0, window.innerHeight - vv.height));
+    const update = () => {
+      setKeyboardBottomOffset(Math.max(0, window.innerHeight - vv.height));
+      setToolbarViewportStyle({
+        top: vv.offsetTop + vv.height,
+        left: vv.offsetLeft,
+        right: 'auto',
+        width: vv.width,
+        transform: 'translateY(-100%)',
+      });
+    };
     update();
     vv.addEventListener('resize', update);
     vv.addEventListener('scroll', update);
@@ -79,12 +89,24 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   }, [card?.id]);
 
   const EMPTY_HEADING_HTML = '<div class="mobile-first-heading" data-block="heading"><br></div>';
+  const migrateOldDocCards = useCallback((root) => {
+    if (!root?.querySelectorAll) return;
+    root.querySelectorAll('.inline-doc-card').forEach((card) => {
+      if (card.querySelector('.inline-doc-card-inner')) return;
+      const link = card.querySelector('a.inline-doc-card-link');
+      const nameEl = card.querySelector('.inline-doc-card-name');
+      const href = link?.getAttribute('href') || '#';
+      const name = (nameEl?.textContent || 'Документ').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      card.innerHTML = `<span class="inline-doc-card-inner"><span class="inline-doc-card-preview">📄</span><span class="inline-doc-card-body"><span class="inline-doc-card-name" contenteditable="true" data-placeholder="Название документа">${name}</span><a href="${href}" target="_blank" rel="noopener noreferrer" class="inline-doc-card-link">Открыть</a></span></span>`;
+    });
+  }, []);
   useLayoutEffect(() => {
     if (!contentRef.current || card?.id == null) return;
     const raw = (card?.content ?? '').trim();
     contentRef.current.innerHTML = !raw || raw === '<br>' ? EMPTY_HEADING_HTML : card?.content ?? '';
+    migrateOldDocCards(contentRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- set content only on card open to avoid overwriting edits
-  }, [card?.id]);
+  }, [card?.id, migrateOldDocCards]);
 
   const isInHeadingBlock = useCallback(() => {
     const sel = document.getSelection();
@@ -140,6 +162,16 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => saveContent(html), AUTOSAVE_DELAY_MS);
   }, [saveContent]);
+
+  useEffect(() => {
+    const onDocCardInput = (e) => {
+      if (contentRef.current?.contains(e.target) && e.target?.classList?.contains?.('inline-doc-card-name')) {
+        handleContentInput();
+      }
+    };
+    document.addEventListener('input', onDocCardInput, true);
+    return () => document.removeEventListener('input', onDocCardInput, true);
+  }, [handleContentInput]);
 
   const handleContentKeyDown = useCallback(
     (e) => {
@@ -314,7 +346,7 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     (url, filename, attachmentId) => {
       const safeUrl = url.replace(/"/g, '&quot;');
       const name = (filename || 'Документ').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const html = `<span class="inline-doc-card" contenteditable="false" data-attachment-id="${attachmentId}"><a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="inline-doc-card-link"><span class="inline-doc-card-icon">📄</span><span class="inline-doc-card-name">${name}</span></a></span>`;
+      const html = `<span class="inline-doc-card" contenteditable="false" data-attachment-id="${attachmentId}"><span class="inline-doc-card-inner"><span class="inline-doc-card-preview">📄</span><span class="inline-doc-card-body"><span class="inline-doc-card-name" contenteditable="true" data-placeholder="Название документа">${name}</span><a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="inline-doc-card-link">Открыть</a></span></span></span>`;
       insertMediaAtCursor(html, '.inline-doc-card');
     },
     [insertMediaAtCursor]
@@ -349,6 +381,8 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const LONG_PRESS_MS = 450;
   const openPhotoMenu = useCallback((src, previewSize) => {
     photoLongPressHandledRef.current = true;
+    const sel = document.getSelection();
+    if (sel) sel.removeAllRanges();
     setPhotoMenu({ src, previewSize: previewSize || 'large' });
     setPhotoMenuPreviewOpen(false);
   }, []);
@@ -393,6 +427,7 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     (e) => {
       const img = e.target?.closest?.('img');
       if (!img?.src || !mobileLayout || !contentRef.current?.contains(img)) return;
+      e.preventDefault();
       photoLongPressRef.current = setTimeout(() => {
         photoLongPressRef.current = null;
         openPhotoMenu(img.src, img.getAttribute('data-preview-size') || 'large');
@@ -525,35 +560,71 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
               </button>
             </div>
           )}
-          <div
-            ref={contentRef}
-            className={`${styles.contentEditable} ${mobileLayout ? styles.mobileContent : ''}`}
-            contentEditable
-            suppressContentEditableWarning
-            onInput={handleContentInput}
-            onKeyDown={handleContentKeyDown}
-            onPointerDown={handleContentPointerDown}
-            onPointerUp={handleContentPointerUp}
-            onPointerCancel={handleContentPointerCancel}
-            onFocus={() => setIsEditing(true)}
-            onBlur={() => {
-              flushContentSave();
-              setTimeout(() => setIsEditing(document.activeElement === titleInputRef.current || contentRef.current?.contains(document.activeElement)), 0);
-            }}
-            onClick={(e) => {
-              const img = e.target?.closest?.('img');
-              if (!img?.src || !mobileLayout || !contentRef.current?.contains(img)) return;
-              if (photoLongPressHandledRef.current) {
-                photoLongPressHandledRef.current = false;
+          {mobileLayout ? (
+            <div className={styles.mobileContentWrap}>
+              <div
+                ref={contentRef}
+                className={`${styles.contentEditable} ${styles.mobileContent}`}
+                contentEditable
+                suppressContentEditableWarning
+                style={{ paddingBottom: `calc(44px + ${keyboardBottomOffset}px + env(safe-area-inset-bottom, 0px) + 16px)` }}
+                onInput={handleContentInput}
+                onKeyDown={handleContentKeyDown}
+                onPointerDown={handleContentPointerDown}
+                onPointerUp={handleContentPointerUp}
+                onPointerCancel={handleContentPointerCancel}
+                onFocus={() => setIsEditing(true)}
+                onBlur={() => {
+                  flushContentSave();
+                  setTimeout(() => setIsEditing(document.activeElement === titleInputRef.current || contentRef.current?.contains(document.activeElement)), 0);
+                }}
+                onClick={(e) => {
+                  const img = e.target?.closest?.('img');
+                  if (!img?.src || !contentRef.current?.contains(img)) return;
+                  if (photoLongPressHandledRef.current) {
+                    photoLongPressHandledRef.current = false;
+                    e.preventDefault();
+                    return;
+                  }
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const imgs = contentRef.current?.querySelectorAll?.('img');
+                  openFullscreenImage(img.src, imgs ? Array.from(imgs).map((i) => i.src) : [img.src]);
+                }}
+              />
+              <div className={styles.mobileContentSpacer} aria-hidden="true" />
+            </div>
+          ) : (
+            <div
+              ref={contentRef}
+              className={styles.contentEditable}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={handleContentInput}
+              onKeyDown={handleContentKeyDown}
+              onPointerDown={handleContentPointerDown}
+              onPointerUp={handleContentPointerUp}
+              onPointerCancel={handleContentPointerCancel}
+              onFocus={() => setIsEditing(true)}
+              onBlur={() => {
+                flushContentSave();
+                setTimeout(() => setIsEditing(document.activeElement === titleInputRef.current || contentRef.current?.contains(document.activeElement)), 0);
+              }}
+              onClick={(e) => {
+                const img = e.target?.closest?.('img');
+                if (!img?.src || !contentRef.current?.contains(img)) return;
+                if (photoLongPressHandledRef.current) {
+                  photoLongPressHandledRef.current = false;
+                  e.preventDefault();
+                  return;
+                }
                 e.preventDefault();
-                return;
-              }
-              e.preventDefault();
-              e.stopPropagation();
-              const imgs = contentRef.current?.querySelectorAll?.('img');
-              openFullscreenImage(img.src, imgs ? Array.from(imgs).map((i) => i.src) : [img.src]);
-            }}
-          />
+                e.stopPropagation();
+                const imgs = contentRef.current?.querySelectorAll?.('img');
+                openFullscreenImage(img.src, imgs ? Array.from(imgs).map((i) => i.src) : [img.src]);
+              }}
+            />
+          )}
         </div>
 
         {!mobileLayout && (
@@ -618,7 +689,10 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       </div>
 
       {mobileLayout && (
-        <div className={styles.mobileToolbar} style={keyboardBottomOffset > 0 ? { bottom: keyboardBottomOffset } : undefined}>
+        <div
+          className={styles.mobileToolbar}
+          style={toolbarViewportStyle ? { ...toolbarViewportStyle, bottom: 'auto' } : undefined}
+        >
           {isEditing && (
             <button
               type="button"
