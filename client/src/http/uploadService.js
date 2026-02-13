@@ -13,28 +13,26 @@ const ALLOWED_EXTENSIONS = new Set([
 const ALLOWED_AVATAR_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 
 /**
- * Generate a unique filename with timestamp and random token
+ * Generate a unique filename with timestamp and random token.
+ * Supabase Storage accepts only ASCII-safe object keys; non-ASCII (e.g. Cyrillic) causes "Invalid key".
  * @param {string} originalName - Original file name
- * @returns {string} Unique filename
+ * @returns {string} Unique filename (ASCII-only)
  */
 function generateUniqueFilename(originalName) {
-  const ext = originalName.includes('.') 
-    ? '.' + originalName.split('.').pop().toLowerCase() 
+  const ext = originalName.includes('.')
+    ? '.' + originalName.split('.').pop().toLowerCase().replace(/[^a-z0-9]/gi, '')
     : '';
   const baseName = originalName.includes('.')
     ? originalName.slice(0, originalName.lastIndexOf('.'))
     : originalName;
-  
-  // Sanitize the base name
+  // ASCII-only: Supabase Storage rejects non-ASCII (Cyrillic, accents, etc.)
   const safeName = baseName
     .replace(/[/\\]/g, '_')
-    .replace(/[^\p{L}\p{N}_.\-()+\s]/gu, '')
-    .trim()
-    .slice(0, 100) || 'file';
+    .replace(/[^a-zA-Z0-9_.\-]/g, '')
+    .slice(0, 80) || 'file';
 
   const timestamp = Date.now();
   const randomToken = Math.random().toString(36).slice(2, 10);
-  
   return `${timestamp}-${randomToken}-${safeName}${ext}`;
 }
 
@@ -94,7 +92,19 @@ export async function uploadFile(file, options = {}) {
 
   // Generate unique filename
   const uniqueFilename = generateUniqueFilename(file.name);
-  const filePath = folder ? `${folder}/${uniqueFilename}` : uniqueFilename;
+  let filePath = folder ? `${folder}/${uniqueFilename}` : uniqueFilename;
+  // Defensive: ensure path is ASCII-only (Supabase rejects non-ASCII keys; also fixes old cached bundles)
+  const pathParts = filePath.split('/');
+  const lastSegment = pathParts.pop();
+  const safeLast = (lastSegment && lastSegment.replace(/[^a-zA-Z0-9_.\-]/g, '')) || 'file';
+  const ext = /\.([a-z0-9]+)$/i.exec(safeLast);
+  const fallbackExt = getExtension(file.name).replace(/[^a-zA-Z0-9.]/g, '');
+  pathParts.push(ext ? safeLast : `${safeLast}${fallbackExt.length > 1 ? fallbackExt : '.bin'}`);
+  filePath = pathParts.join('/');
+
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/45c433a3-fa5c-4697-b19e-a367061682dc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'uploadService.js:uploadFile',message:'upload path',data:{originalName:file.name,filePath,folder},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+  // #endregion
 
   // Upload to Supabase with progress tracking
   // Note: Supabase JS v2 doesn't have built-in upload progress for small files.
@@ -113,6 +123,9 @@ export async function uploadFile(file, options = {}) {
     });
 
   if (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/45c433a3-fa5c-4697-b19e-a367061682dc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'uploadService.js:uploadError',message:'Supabase upload error',data:{message:error.message,filePath},timestamp:Date.now(),hypothesisId:'H1,H3'})}).catch(()=>{});
+    // #endregion
     console.error('Supabase upload error:', error);
     throw new Error(error.message || 'Upload failed');
   }
