@@ -349,6 +349,73 @@ class CalendarController {
     }
   }
 
+  async updateMyEvent(req, res) {
+    const t = await sequelize.transaction();
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) {
+        await t.rollback();
+        return;
+      }
+
+      const myEventId = toInt(req.params.myEventId);
+      if (!myEventId) {
+        await t.rollback();
+        return res.status(400).json({ error: 'Invalid myEventId' });
+      }
+
+      const ev = await CalendarMyEvent.findOne({ where: { id: myEventId, userId }, transaction: t });
+      if (!ev) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const title = req.body?.title != null ? String(req.body.title).trim() : null;
+      if (title !== null && !title) {
+        await t.rollback();
+        return res.status(400).json({ error: 'title cannot be empty' });
+      }
+
+      const type = req.body?.type != null ? String(req.body.type).toUpperCase() : null;
+      const allowedTypes = new Set(['CT', 'COLLOQUIUM', 'EXAM', 'DEADLINE', 'HOMEWORK', 'OTHER']);
+      if (type !== null && !allowedTypes.has(type)) {
+        await t.rollback();
+        return res.status(400).json({ error: `type must be one of: ${Array.from(allowedTypes).join(', ')}` });
+      }
+
+      const startsAt = req.body?.startsAt != null ? parseDate(req.body.startsAt) : null;
+      if (startsAt !== null && !startsAt) {
+        await t.rollback();
+        return res.status(400).json({ error: 'startsAt must be a valid ISO date string' });
+      }
+
+      const updates = {};
+      if (title !== null) updates.title = title;
+      if (type !== null) updates.type = type;
+      if (startsAt !== null) updates.startsAt = startsAt;
+      if (req.body?.endsAt !== undefined) updates.endsAt = parseDate(req.body.endsAt) || null;
+      if (req.body?.allDay !== undefined) updates.allDay = Boolean(req.body.allDay);
+      if (req.body?.subject !== undefined) updates.subject = req.body.subject != null ? String(req.body.subject).trim() : null;
+      if (req.body?.comment !== undefined) updates.description = req.body.comment != null ? String(req.body.comment).trim() : null;
+      if (req.body?.description !== undefined) updates.description = req.body.description != null ? String(req.body.description).trim() : null;
+      if (req.body?.materials !== undefined) {
+        const materials = normalizeMaterials(req.body.materials);
+        if (materials === null) {
+          await t.rollback();
+          return res.status(400).json({ error: 'materials must be an array of { url, title? }' });
+        }
+        updates.materials = materials;
+      }
+
+      if (Object.keys(updates).length) await ev.update(updates, { transaction: t });
+      await t.commit();
+      return res.json(normalizeMyEvent(ev));
+    } catch (error) {
+      await t.rollback();
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
   // Student confirms/declines a group period invite.
   async respondToPeriodInvite(req, res) {
     const t = await sequelize.transaction();
@@ -746,6 +813,86 @@ class CalendarController {
       await event.destroy({ transaction: t });
       await t.commit();
       return res.json({ ok: true, eventId });
+    } catch (error) {
+      await t.rollback();
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  async updateGroupEvent(req, res) {
+    const t = await sequelize.transaction();
+    try {
+      const userId = requireAuth(req, res);
+      if (!userId) {
+        await t.rollback();
+        return;
+      }
+
+      const groupId = toInt(req.params.groupId);
+      if (!groupId) {
+        await t.rollback();
+        return res.status(400).json({ error: 'Invalid groupId' });
+      }
+
+      const role = await getGroupRole(groupId, userId);
+      if (!(role === 'OWNER' || role === 'ADMIN')) {
+        await t.rollback();
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const eventId = toInt(req.params.eventId);
+      if (!eventId) {
+        await t.rollback();
+        return res.status(400).json({ error: 'Invalid eventId' });
+      }
+
+      const event = await CalendarEvent.findOne({ where: { eventId, groupId }, transaction: t });
+      if (!event) {
+        await t.rollback();
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const title = req.body?.title != null ? String(req.body.title).trim() : null;
+      if (title !== null && !title) {
+        await t.rollback();
+        return res.status(400).json({ error: 'title cannot be empty' });
+      }
+
+      const type = req.body?.type != null ? String(req.body.type).toUpperCase() : null;
+      const allowedTypes = new Set(['CT', 'COLLOQUIUM', 'EXAM', 'DEADLINE', 'HOMEWORK', 'OTHER']);
+      if (type !== null && !allowedTypes.has(type)) {
+        await t.rollback();
+        return res.status(400).json({ error: `type must be one of: ${Array.from(allowedTypes).join(', ')}` });
+      }
+
+      const startsAt = req.body?.startsAt != null ? parseDate(req.body.startsAt) : null;
+      if (startsAt !== null && !startsAt) {
+        await t.rollback();
+        return res.status(400).json({ error: 'startsAt must be a valid ISO date string' });
+      }
+
+      const updates = {};
+      if (title !== null) updates.title = title;
+      if (type !== null) updates.type = type;
+      if (startsAt !== null) updates.startsAt = startsAt;
+      if (req.body?.endsAt !== undefined) updates.endsAt = parseDate(req.body.endsAt) || null;
+      if (req.body?.allDay !== undefined) updates.allDay = Boolean(req.body.allDay);
+      if (req.body?.subject !== undefined) updates.subject = req.body.subject != null ? String(req.body.subject).trim() : null;
+      if (req.body?.comment !== undefined) updates.description = req.body.comment != null ? String(req.body.comment).trim() : null;
+      if (req.body?.description !== undefined) updates.description = req.body.description != null ? String(req.body.description).trim() : null;
+      if (req.body?.materials !== undefined) {
+        const materials = normalizeMaterials(req.body.materials);
+        if (materials === null) {
+          await t.rollback();
+          return res.status(400).json({ error: 'materials must be an array of { url, title? }' });
+        }
+        updates.materials = materials;
+      }
+
+      if (Object.keys(updates).length) await event.update(updates, { transaction: t });
+      await t.commit();
+      const out = event.toJSON();
+      return res.json({ eventId: out.eventId, groupId: out.groupId, ...out });
     } catch (error) {
       await t.rollback();
       return res.status(500).json({ error: error.message });

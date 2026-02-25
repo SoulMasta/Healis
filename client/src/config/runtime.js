@@ -6,6 +6,14 @@ function normalizeUrl(url) {
   return s.replace(/\/+$/, '');
 }
 
+// Browsers don't connect to 0.0.0.0 reliably; use localhost instead.
+function fixLocalhostUrl(url) {
+  if (!url || typeof window === 'undefined') return url;
+  return String(url).replace(/^(https?:\/\/)0\.0\.0\.0(:\d+)?/i, (_, proto, port) =>
+    `${proto}localhost${port || ''}`
+  );
+}
+
 function isRenderUrl(url) {
   return typeof url === 'string' && url.includes('onrender.com');
 }
@@ -23,8 +31,9 @@ function isProductionOrigin() {
 export function getApiBaseUrl() {
   const fromEnv = normalizeUrl(process.env.REACT_APP_API_URL);
   if (fromEnv && isRenderUrl(fromEnv)) return DEFAULT_PROD_API_URL;
-  if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) return DEFAULT_PROD_API_URL;
-  if (fromEnv) return fromEnv;
+  // On Vercel, use same-origin so API is proxied -> cookie is first-party (no third-party block)
+  if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) return '';
+  if (fromEnv) return fixLocalhostUrl(fromEnv);
   if (isProductionOrigin()) return DEFAULT_PROD_API_URL;
   return '';
 }
@@ -33,9 +42,9 @@ export function getSocketBaseUrl() {
   const fromEnv = normalizeUrl(process.env.REACT_APP_SOCKET_URL);
   if (fromEnv && isRenderUrl(fromEnv)) return DEFAULT_PROD_API_URL;
   if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) return DEFAULT_PROD_API_URL;
-  if (fromEnv) return fromEnv;
+  if (fromEnv) return fixLocalhostUrl(fromEnv);
   const api = getApiBaseUrl();
-  if (api) return api;
+  if (api) return fixLocalhostUrl(api);
 
   // Dev convenience: CRA on :3000, backend on :5000.
   if (typeof window !== 'undefined') {
@@ -53,7 +62,7 @@ export function resolveUploadUrl(url) {
   if (!url || !String(url).trim()) return '';
   const s = String(url).trim();
   if (/^https?:\/\//i.test(s)) return s;
-  const base = getApiBaseUrl();
+  const base = fixLocalhostUrl(getApiBaseUrl());
   return base ? `${normalizeUrl(base)}${s.startsWith('/') ? s : `/${s}`}` : s;
 }
 

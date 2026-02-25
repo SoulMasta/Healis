@@ -9,7 +9,6 @@ const refreshLimit = createRateLimit({ windowMs: 5 * 60_000, max: 60, keyPrefix:
 
 router.post('/registration', authBurstLimit, userController.registration);
 router.post('/login', authBurstLimit, userController.login);
-router.post('/google', authBurstLimit, userController.googleAuth);
 router.post('/refresh', refreshLimit, userController.refresh);
 router.post('/logout', userController.logout);
 router.get('/auth', authMiddleware, userController.check);

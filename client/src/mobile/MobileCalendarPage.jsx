@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Loader2, Plus, Trash2, X, Users } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Pencil, Plus, Trash2, X, Users } from 'lucide-react';
 import MobileLayout from './MobileLayout';
 import styles from './MobileCalendarPage.module.css';
 import {
@@ -11,9 +11,12 @@ import {
   getGroupCalendarEvents,
   getGroupCalendarPeriods,
   getMyCalendar,
+  updateGroupCalendarEvent,
+  updateMyCalendarEvent,
 } from '../http/calendarAPI';
 import { getMyGroups } from '../http/groupAPI';
 import { getToken } from '../http/userAPI';
+import { requestNotificationPermissionIfNeeded } from '../utils/systemNotification';
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -91,6 +94,11 @@ function parseMaterialsText(text) {
   return out;
 }
 
+function formatMaterialsForInput(materials) {
+  if (!Array.isArray(materials)) return '';
+  return materials.map((m) => (m?.title ? `${m.title} | ${m?.url || ''}` : m?.url || '')).filter(Boolean).join('\n');
+}
+
 function Tabs({ value, onChange, options, ariaLabel }) {
   return (
     <div className={styles.tabs} role="tablist" aria-label={ariaLabel || 'Tabs'}>
@@ -151,6 +159,7 @@ function CreateEventSheet({ open, onClose, onCreated, defaultDate }) {
         startsAt,
         allDay,
       });
+      requestNotificationPermissionIfNeeded();
       onCreated?.();
       onClose?.();
     } catch (err) {
@@ -230,6 +239,142 @@ function CreateEventSheet({ open, onClose, onCreated, defaultDate }) {
   );
 }
 
+function EditEventSheet({ open, onClose, onSaved, event, kind, groupId }) {
+  const ev = event || {};
+  const dateStr = ev.startsAt ? ev.startsAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const timeStr =
+    ev.startsAt && !ev.allDay && ev.startsAt.length >= 16
+      ? ev.startsAt.slice(11, 16)
+      : '09:00';
+
+  const [title, setTitle] = useState(ev.title || '');
+  const [type, setType] = useState(ev.type || 'CT');
+  const [date, setDate] = useState(dateStr);
+  const [mode, setMode] = useState(ev.allDay ? 'allDay' : 'time');
+  const [time, setTime] = useState(timeStr);
+  const [subject, setSubject] = useState(ev.subject || '');
+  const [comment, setComment] = useState(ev.comment || ev.description || '');
+  const [materialsText, setMaterialsText] = useState(() => formatMaterialsForInput(ev.materials));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open && ev?.title !== undefined) {
+      setTitle(ev.title || '');
+      setType(ev.type || 'CT');
+      setDate(ev.startsAt ? ev.startsAt.slice(0, 10) : new Date().toISOString().slice(0, 10));
+      setMode(ev.allDay ? 'allDay' : 'time');
+      setTime(
+        ev.startsAt && !ev.allDay && ev.startsAt.length >= 16 ? ev.startsAt.slice(11, 16) : '09:00'
+      );
+      setSubject(ev.subject || '');
+      setComment(ev.comment || ev.description || '');
+      setMaterialsText(formatMaterialsForInput(ev.materials));
+    }
+  }, [open, ev?.title, ev?.type, ev?.startsAt, ev?.allDay, ev?.subject, ev?.comment, ev?.description, ev?.materials]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    setBusy(true);
+    try {
+      const allDay = mode === 'allDay';
+      const startsAtPayload = new Date(`${date}T${allDay ? '00:00' : time || '09:00'}`).toISOString();
+      const payload = {
+        title: title.trim(),
+        type,
+        subject: subject.trim() || null,
+        comment: comment.trim() || null,
+        materials: parseMaterialsText(materialsText),
+        startsAt: startsAtPayload,
+        allDay,
+      };
+      const k = String(kind || '').toUpperCase();
+      if (k === 'MY' && ev.myEventId) {
+        await updateMyCalendarEvent(ev.myEventId, payload);
+      } else if (k === 'GROUP' && groupId && ev.eventId) {
+        await updateGroupCalendarEvent(groupId, ev.eventId, payload);
+      } else return;
+      onSaved?.();
+      onClose?.();
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      alert(err?.response?.data?.error || err?.message || 'Не удалось сохранить');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className={styles.sheetOverlay} onClick={onClose} role="presentation">
+      <div className={styles.sheet} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <div className={styles.sheetHandle} aria-hidden="true" />
+        <div className={styles.sheetTitle}>Редактировать событие</div>
+        <div className={styles.sheetBody}>
+          <form className={styles.sheetForm} onSubmit={submit}>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Название *</div>
+            <input className={styles.input} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Например: Лекция" />
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Тип</div>
+            <select className={styles.input} value={type} onChange={(e) => setType(e.target.value)}>
+              <option value="CT">ЦТ</option>
+              <option value="EXAM">Экзамен</option>
+              <option value="COLLOQUIUM">Коллоквиум</option>
+              <option value="HOMEWORK">ДЗ</option>
+              <option value="OTHER">Другое</option>
+            </select>
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Дата</div>
+            <input className={styles.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Режим</div>
+            <select className={styles.input} value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="allDay">Весь день</option>
+              <option value="time">Указать время</option>
+            </select>
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Время</div>
+            <input className={styles.input} type="time" value={time} onChange={(e) => setTime(e.target.value)} disabled={mode !== 'time'} />
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Предмет (опц.)</div>
+            <input className={styles.input} value={subject} onChange={(e) => setSubject(e.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Комментарий (опц.)</div>
+            <textarea className={styles.textarea} value={comment} onChange={(e) => setComment(e.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <div className={styles.fieldLabel}>Материалы (опц.)</div>
+            <textarea
+              className={styles.textarea}
+              value={materialsText}
+              onChange={(e) => setMaterialsText(e.target.value)}
+              placeholder={'Ссылки, по одной на строку\nили: Название | https://...'}
+            />
+          </label>
+          <div className={styles.sheetActions}>
+            <button type="button" className={styles.btnGhost} onClick={onClose} disabled={busy}>
+              Отмена
+            </button>
+            <button type="submit" className={styles.btnPrimary} disabled={busy || !title.trim()}>
+              {busy ? <Loader2 size={16} className={styles.spinner} /> : null}
+              Сохранить
+            </button>
+          </div>
+        </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function MobileCalendarPage() {
   const [token, setToken] = useState(() => getToken());
   const [cursor, setCursor] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
@@ -240,6 +385,7 @@ export default function MobileCalendarPage() {
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [showDetails, setShowDetails] = useState(null); // { kind, event }
+  const [editingEvent, setEditingEvent] = useState(null); // { kind, event, groupId? }
 
   const [groups, setGroups] = useState([]);
   const myGroup = useMemo(() => (Array.isArray(groups) && groups.length ? groups[0] : null), [groups]);
@@ -424,6 +570,7 @@ export default function MobileCalendarPage() {
         startsAt,
         allDay,
       });
+      requestNotificationPermissionIfNeeded();
       setGTitle('');
       setGSubject('');
       setGComment('');
@@ -575,6 +722,15 @@ export default function MobileCalendarPage() {
                         <div className={styles.eventCard}>
                           <div className={styles.eventTitle}>{ev.title}</div>
                           <div className={styles.eventSub}>{typeLabel(ev.type)}{ev.subject ? ` • ${ev.subject}` : ''}</div>
+                          <button
+                            type="button"
+                            className={styles.inlineIconBtn}
+                            onClick={() => setEditingEvent({ kind: 'group', event: ev, groupId: myGroupId })}
+                            aria-label="Редактировать"
+                            title="Редактировать"
+                          >
+                            <Pencil size={16} />
+                          </button>
                           <button
                             type="button"
                             className={styles.inlineIconBtn}
@@ -801,15 +957,47 @@ export default function MobileCalendarPage() {
 
       <CreateEventSheet open={showCreate} onClose={() => setShowCreate(false)} onCreated={load} defaultDate={selectedKey} />
 
+      <EditEventSheet
+        open={!!editingEvent}
+        onClose={() => setEditingEvent(null)}
+        onSaved={() => {
+          load();
+          if (canManageMyGroup && myGroupId) loadGroupData();
+        }}
+        event={editingEvent?.event}
+        kind={editingEvent?.kind}
+        groupId={editingEvent?.groupId}
+      />
+
       {showDetails?.event ? (
         <div className={styles.sheetOverlay} onClick={() => setShowDetails(null)} role="presentation">
           <div className={styles.sheet} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
             <div className={styles.sheetHandle} aria-hidden="true" />
             <div className={styles.detailsHeader}>
               <div className={styles.sheetTitle}>{showDetails.event?.title || 'Событие'}</div>
-              <button type="button" className={styles.iconBtn} onClick={() => setShowDetails(null)} aria-label="Закрыть">
-                <X size={18} />
-              </button>
+              <div className={styles.detailsHeaderActions}>
+                {(showDetails.kind === 'MY' || (showDetails.kind === 'GROUP' && canManageMyGroup)) ? (
+                  <button
+                    type="button"
+                    className={styles.iconBtn}
+                    onClick={() => {
+                      setShowDetails(null);
+                      setEditingEvent({
+                        kind: showDetails.kind,
+                        event: showDetails.event,
+                        groupId: showDetails.kind === 'GROUP' ? (showDetails.event?.groupId || myGroupId) : undefined,
+                      });
+                    }}
+                    aria-label="Редактировать"
+                    title="Редактировать"
+                  >
+                    <Pencil size={18} />
+                  </button>
+                ) : null}
+                <button type="button" className={styles.iconBtn} onClick={() => setShowDetails(null)} aria-label="Закрыть">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
             <div className={styles.detailsMeta}>
               {typeLabel(showDetails.event?.type)}

@@ -14,6 +14,7 @@ import {
 import { getMyCalendar, respondToCalendarInvite, respondToCalendarPeriodInvite } from '../http/calendarAPI';
 import { listMyNotifications } from '../http/notificationsAPI';
 import { loadNotificationFeed, NOTIFICATION_FEED_STORAGE_KEY } from '../utils/notificationFeed';
+import { requestNotificationPermissionIfNeeded } from '../utils/systemNotification';
 import { toast } from '../utils/toast';
 
 function pad2(n) {
@@ -336,8 +337,12 @@ export default function MobileNotificationsPage() {
     const id = `gi-${groupId}`;
     setBusyId(id);
     try {
-      if (action === 'accept') await acceptGroupInvite(groupId);
-      else await declineGroupInvite(groupId);
+      if (action === 'accept') {
+        await acceptGroupInvite(groupId);
+        requestNotificationPermissionIfNeeded();
+      } else {
+        await declineGroupInvite(groupId);
+      }
       await load();
     } catch (e) {
       // eslint-disable-next-line no-alert

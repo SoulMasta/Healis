@@ -27,6 +27,11 @@ export async function createMyCalendarEvent(payload) {
   return res.data;
 }
 
+export async function updateMyCalendarEvent(myEventId, payload) {
+  const res = await axios.patch(`${API_BASE}/my/events/${myEventId}`, payload);
+  return res.data;
+}
+
 export async function deleteMyCalendarEvent(myEventId) {
   const res = await axios.delete(`${API_BASE}/my/events/${myEventId}`);
   return res.data;
@@ -34,6 +39,11 @@ export async function deleteMyCalendarEvent(myEventId) {
 
 export async function createGroupCalendarEvent(groupId, payload) {
   const res = await axios.post(`${API_BASE}/groups/${groupId}/events`, payload);
+  return res.data;
+}
+
+export async function updateGroupCalendarEvent(groupId, eventId, payload) {
+  const res = await axios.patch(`${API_BASE}/groups/${groupId}/events/${eventId}`, payload);
   return res.data;
 }
 

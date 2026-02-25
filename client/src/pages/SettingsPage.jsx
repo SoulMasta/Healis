@@ -16,6 +16,7 @@ import {
   shortcutFromKeyboardEvent,
 } from '../utils/shortcuts';
 import { applyThemePreference, loadPreferences, resetPreferences, savePreferences } from '../utils/preferences';
+import { requestNotificationPermissionIfNeeded } from '../utils/systemNotification';
 import { toast } from '../utils/toast';
 
 function normalizeError(err) {
@@ -209,19 +210,13 @@ export default function SettingsPage() {
   };
 
   const requestBrowserNotificationsPermission = async () => {
-    try {
-      if (!('Notification' in window)) return;
-      if (window.Notification.permission !== 'default') return;
-      const res = await window.Notification.requestPermission();
-      if (res !== 'granted') {
-        toast({
-          kind: 'warning',
-          title: 'Уведомления',
-          message: 'Разрешение на уведомления не выдано. Напоминания будут показываться только внутри приложения.',
-        });
-      }
-    } catch {
-      // ignore
+    await requestNotificationPermissionIfNeeded();
+    if ('Notification' in window && window.Notification.permission !== 'granted') {
+      toast({
+        kind: 'warning',
+        title: 'Уведомления',
+        message: 'Разрешение на уведомления не выдано. Напоминания будут показываться только внутри приложения.',
+      });
     }
   };
 

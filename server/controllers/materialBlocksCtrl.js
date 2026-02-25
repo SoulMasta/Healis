@@ -9,6 +9,7 @@ const {
   User,
 } = require('../models/models');
 const { canReadDesk, canManageDesk } = require('../utils/deskAccess');
+const { emitToDesk } = require('../realtime/bus');
 
 const DEFAULT_BLOCK_WIDTH = 280;
 const DEFAULT_BLOCK_HEIGHT = 160;
@@ -368,6 +369,19 @@ class MaterialBlocksController {
       delete j.material_files;
       delete j.material_links;
       delete j.material_card_tags;
+      const deskId = desk.deskId ?? desk.id;
+      if (deskId) {
+        emitToDesk(deskId, 'material_card:updated', {
+          cardId: j.id,
+          title: j.title,
+          content: j.content,
+          attachments: j.attachments,
+          links: j.links,
+          tags: j.tags,
+          updated_at: j.updatedAt,
+          updatedBy: userId,
+        });
+      }
       return res.json(j);
     } catch (error) {
       console.error('MaterialBlocksCtrl.updateCard', error);

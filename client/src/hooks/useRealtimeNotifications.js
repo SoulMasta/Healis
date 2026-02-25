@@ -3,6 +3,8 @@ import { io } from 'socket.io-client';
 import { getSocketBaseUrl } from '../config/runtime';
 import { getToken } from '../http/userAPI';
 import { toast } from '../utils/toast';
+import { showSystemNotification } from '../utils/systemNotification';
+import { loadPreferences } from '../utils/preferences';
 
 function safeDisconnect(socket) {
   try {
@@ -20,23 +22,38 @@ export function useRealtimeNotifications() {
 
     const connect = () => {
       const token = getToken();
-      if (!token) return null;
+      if (!token) {
+        safeDisconnect(socketRef.current);
+        socketRef.current = null;
+        return null;
+      }
+      // Reuse existing socket across Strict Mode re-mounts so it isn't closed before WS is established.
+      const existing = socketRef.current;
+      if (existing && !existing.disconnected) return existing;
 
+      safeDisconnect(existing);
       const socket = io(getSocketBaseUrl(), { auth: { token } });
       socketRef.current = socket;
 
       socket.on('notification:new', (n = {}) => {
         const type = String(n?.type || '').toUpperCase();
+        const prefs = loadPreferences();
+        let notifTitle = String(n?.title || '').trim() || 'Уведомление';
+        let notifBody = String(n?.body || '').trim();
         if (type === 'GROUP_INVITE') {
           const groupName = n?.payload?.group?.name || n?.payload?.groupName || '';
+          notifTitle = 'Новое приглашение';
+          notifBody = groupName ? `Вас пригласили в группу «${groupName}».` : 'Вас пригласили в группу.';
           toast({
             kind: 'info',
-            title: 'Новое приглашение',
-            message: groupName ? `Вас пригласили в группу «${groupName}».` : 'Вас пригласили в группу.',
+            title: notifTitle,
+            message: notifBody,
             durationMs: 7000,
           });
         }
-        // Let pages (e.g. mobile notifications) refresh immediately.
+        if (prefs.notifications && notifBody) {
+          showSystemNotification(notifTitle, notifBody);
+        }
         window.dispatchEvent(new Event('healis:notification:new'));
       });
 
@@ -48,7 +65,6 @@ export function useRealtimeNotifications() {
     const reconnect = () => {
       if (disposed) return;
       safeDisconnect(socket);
-      socket = null;
       socketRef.current = null;
       socket = connect();
     };
@@ -65,8 +81,7 @@ export function useRealtimeNotifications() {
       disposed = true;
       window.removeEventListener('healis:token', onToken);
       window.removeEventListener('storage', onStorage);
-      safeDisconnect(socket);
-      socketRef.current = null;
+      // Do not disconnect here: React Strict Mode runs cleanup then effect again; disconnecting would close the socket before WS is established. Socket is disconnected on token change (reconnect) or page unload.
     };
   }, []);
 }

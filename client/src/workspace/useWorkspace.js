@@ -69,8 +69,11 @@ function elementsReducer(state, action) {
     }
     case REMOVE_ELEMENT:
       return state.filter((x) => !sameId(x?.id, action.payload));
-    case MAP_ELEMENTS:
-      return typeof action.payload === 'function' ? action.payload(state) : state;
+    case MAP_ELEMENTS: {
+      if (typeof action.payload !== 'function') return state;
+      const next = action.payload(state);
+      return Array.isArray(next) ? next.filter((el) => el != null) : state;
+    }
     case DEDUPE: {
       const seen = new Set();
       for (const el of state) {

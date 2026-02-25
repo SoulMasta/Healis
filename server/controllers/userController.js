@@ -1,6 +1,5 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { OAuth2Client } = require('google-auth-library');
 const { User, RefreshToken } = require('../models/models');
 const { randomToken, hashToken } = require('../utils/authTokens');
 
@@ -8,8 +7,6 @@ const JWT_SECRET = process.env.JWT_SECRET || process.env.SECRET_KEY;
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
 const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30);
 const BCRYPT_ROUNDS = Math.min(Math.max(Number(process.env.BCRYPT_ROUNDS || 10), 8), 14);
-const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
-const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -288,78 +285,6 @@ class UserController {
       return res.status(201).json({ token });
     } catch (error) {
       return res.status(500).json({ error: error.message });
-    }
-  }
-
-  async googleAuth(req, res) {
-    try {
-      if (!googleClient) {
-        return res.status(500).json({ error: 'Google auth is not configured' });
-      }
-
-      const idToken = String(req.body?.credential || req.body?.idToken || '').trim();
-      if (!idToken) return res.status(400).json({ error: 'Missing Google credential' });
-
-      const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
-      const payload = ticket.getPayload() || {};
-
-      const googleSub = String(payload.sub || '').trim();
-      const email = normalizeEmail(payload.email);
-      const emailVerified = Boolean(payload.email_verified);
-      const name = String(payload.name || payload.given_name || '').trim();
-      const picture = String(payload.picture || '').trim();
-
-      if (!googleSub) return res.status(400).json({ error: 'Invalid Google token (sub missing)' });
-      if (!email) return res.status(400).json({ error: 'Invalid Google token (email missing)' });
-      if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email from Google' });
-      if (!emailVerified) {
-        // Keep it strict: only verified emails can be used to create/link accounts.
-        return res.status(400).json({ error: 'Google email is not verified' });
-      }
-
-      // 1) Prefer linking by googleSub (stable), then by email (existing local account).
-      let user = await User.findOne({ where: { googleSub } });
-      if (!user) user = await User.findOne({ where: { email } });
-
-      if (!user) {
-        const baseUsername = String(email.split('@')[0] || name || 'user').slice(0, 64);
-        const username = await ensureUniqueUsername(baseUsername);
-        const nickname = normalizeNickname(name) || username;
-        const randomPassword = await bcrypt.hash(randomToken(24), BCRYPT_ROUNDS);
-
-        user = await User.create({
-          email,
-          password: randomPassword,
-          username,
-          nickname,
-          avatarUrl: picture || null,
-          authProvider: 'google',
-          googleSub,
-          emailVerified: true,
-        });
-      } else {
-        // Link/refresh provider data (best-effort).
-        const next = {};
-        if (!user.googleSub) next.googleSub = googleSub;
-        if (!user.authProvider) next.authProvider = 'google';
-        if (!user.emailVerified) next.emailVerified = true;
-        if ((!user.nickname || !String(user.nickname).trim()) && name) next.nickname = normalizeNickname(name);
-        if ((!user.avatarUrl || !String(user.avatarUrl).trim()) && picture) next.avatarUrl = picture;
-        if (Object.keys(next).length) await user.update(next);
-      }
-
-      const token = generateAccessToken(user);
-      const refresh = await issueRefreshToken({ userId: user.id, req });
-      res.cookie('refreshToken', refresh.raw, cookieOptions());
-
-      return res.json({ token, profile: serializeProfile(user) });
-    } catch (error) {
-      // Avoid leaking details about token verification in prod logs/response.
-      const msg = String(error?.message || 'Google auth failed');
-      if (msg.toLowerCase().includes('wrong number of segments') || msg.toLowerCase().includes('jwt')) {
-        return res.status(400).json({ error: 'Invalid Google credential' });
-      }
-      return res.status(400).json({ error: 'Google auth failed' });
     }
   }
 

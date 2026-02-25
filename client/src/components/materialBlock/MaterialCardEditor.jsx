@@ -1,17 +1,29 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, Bold, List, Code, Heading2, Undo2, Redo2, MoreVertical, Paperclip, PenLine, ChevronLeft, Italic, Underline, Strikethrough, AlignLeft, AlignCenter, AlignRight, ListOrdered, Copy, Upload, Trash2, LayoutGrid, ChevronRight } from 'lucide-react';
+import { X, Bold, List, Heading2, Undo2, Redo2, MoreVertical, Paperclip, PenLine, ChevronLeft, Italic, Underline, Strikethrough, AlignLeft, AlignCenter, AlignRight, ListOrdered, Copy, Upload, Trash2, LayoutGrid, ChevronRight } from 'lucide-react';
 import {
   updateMaterialCard,
   uploadMaterialCardFile,
-  addMaterialCardLink,
-  deleteMaterialCardLink,
-  deleteMaterialCardFile,
-  setMaterialCardTags,
 } from '../../http/materialBlocksAPI';
+import { compressImageForUpload } from '../../http/uploadService';
 import { getApiBaseUrl } from '../../config/runtime';
-import FileUploader from './FileUploader';
+import { getToken } from '../../http/userAPI';
+import { createPortal } from 'react-dom';
+import DocumentCard from './DocumentCard';
+import DocumentPreviewOverlay from './DocumentPreviewOverlay';
 import styles from './MaterialCardEditor.module.css';
+
+function safeParseJwt(token) {
+  try {
+    const parts = String(token).split('.');
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+}
 
 const AUTOSAVE_DELAY_MS = 800;
 const IMAGE_TYPES = /^image\/(png|jpe?g|webp|gif)$/i;
@@ -21,21 +33,40 @@ function resolveFileUrl(url) {
   const base = getApiBaseUrl();
   return base ? `${base.replace(/\/+$/, '')}${url}` : url;
 }
+function decodeDocName(str) {
+  if (str == null || str === '') return 'Документ';
+  try {
+    return decodeURIComponent(String(str));
+  } catch {
+    return String(str);
+  }
+}
+/** Перед сохранением оставляем в .inline-doc-card только data-атрибуты (порталы размонтированы при сериализации). Удаляем ZWS после карточки. */
+function normalizeDocumentCardsForSave(root) {
+  if (!root?.querySelectorAll) return;
+  const ZWS = '\u200B';
+  root.querySelectorAll('.inline-doc-card').forEach((span) => {
+    const title = span.getAttribute('data-doc-title') || span.querySelector('.inline-doc-card-name')?.textContent?.trim() || 'Документ';
+    const url = span.getAttribute('data-doc-url') || span.querySelector('.inline-doc-card-link')?.getAttribute('href');
+    span.setAttribute('data-doc-title', title);
+    if (url) span.setAttribute('data-doc-url', url);
+    span.innerHTML = '';
+    const next = span.nextSibling;
+    if (next?.nodeType === Node.TEXT_NODE && next.textContent === ZWS) next.remove();
+  });
+}
 
 function isImageFile(f) {
   if (!f) return false;
   return (f.type && IMAGE_TYPES.test(f.type)) || /\.(png|jpe?g|webp|gif)$/i.test(f.name || '');
 }
 
-export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, isMobile }) {
+export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, isMobile, socketRef, deskId }) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState(card?.title ?? '');
-  const [attachments, setAttachments] = useState(card?.attachments ?? []);
-  const [links, setLinks] = useState(card?.links ?? []);
-  const [tags, setTagsState] = useState(card?.tags ?? []);
-  const [tagInput, setTagInput] = useState('');
-  const [linkUrl, setLinkUrl] = useState('');
-  const [linkTitle, setLinkTitle] = useState('');
+  const [, setAttachments] = useState(card?.attachments ?? []);
+  const [, setLinks] = useState(card?.links ?? []);
+  const [, setTagsState] = useState(card?.tags ?? []);
   const contentRef = useRef(null);
   const saveTimeoutRef = useRef(null);
 
@@ -49,6 +80,7 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const [formatActive, setFormatActive] = useState({ bold: false, italic: false, underline: false, strikeThrough: false });
   const [photoMenu, setPhotoMenu] = useState(null);
   const [photoMenuPreviewOpen, setPhotoMenuPreviewOpen] = useState(false);
+  const [insertMenuOpen, setInsertMenuOpen] = useState(false);
   const photoLongPressRef = useRef(null);
   const photoLongPressHandledRef = useRef(false);
   const photoInputRef = useRef(null);
@@ -57,12 +89,67 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const mobileLayout = Boolean(isMobile);
   const [keyboardBottomOffset, setKeyboardBottomOffset] = useState(0);
   const [toolbarViewportStyle, setToolbarViewportStyle] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [uploadError, setUploadError] = useState(null);
+  const [uploadRetryPayload, setUploadRetryPayload] = useState(null);
+  const currentUserId = useMemo(() => {
+    const t = getToken();
+    if (!t) return null;
+    const p = safeParseJwt(t);
+    return p?.id ?? p?.sub ?? null;
+  }, []);
+
+  const keyboardScrollTimeoutRef = useRef(null);
+  const CURSOR_MARGIN_ABOVE_KEYBOARD = 24;
+  const KEYBOARD_OPEN_THRESHOLD = 50;
+
+  const scrollToKeepCursorVisible = useCallback(
+    (opts = {}) => {
+      const { smooth = false, center = false } = opts;
+      if (!mobileLayout || !contentRef.current || typeof window === 'undefined' || !window.visualViewport) return;
+      const el = contentRef.current;
+      if (!el.contains(document.activeElement)) return;
+      const vv = window.visualViewport;
+      const keyboardOpen = window.innerHeight - vv.height > KEYBOARD_OPEN_THRESHOLD;
+      if (!keyboardOpen) return;
+      const sel = document.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      if (!el.contains(range.commonAncestorContainer)) return;
+      const rect = range.getBoundingClientRect();
+      const safeBottom = vv.offsetTop + vv.height - CURSOR_MARGIN_ABOVE_KEYBOARD;
+      if (center) {
+        const targetTop = vv.offsetTop + vv.height * 0.35;
+        if (rect.top <= targetTop + 10 && rect.bottom <= safeBottom + 10) return;
+        const delta = rect.top - targetTop;
+        if (Math.abs(delta) < 4) return;
+        if (smooth) el.scrollBy({ top: delta, behavior: 'smooth' });
+        else el.scrollTop += delta;
+      } else {
+        if (rect.bottom <= safeBottom) return;
+        const delta = rect.bottom - safeBottom;
+        el.scrollTop += delta;
+      }
+    },
+    [mobileLayout]
+  );
+
+  const scheduleScrollAfterKeyboard = useCallback(() => {
+    if (!mobileLayout) return;
+    if (keyboardScrollTimeoutRef.current) clearTimeout(keyboardScrollTimeoutRef.current);
+    keyboardScrollTimeoutRef.current = setTimeout(() => {
+      keyboardScrollTimeoutRef.current = null;
+      requestAnimationFrame(() => scrollToKeepCursorVisible({ smooth: true, center: true }));
+    }, 320);
+  }, [mobileLayout, scrollToKeepCursorVisible]);
 
   useEffect(() => {
     if (!mobileLayout || typeof window === 'undefined' || !window.visualViewport) return;
     const vv = window.visualViewport;
+    let prevOffset = window.innerHeight - vv.height;
     const update = () => {
-      setKeyboardBottomOffset(Math.max(0, window.innerHeight - vv.height));
+      const nextOffset = Math.max(0, window.innerHeight - vv.height);
+      setKeyboardBottomOffset(nextOffset);
       setToolbarViewportStyle({
         top: vv.offsetTop + vv.height,
         left: vv.offsetLeft,
@@ -70,6 +157,10 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
         width: vv.width,
         transform: 'translateY(-100%)',
       });
+      if (prevOffset < KEYBOARD_OPEN_THRESHOLD && nextOffset > KEYBOARD_OPEN_THRESHOLD && contentRef.current?.contains(document.activeElement)) {
+        scheduleScrollAfterKeyboard();
+      }
+      prevOffset = nextOffset;
     };
     update();
     vv.addEventListener('resize', update);
@@ -77,8 +168,29 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     return () => {
       vv.removeEventListener('resize', update);
       vv.removeEventListener('scroll', update);
+      if (keyboardScrollTimeoutRef.current) {
+        clearTimeout(keyboardScrollTimeoutRef.current);
+        keyboardScrollTimeoutRef.current = null;
+      }
     };
-  }, [mobileLayout]);
+  }, [mobileLayout, scheduleScrollAfterKeyboard]);
+
+  useEffect(() => {
+    if (!mobileLayout) return;
+    let raf = null;
+    const onSelectionChange = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        scrollToKeepCursorVisible({ smooth: false, center: false });
+      });
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => {
+      document.removeEventListener('selectionchange', onSelectionChange);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [mobileLayout, scrollToKeepCursorVisible]);
 
   useEffect(() => {
     setTitle(card?.title ?? '');
@@ -89,24 +201,40 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   }, [card?.id]);
 
   const EMPTY_HEADING_HTML = '<div class="mobile-first-heading" data-block="heading"><br></div>';
+  const [docCardTargets, setDocCardTargets] = useState([]);
+
+  const ZWS = '\u200B';
   const migrateOldDocCards = useCallback((root) => {
     if (!root?.querySelectorAll) return;
-    root.querySelectorAll('.inline-doc-card').forEach((card) => {
-      if (card.querySelector('.inline-doc-card-inner')) return;
-      const link = card.querySelector('a.inline-doc-card-link');
-      const nameEl = card.querySelector('.inline-doc-card-name');
-      const href = link?.getAttribute('href') || '#';
-      const name = (nameEl?.textContent || 'Документ').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      card.innerHTML = `<span class="inline-doc-card-inner"><span class="inline-doc-card-preview">📄</span><span class="inline-doc-card-body"><span class="inline-doc-card-name" contenteditable="true" data-placeholder="Название документа">${name}</span><a href="${href}" target="_blank" rel="noopener noreferrer" class="inline-doc-card-link">Открыть</a></span></span>`;
+    root.querySelectorAll('.inline-doc-card').forEach((el) => {
+      const link = el.querySelector('.inline-doc-card-link');
+      const nameEl = el.querySelector('.inline-doc-card-name');
+      const href = link?.getAttribute('href') || el.getAttribute('data-doc-url') || '#';
+      const title = (nameEl?.textContent || el.getAttribute('data-doc-title') || 'Документ').trim();
+      if (href && href !== '#') el.setAttribute('data-doc-url', href);
+      el.setAttribute('data-doc-title', title);
+      el.innerHTML = '';
+      const next = el.nextSibling;
+      if (!next || next.nodeType !== Node.TEXT_NODE || next.textContent !== ZWS) {
+        el.parentNode?.insertBefore(document.createTextNode(ZWS), next);
+      }
     });
   }, []);
+
   useLayoutEffect(() => {
     if (!contentRef.current || card?.id == null) return;
     const raw = (card?.content ?? '').trim();
     contentRef.current.innerHTML = !raw || raw === '<br>' ? EMPTY_HEADING_HTML : card?.content ?? '';
     migrateOldDocCards(contentRef.current);
+    const targets = [];
+    contentRef.current.querySelectorAll('.inline-doc-card').forEach((node, i) => {
+      const url = node.getAttribute('data-doc-url');
+      const title = node.getAttribute('data-doc-title') || 'Документ';
+      if (url) targets.push({ id: node.getAttribute('data-attachment-id') || `doc-${i}-${url}`, node, url, title });
+    });
+    setDocCardTargets(targets);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- set content only on card open to avoid overwriting edits
-  }, [card?.id, migrateOldDocCards]);
+  }, [card?.id, migrateOldDocCards, mobileLayout]);
 
   const isInHeadingBlock = useCallback(() => {
     const sel = document.getSelection();
@@ -158,20 +286,54 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const handleContentInput = useCallback(() => {
     const el = contentRef.current;
     if (!el) return;
-    const html = el.innerHTML;
+    const clone = el.cloneNode(true);
+    normalizeDocumentCardsForSave(clone);
+    const html = clone.innerHTML;
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => saveContent(html), AUTOSAVE_DELAY_MS);
-  }, [saveContent]);
+    requestAnimationFrame(() => {
+      const targets = [];
+      el.querySelectorAll('.inline-doc-card').forEach((node, i) => {
+        const u = node.getAttribute('data-doc-url');
+        const t = node.getAttribute('data-doc-title') || 'Документ';
+        if (u) targets.push({ id: node.getAttribute('data-attachment-id') || `doc-${i}-${u}`, node, url: u, title: t });
+      });
+      setDocCardTargets(targets);
+    });
+    if (mobileLayout) requestAnimationFrame(() => scrollToKeepCursorVisible({ smooth: false, center: false }));
+  }, [saveContent, mobileLayout, scrollToKeepCursorVisible]);
 
+  // Realtime: pull card updates from socket (other participants on group board)
   useEffect(() => {
-    const onDocCardInput = (e) => {
-      if (contentRef.current?.contains(e.target) && e.target?.classList?.contains?.('inline-doc-card-name')) {
-        handleContentInput();
+    const socket = socketRef?.current;
+    const did = deskId != null ? Number(deskId) : null;
+    if (!socket || !did || cardId == null) return;
+    const handler = (msg = {}) => {
+      if (Number(msg.cardId) !== Number(cardId)) return;
+      if (currentUserId != null && Number(msg.updatedBy) === Number(currentUserId)) return;
+      if (msg.title !== undefined) setTitle(msg.title);
+      if (Array.isArray(msg.attachments)) setAttachments(msg.attachments);
+      if (Array.isArray(msg.links)) setLinks(msg.links);
+      if (Array.isArray(msg.tags)) setTagsState(msg.tags);
+      const el = contentRef.current;
+      if (el && msg.content !== undefined) {
+        const editorFocused = el.contains(document.activeElement);
+        if (!editorFocused) {
+          el.innerHTML = msg.content;
+          migrateOldDocCards(el);
+          const targets = [];
+          el.querySelectorAll('.inline-doc-card').forEach((node, i) => {
+            const u = node.getAttribute('data-doc-url');
+            const t = node.getAttribute('data-doc-title') || 'Документ';
+            if (u) targets.push({ id: node.getAttribute('data-attachment-id') || `doc-${i}-${u}`, node, url: u, title: t });
+          });
+          setDocCardTargets(targets);
+        }
       }
     };
-    document.addEventListener('input', onDocCardInput, true);
-    return () => document.removeEventListener('input', onDocCardInput, true);
-  }, [handleContentInput]);
+    socket.on('material_card:updated', handler);
+    return () => socket.off('material_card:updated', handler);
+  }, [cardId, deskId, socketRef, currentUserId, migrateOldDocCards]);
 
   const handleContentKeyDown = useCallback(
     (e) => {
@@ -200,7 +362,10 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       saveTimeoutRef.current = null;
     }
     const el = contentRef.current;
-    if (el) saveContent(el.innerHTML);
+    if (!el) return;
+    const clone = el.cloneNode(true);
+    normalizeDocumentCardsForSave(clone);
+    saveContent(clone.innerHTML);
   }, [saveContent]);
 
   const execCmd = useCallback((cmd, value = null) => {
@@ -208,84 +373,47 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     contentRef.current?.focus();
   }, []);
 
+  const deskToolbarRef = useRef(null);
+
   const uploadMutation = useMutation({
-    mutationFn: (file) => uploadMaterialCardFile(cardId, file),
+    mutationFn: (payload) => {
+      const file = payload?.file ?? payload;
+      const onProgress = typeof payload?.onProgress === 'function' ? payload.onProgress : undefined;
+      return uploadMaterialCardFile(cardId, file, { onProgress });
+    },
     onSuccess: (data) => {
       setAttachments((prev) => [...prev, { id: data.id, file_url: data.file_url, file_type: data.file_type, size: data.size }]);
     },
   });
 
-  const addLinkMutation = useMutation({
-    mutationFn: (payload) => addMaterialCardLink(cardId, payload),
-    onSuccess: (data) => {
-      setLinks((prev) => [...prev, { id: data.id, url: data.url, title: data.title }]);
-      setLinkUrl('');
-      setLinkTitle('');
+  const runUpload = useCallback(
+    (file, opts = {}) => {
+      const { asImage, fileName, onSuccessInsert } = opts;
+      setUploadError(null);
+      setUploadRetryPayload(null);
+      setUploadProgress(0);
+      uploadMutation.mutate(
+        {
+          file,
+          onProgress: (p) => setUploadProgress(p),
+        },
+        {
+          onSuccess: (data) => {
+            setUploadProgress(null);
+            setUploadError(null);
+            setUploadRetryPayload(null);
+            if (onSuccessInsert) onSuccessInsert(data);
+          },
+          onError: (err) => {
+            setUploadProgress(null);
+            setUploadError(err?.message || 'Ошибка загрузки');
+            setUploadRetryPayload({ file, asImage, fileName, withInsert: !!onSuccessInsert });
+          },
+        }
+      );
     },
-  });
-
-  const deleteLinkMutation = useMutation({
-    mutationFn: (linkId) => deleteMaterialCardLink(linkId),
-    onSuccess: (_, linkId) => {
-      setLinks((prev) => prev.filter((l) => l.id !== linkId));
-    },
-  });
-
-  const deleteFileMutation = useMutation({
-    mutationFn: (fileId) => deleteMaterialCardFile(fileId),
-    onSuccess: (_, fileId) => {
-      setAttachments((prev) => prev.filter((f) => f.id !== fileId));
-    },
-  });
-
-  const tagsMutation = useMutation({
-    mutationFn: (tagList) => setMaterialCardTags(cardId, tagList),
-    onSuccess: (_, tagList) => setTagsState(tagList),
-  });
-
-  const addTag = useCallback(() => {
-    const t = tagInput.trim();
-    if (!t || tags.includes(t)) return;
-    const next = [...tags, t];
-    setTagsState(next);
-    setTagInput('');
-    tagsMutation.mutate(next);
-  }, [tagInput, tags, tagsMutation]);
-
-  const removeTag = useCallback(
-    (tag) => {
-      const next = tags.filter((x) => x !== tag);
-      setTagsState(next);
-      tagsMutation.mutate(next);
-    },
-    [tags, tagsMutation]
+    [uploadMutation]
   );
-
-  const createdBy = card?.created_by;
-  const createdAt = card?.created_at || card?.createdAt;
-  const updatedAt = card?.updated_at || card?.updatedAt;
-
-  const handleClose = useCallback(async () => {
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-      saveTimeoutRef.current = null;
-    }
-    const el = contentRef.current;
-    const html = el?.innerHTML ?? '';
-    const contentChanged = html !== (card?.content ?? '');
-    const titleChanged = title !== (card?.title ?? '');
-    if ((contentChanged || titleChanged) && cardId != null) {
-      try {
-        const payload = {};
-        if (titleChanged) payload.title = title;
-        if (contentChanged) payload.content = html;
-        await updateMutation.mutateAsync(payload);
-      } catch {
-        // attempt was made
-      }
-    }
-    onClose();
-  }, [cardId, card?.content, card?.title, title, updateMutation, onClose]);
 
   const setSelectionAfter = useCallback((node) => {
     const sel = document.getSelection();
@@ -324,32 +452,95 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     [handleContentInput, setSelectionAfter]
   );
 
+  const insertDocCard = useCallback(
+    (url, filename, attachmentId) => {
+      const safeUrl = url.replace(/"/g, '&quot;');
+      const rawName = filename ? decodeDocName(filename) : 'Документ';
+      const safeTitle = rawName.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      /* После span вставляем нулевой пробел (&#8203;), чтобы курсор мог стоять справа от карточки, как у фото. */
+      const html = `<span class="inline-doc-card" contenteditable="false" data-attachment-id="${attachmentId}" data-doc-url="${safeUrl}" data-doc-title="${safeTitle}"></span>&#8203;`;
+      insertMediaAtCursor(html, '.inline-doc-card');
+      requestAnimationFrame(() => {
+        const targets = [];
+        contentRef.current?.querySelectorAll('.inline-doc-card').forEach((node, i) => {
+          const u = node.getAttribute('data-doc-url');
+          const t = node.getAttribute('data-doc-title') || 'Документ';
+          if (u) targets.push({ id: node.getAttribute('data-attachment-id') || `doc-${i}-${u}`, node, url: u, title: t });
+        });
+        setDocCardTargets(targets);
+      });
+    },
+    [insertMediaAtCursor]
+  );
+
+  const getInsertHandlerForRetry = useCallback(
+    (payload) => {
+      if (!payload) return undefined;
+      return (data) => {
+        const url = resolveFileUrl(data?.file_url);
+        if (!url) return;
+        if (payload.asImage) {
+          const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:85%;height:auto;" loading="lazy" />`;
+          insertMediaAtCursor(html, 'img.inline-photo');
+        } else {
+          const name = payload.fileName || decodeDocName(data?.file_url?.split?.('/')?.pop()) || 'Документ';
+          insertDocCard(url, name, data?.id);
+        }
+      };
+    },
+    [insertMediaAtCursor, insertDocCard]
+  );
+
+  const createdAt = card?.created_at || card?.createdAt;
+  const updatedAt = card?.updated_at || card?.updatedAt;
+
+  const handleClose = useCallback(async () => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+    const el = contentRef.current;
+    if (el) normalizeDocumentCardsForSave(el);
+    const html = el?.innerHTML ?? '';
+    const contentChanged = html !== (card?.content ?? '');
+    const titleChanged = title !== (card?.title ?? '');
+    if ((contentChanged || titleChanged) && cardId != null) {
+      try {
+        const payload = {};
+        if (titleChanged) payload.title = title;
+        if (contentChanged) payload.content = html;
+        await updateMutation.mutateAsync(payload);
+      } catch {
+        // attempt was made
+      }
+    }
+    onClose();
+  }, [cardId, card?.content, card?.title, title, updateMutation, onClose]);
+
   const handlePhotoSelected = useCallback(
     (e) => {
       const file = e.target?.files?.[0];
       e.target.value = '';
       if (!file || !isImageFile(file)) return;
-      uploadMutation.mutate(file, {
-        onSuccess: (data) => {
-          const url = resolveFileUrl(data?.file_url);
-          if (url) {
-            const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:100%;height:auto;" loading="lazy" />`;
-            insertMediaAtCursor(html, 'img.inline-photo');
-          }
-        },
-      });
+      const doUpload = (f) => {
+        runUpload(f, {
+          asImage: true,
+          onSuccessInsert: (data) => {
+            const url = resolveFileUrl(data?.file_url);
+            if (url) {
+              const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:85%;height:auto;" loading="lazy" />`;
+              insertMediaAtCursor(html, 'img.inline-photo');
+            }
+          },
+        });
+      };
+      if (mobileLayout) {
+        compressImageForUpload(file).then(doUpload);
+      } else {
+        doUpload(file);
+      }
     },
-    [uploadMutation, insertMediaAtCursor]
-  );
-
-  const insertDocCard = useCallback(
-    (url, filename, attachmentId) => {
-      const safeUrl = url.replace(/"/g, '&quot;');
-      const name = (filename || 'Документ').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const html = `<span class="inline-doc-card" contenteditable="false" data-attachment-id="${attachmentId}"><span class="inline-doc-card-inner"><span class="inline-doc-card-preview">📄</span><span class="inline-doc-card-body"><span class="inline-doc-card-name" contenteditable="true" data-placeholder="Название документа">${name}</span><a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="inline-doc-card-link">Открыть</a></span></span></span>`;
-      insertMediaAtCursor(html, '.inline-doc-card');
-    },
-    [insertMediaAtCursor]
+    [runUpload, insertMediaAtCursor, mobileLayout]
   );
 
   const handleDocSelected = useCallback(
@@ -357,15 +548,17 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       const file = e.target?.files?.[0];
       e.target.value = '';
       if (!file) return;
-      uploadMutation.mutate(file, {
-        onSuccess: (data) => {
+      runUpload(file, {
+        asImage: false,
+        fileName: file.name,
+        onSuccessInsert: (data) => {
           const url = resolveFileUrl(data?.file_url);
-          const name = data?.file_url?.split?.('/')?.pop() || file.name || 'Документ';
+          const name = file.name || decodeDocName(data?.file_url?.split?.('/')?.pop()) || 'Документ';
           if (url) insertDocCard(url, name, data?.id);
         },
       });
     },
-    [uploadMutation, insertDocCard]
+    [runUpload, insertDocCard]
   );
 
   const addLink = useCallback(
@@ -385,8 +578,13 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     if (sel) sel.removeAllRanges();
     setPhotoMenu({ src, previewSize: previewSize || 'large' });
     setPhotoMenuPreviewOpen(false);
+    setPhotoMenuPosition(null);
   }, []);
-  const closePhotoMenu = useCallback(() => { setPhotoMenu(null); setPhotoMenuPreviewOpen(false); }, []);
+  const closePhotoMenu = useCallback(() => {
+    setPhotoMenu(null);
+    setPhotoMenuPreviewOpen(false);
+    setPhotoMenuPosition(null);
+  }, []);
 
   const copyImageToClipboard = useCallback((src) => {
     closePhotoMenu();
@@ -423,17 +621,201 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     closePhotoMenu();
   }, [photoMenu?.src, closePhotoMenu, handleContentInput, flushContentSave]);
 
+  useEffect(() => {
+    if (mobileLayout) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (photoMenu && !mobileLayout) closePhotoMenu();
+        else if (insertMenuOpen) setInsertMenuOpen(false);
+        return;
+      }
+      if (!contentRef.current?.contains(document.activeElement)) return;
+      if (e.ctrlKey || e.metaKey) {
+        switch (e.key?.toLowerCase()) {
+          case 'b': e.preventDefault(); execCmd('bold'); break;
+          case 'i': e.preventDefault(); execCmd('italic'); break;
+          case 'z': e.preventDefault(); execCmd(e.shiftKey ? 'redo' : 'undo'); break;
+          case 'y': if (e.shiftKey) break; e.preventDefault(); execCmd('redo'); break;
+          default: break;
+        }
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [mobileLayout, execCmd, photoMenu, insertMenuOpen, closePhotoMenu]);
+
+  useEffect(() => {
+    if (!insertMenuOpen) return;
+    const close = (e) => {
+      if (deskToolbarRef.current?.contains(e.target)) return;
+      setInsertMenuOpen(false);
+    };
+    const t = setTimeout(() => document.addEventListener('click', close), 0);
+    return () => { clearTimeout(t); document.removeEventListener('click', close); };
+  }, [insertMenuOpen]);
+
+  const [photoMenuPosition, setPhotoMenuPosition] = useState(null);
+  const [photoMenuClamped, setPhotoMenuClamped] = useState(null);
+  const photoMenuPopoverRef = useRef(null);
+  const [hoveredImage, setHoveredImage] = useState(null);
+  const hoveredImageRef = useRef(null);
+  const openPhotoMenuAt = useCallback((src, previewSize, clientX, clientY) => {
+    photoLongPressHandledRef.current = true;
+    const sel = document.getSelection();
+    if (sel) sel.removeAllRanges();
+    setPhotoMenu({ src, previewSize: previewSize || 'large' });
+    setPhotoMenuPreviewOpen(false);
+    setPhotoMenuPosition(!mobileLayout && clientX != null ? { x: clientX, y: clientY } : null);
+    setPhotoMenuClamped(null);
+  }, [mobileLayout]);
+
+  useLayoutEffect(() => {
+    if (!photoMenuPosition || !photoMenuPopoverRef.current) return;
+    const r = photoMenuPopoverRef.current.getBoundingClientRect();
+    const pad = 8;
+    const dx = 4;
+    const dy = 4;
+    let x = photoMenuPosition.x;
+    let y = photoMenuPosition.y;
+    if (x + dx + r.width > window.innerWidth - pad) x = window.innerWidth - pad - r.width - dx;
+    if (y + dy + r.height > window.innerHeight - pad) y = window.innerHeight - pad - r.height - dy;
+    if (x + dx < pad) x = pad - dx;
+    if (y + dy < pad) y = pad - dy;
+    setPhotoMenuClamped({ x, y });
+  }, [photoMenuPosition]);
+
   const handleContentPointerDown = useCallback(
     (e) => {
       const img = e.target?.closest?.('img');
-      if (!img?.src || !mobileLayout || !contentRef.current?.contains(img)) return;
-      e.preventDefault();
-      photoLongPressRef.current = setTimeout(() => {
-        photoLongPressRef.current = null;
-        openPhotoMenu(img.src, img.getAttribute('data-preview-size') || 'large');
-      }, LONG_PRESS_MS);
+      if (!img?.src || !contentRef.current?.contains(img)) return;
+      if (mobileLayout) {
+        e.preventDefault();
+        photoLongPressRef.current = setTimeout(() => {
+          photoLongPressRef.current = null;
+          openPhotoMenu(img.src, img.getAttribute('data-preview-size') || 'large');
+        }, LONG_PRESS_MS);
+      }
     },
     [mobileLayout, openPhotoMenu]
+  );
+
+  const handleContentContextMenu = useCallback(
+    (e) => {
+      const img = e.target?.closest?.('img');
+      if (img?.src && contentRef.current?.contains(img) && !mobileLayout) {
+        e.preventDefault();
+        openPhotoMenuAt(img.src, img.getAttribute('data-preview-size') || 'large', e.clientX, e.clientY);
+      }
+    },
+    [mobileLayout, openPhotoMenuAt]
+  );
+
+  const handleContentDrop = useCallback(
+    (e) => {
+      e.preventDefault();
+      setDropActive(false);
+      const items = e.dataTransfer?.files;
+      if (!items?.length || !contentRef.current) return;
+      contentRef.current.focus();
+      const file = items[0];
+      const asImage = isImageFile(file);
+      const doInsert = (f) => {
+        if (asImage) {
+          runUpload(f, {
+            asImage: true,
+            onSuccessInsert: (data) => {
+              const url = resolveFileUrl(data?.file_url);
+              if (url) {
+                const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:85%;height:auto;" loading="lazy" />`;
+                insertMediaAtCursor(html, 'img.inline-photo');
+              }
+            },
+          });
+        } else {
+          runUpload(f, {
+            asImage: false,
+            fileName: f.name,
+            onSuccessInsert: (data) => {
+              const url = resolveFileUrl(data?.file_url);
+              const name = f.name || decodeDocName(data?.file_url?.split?.('/')?.pop()) || 'Документ';
+              if (url) insertDocCard(url, name, data?.id);
+            },
+          });
+        }
+      };
+      if (asImage && mobileLayout) compressImageForUpload(file).then(doInsert);
+      else doInsert(file);
+    },
+    [runUpload, insertMediaAtCursor, insertDocCard, mobileLayout]
+  );
+
+  const [dropActive, setDropActive] = useState(false);
+  const handleContentDragOver = useCallback((e) => {
+    if (e.dataTransfer?.types?.includes('Files')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      setDropActive(true);
+    }
+  }, []);
+  const handleContentDragLeave = useCallback((e) => {
+    if (!contentRef.current?.contains(e.relatedTarget)) setDropActive(false);
+  }, []);
+
+  const handleContentMouseMove = useCallback((e) => {
+    if (mobileLayout) return;
+    const img = e.target?.closest?.('img.inline-photo');
+    if (img?.src && contentRef.current?.contains(img)) {
+      const rect = img.getBoundingClientRect();
+      setHoveredImage({ src: img.src, rect });
+      hoveredImageRef.current = img;
+    } else {
+      setHoveredImage(null);
+      hoveredImageRef.current = null;
+    }
+  }, [mobileLayout]);
+
+  const handleContentMouseLeave = useCallback(() => {
+    if (mobileLayout) return;
+    setHoveredImage(null);
+    hoveredImageRef.current = null;
+  }, [mobileLayout]);
+
+  const handleContentPaste = useCallback(
+    (e) => {
+      const files = e.clipboardData?.files;
+      if (!files?.length) return;
+      const file = Array.from(files).find((f) => isImageFile(f) || f.type === 'application/pdf' || /\.(docx?|xlsx?|pptx?|txt|md)$/i.test(f.name || ''));
+      if (!file) return;
+      e.preventDefault();
+      const asImage = isImageFile(file);
+      const doInsert = (f) => {
+        if (asImage) {
+          runUpload(f, {
+            asImage: true,
+            onSuccessInsert: (data) => {
+              const url = resolveFileUrl(data?.file_url);
+              if (url) {
+                const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:85%;height:auto;" loading="lazy" />`;
+                insertMediaAtCursor(html, 'img.inline-photo');
+              }
+            },
+          });
+        } else {
+          runUpload(f, {
+            asImage: false,
+            fileName: f.name,
+            onSuccessInsert: (data) => {
+              const url = resolveFileUrl(data?.file_url);
+              const name = f.name || decodeDocName(data?.file_url?.split?.('/')?.pop()) || 'Документ';
+              if (url) insertDocCard(url, name, data?.id);
+            },
+          });
+        }
+      };
+      if (asImage && mobileLayout) compressImageForUpload(file).then(doInsert);
+      else doInsert(file);
+    },
+    [runUpload, insertMediaAtCursor, insertDocCard, mobileLayout]
   );
 
   const handleContentPointerUp = useCallback(() => {
@@ -463,31 +845,57 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       const file = e.target?.files?.[0];
       e.target.value = '';
       if (!file) return;
-      if (isImageFile(file)) {
-        uploadMutation.mutate(file, {
-          onSuccess: (data) => {
-            const url = resolveFileUrl(data?.file_url);
-            if (url) {
-              const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:100%;height:auto;" loading="lazy" />`;
-              insertMediaAtCursor(html, 'img.inline-photo');
-            }
-          },
-        });
+      const asImage = isImageFile(file);
+      const doUpload = (f) => {
+        if (asImage) {
+          runUpload(f, {
+            asImage: true,
+            onSuccessInsert: (data) => {
+              const url = resolveFileUrl(data?.file_url);
+              if (url) {
+                const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:85%;height:auto;" loading="lazy" />`;
+                insertMediaAtCursor(html, 'img.inline-photo');
+              }
+            },
+          });
+        } else {
+          runUpload(f, {
+            asImage: false,
+            fileName: f.name,
+            onSuccessInsert: (data) => {
+              const url = resolveFileUrl(data?.file_url);
+              const name = f.name || decodeDocName(data?.file_url?.split?.('/')?.pop()) || 'Документ';
+              if (url) insertDocCard(url, name, data?.id);
+            },
+          });
+        }
+      };
+      if (mobileLayout && asImage) {
+        compressImageForUpload(file).then(doUpload);
       } else {
-        uploadMutation.mutate(file, {
-          onSuccess: (data) => {
-            const url = resolveFileUrl(data?.file_url);
-            const name = data?.file_url?.split?.('/')?.pop() || file.name || 'Документ';
-            if (url) insertDocCard(url, name, data?.id);
-          },
-        });
+        doUpload(file);
       }
     },
-    [uploadMutation, insertMediaAtCursor, insertDocCard]
+    [runUpload, insertMediaAtCursor, insertDocCard, mobileLayout]
   );
 
+  const docCardTargetsConnected = docCardTargets.filter((t) => t.node?.isConnected);
+
   return (
-    <div className={`${styles.editorWrap} ${mobileLayout ? styles.mobileWrap : ''}`}>
+    <div className={`${styles.editorWrap} ${mobileLayout ? styles.mobileWrap : ''} ${!mobileLayout ? styles.deskUnified : ''}`}>
+      {docCardTargetsConnected.map((t) =>
+        createPortal(
+          <div key={t.id} className={styles.docCardInlineWrap}>
+            <DocumentCard
+              title={t.title}
+              fileUrl={t.url}
+              previewUrl={null}
+              onOpen={() => setDocViewer({ url: t.url, title: t.title })}
+            />
+          </div>,
+          t.node
+        )
+      )}
       <input ref={photoInputRef} type="file" accept="image/*" className={styles.hiddenInput} onChange={handlePhotoSelected} />
       <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" className={styles.hiddenInput} onChange={handleDocSelected} />
       <input ref={attachInputRef} type="file" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" className={styles.hiddenInput} onChange={handleAttachSelected} />
@@ -542,12 +950,39 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
         )}
       </header>
 
+      {(uploadProgress != null || uploadError) && (
+        <div className={styles.uploadStatus}>
+          {uploadProgress != null && (
+            <div className={styles.uploadProgressWrap}>
+              <div className={styles.uploadProgressBar} style={{ width: `${uploadProgress}%` }} />
+              <span className={styles.uploadProgressText}>Загрузка… {uploadProgress}%</span>
+            </div>
+          )}
+          {uploadError && (
+            <div className={styles.uploadErrorBar}>
+              <span className={styles.uploadErrorText}>{uploadError}</span>
+              <div className={styles.uploadErrorActions}>
+                {uploadRetryPayload && (
+                  <button type="button" className={styles.uploadRetryBtn} onClick={() => runUpload(uploadRetryPayload.file, { asImage: uploadRetryPayload.asImage, fileName: uploadRetryPayload.fileName, onSuccessInsert: uploadRetryPayload.withInsert ? getInsertHandlerForRetry(uploadRetryPayload) : undefined })}>
+                    Повторить
+                  </button>
+                )}
+                <button type="button" className={styles.uploadDismissBtn} onClick={() => { setUploadError(null); setUploadRetryPayload(null); }}>Закрыть</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className={styles.main}>
-        <div className={`${styles.editorArea} ${mobileLayout ? styles.mobileEditorArea : ''}`}>
+        <div className={`${styles.editorArea} ${mobileLayout ? styles.mobileEditorArea : ''} ${!mobileLayout ? styles.deskEditorArea : ''}`}>
           {!mobileLayout && (
-            <div className={styles.toolbar}>
-              <button type="button" className={styles.toolbarBtn} onClick={() => execCmd('bold')} title="Жирный">
+            <div ref={deskToolbarRef} className={styles.deskToolbar}>
+              <button type="button" className={styles.toolbarBtn} onClick={() => execCmd('bold')} title="Жирный (Ctrl+B)">
                 <Bold size={16} />
+              </button>
+              <button type="button" className={styles.toolbarBtn} onClick={() => execCmd('italic')} title="Курсив (Ctrl+I)">
+                <Italic size={16} />
               </button>
               <button type="button" className={styles.toolbarBtn} onClick={() => execCmd('insertUnorderedList')} title="Список">
                 <List size={16} />
@@ -555,9 +990,16 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
               <button type="button" className={styles.toolbarBtn} onClick={() => execCmd('formatBlock', 'h2')} title="Заголовок">
                 <Heading2 size={16} />
               </button>
-              <button type="button" className={styles.toolbarBtn} onClick={() => execCmd('formatBlock', 'pre')} title="Код">
-                <Code size={16} />
+              <button type="button" className={styles.deskPlusBtn} onClick={() => setInsertMenuOpen((o) => !o)} title="Вставить медиа" aria-haspopup="true" aria-expanded={insertMenuOpen}>
+                ＋
               </button>
+              {insertMenuOpen && (
+                <div className={styles.insertMenuPopover} role="menu">
+                  <button type="button" className={styles.insertMenuItem} onClick={() => { photoInputRef.current?.click(); setInsertMenuOpen(false); }} role="menuitem">Фото</button>
+                  <button type="button" className={styles.insertMenuItem} onClick={() => { docInputRef.current?.click(); setInsertMenuOpen(false); }} role="menuitem">Документ</button>
+                  <button type="button" className={styles.insertMenuItem} onClick={() => { setLinkDialog(true); setInsertMenuOpen(false); }} role="menuitem">Ссылка</button>
+                </div>
+              )}
             </div>
           )}
           {mobileLayout ? (
@@ -592,12 +1034,11 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
                   openFullscreenImage(img.src, imgs ? Array.from(imgs).map((i) => i.src) : [img.src]);
                 }}
               />
-              <div className={styles.mobileContentSpacer} aria-hidden="true" />
             </div>
           ) : (
             <div
               ref={contentRef}
-              className={styles.contentEditable}
+              className={`${styles.contentEditable} ${styles.deskContent} ${dropActive ? styles.deskContentDropActive : ''}`}
               contentEditable
               suppressContentEditableWarning
               onInput={handleContentInput}
@@ -605,7 +1046,14 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
               onPointerDown={handleContentPointerDown}
               onPointerUp={handleContentPointerUp}
               onPointerCancel={handleContentPointerCancel}
-              onFocus={() => setIsEditing(true)}
+              onContextMenu={handleContentContextMenu}
+              onDrop={handleContentDrop}
+              onDragOver={handleContentDragOver}
+              onDragLeave={handleContentDragLeave}
+              onPaste={handleContentPaste}
+              onMouseMove={handleContentMouseMove}
+              onMouseLeave={handleContentMouseLeave}
+              onFocus={() => { setIsEditing(true); setInsertMenuOpen(false); }}
               onBlur={() => {
                 flushContentSave();
                 setTimeout(() => setIsEditing(document.activeElement === titleInputRef.current || contentRef.current?.contains(document.activeElement)), 0);
@@ -627,64 +1075,11 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
           )}
         </div>
 
-        {!mobileLayout && (
-          <aside className={styles.sidebar}>
-            <section className={styles.sidebarSection}>
-              <h3 className={styles.sidebarTitle}>Файлы</h3>
-              <FileUploader onUpload={(file) => uploadMutation.mutate(file)} disabled={uploadMutation.isPending}>
-                Перетащите файл или нажмите для выбора
-              </FileUploader>
-              <ul className={styles.fileList}>
-                {attachments.map((f) => (
-                  <li key={f.id} className={styles.fileItem}>
-                    <a href={resolveFileUrl(f.file_url)} target="_blank" rel="noopener noreferrer" className={styles.fileLink}>
-                      {f.file_url?.split('/').pop() || 'Файл'}
-                    </a>
-                    <button type="button" className={styles.removeFile} onClick={() => deleteFileMutation.mutate(f.id)} aria-label="Удалить">×</button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-            <section className={styles.sidebarSection}>
-              <h3 className={styles.sidebarTitle}>Ссылки</h3>
-              <input type="url" className={styles.tagsInput} placeholder="URL" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} />
-              <input type="text" className={styles.tagsInput} placeholder="Название (необязательно)" value={linkTitle} onChange={(e) => setLinkTitle(e.target.value)} />
-              <button
-                type="button"
-                className={styles.addCardBtn}
-                style={{ marginTop: 6, width: '100%' }}
-                onClick={() => linkUrl.trim() && addLinkMutation.mutate({ url: linkUrl.trim(), title: linkTitle.trim() || undefined })}
-              >
-                Добавить ссылку
-              </button>
-              <ul className={styles.linkList}>
-                {links.map((l) => (
-                  <li key={l.id} className={styles.linkItem}>
-                    <a href={l.url} target="_blank" rel="noopener noreferrer" className={styles.linkUrl}>{l.title || l.url}</a>
-                    <button type="button" className={styles.removeFile} onClick={() => deleteLinkMutation.mutate(l.id)} aria-label="Удалить">×</button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-            <section className={styles.sidebarSection}>
-              <h3 className={styles.sidebarTitle}>Теги</h3>
-              <input type="text" className={styles.tagsInput} placeholder="Добавить тег" value={tagInput} onChange={(e) => setTagInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addTag())} />
-              <div className={styles.tagsList}>
-                {tags.map((tag) => (
-                  <span key={tag} className={styles.tag}>
-                    {tag}{' '}
-                    <button type="button" onClick={() => removeTag(tag)} aria-label={`Удалить тег ${tag}`} style={{ marginLeft: 4, background: 'none', border: 'none', cursor: 'pointer' }}>×</button>
-                  </span>
-                ))}
-              </div>
-            </section>
-            <section className={styles.sidebarSection}>
-              <h3 className={styles.sidebarTitle}>Метаданные</h3>
-              {createdBy && <p className={styles.metaText}>Создал: {createdBy.nickname || createdBy.username || `ID ${createdBy.id}`}</p>}
-              {createdAt && <p className={styles.metaText}>Создано: {new Date(createdAt).toLocaleString('ru-RU')}</p>}
-              {updatedAt && <p className={styles.metaText}>Изменено: {new Date(updatedAt).toLocaleString('ru-RU')}</p>}
-            </section>
-          </aside>
+        {!mobileLayout && (createdAt || updatedAt) && (
+          <footer className={styles.deskMetaFooter}>
+            {createdAt && <span className={styles.deskMetaItem}>Создано: {new Date(createdAt).toLocaleString('ru-RU')}</span>}
+            {updatedAt && <span className={styles.deskMetaItem}>Изменено: {new Date(updatedAt).toLocaleString('ru-RU')}</span>}
+          </footer>
         )}
       </div>
 
@@ -756,18 +1151,14 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
         </div>
       )}
 
-      {mobileLayout && photoMenu && (
+      {photoMenu && mobileLayout && (
         <div className={styles.photoMenuOverlay} onClick={closePhotoMenu} role="presentation">
           <div className={styles.photoMenuCenter} onClick={(e) => e.stopPropagation()}>
             <img src={photoMenu.src} alt="" className={styles.photoMenuImg} />
           </div>
           <div className={styles.photoMenuSheet} onClick={(e) => e.stopPropagation()}>
-            <button type="button" className={styles.photoMenuItem} onClick={() => { copyImageToClipboard(photoMenu.src); }}>
-              <Copy size={18} /> Скопировать
-            </button>
-            <button type="button" className={styles.photoMenuItem} onClick={() => { closePhotoMenu(); if (navigator.share) fetch(photoMenu.src).then((r) => r.blob()).then((b) => { const f = new File([b], 'image.png', { type: 'image/png' }); navigator.share({ files: [f] }); }); }}>
-              <Upload size={18} /> Поделиться
-            </button>
+            <button type="button" className={styles.photoMenuItem} onClick={() => { copyImageToClipboard(photoMenu.src); }}><Copy size={18} /> Скопировать</button>
+            <button type="button" className={styles.photoMenuItem} onClick={() => { closePhotoMenu(); if (navigator.share) fetch(photoMenu.src).then((r) => r.blob()).then((b) => { const f = new File([b], 'image.png', { type: 'image/png' }); navigator.share({ files: [f] }); }); }}><Upload size={18} /> Поделиться</button>
             <div className={styles.photoMenuDropdown}>
               <button type="button" className={styles.photoMenuItemPreview} onClick={() => setPhotoMenuPreviewOpen((o) => !o)} aria-expanded={photoMenuPreviewOpen}>
                 <LayoutGrid size={18} className={styles.photoMenuPreviewIcon} />
@@ -784,10 +1175,46 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
                 </div>
               )}
             </div>
-            <button type="button" className={styles.photoMenuItemDanger} onClick={() => { const el = contentRef.current && Array.from(contentRef.current.querySelectorAll('img')).find((i) => i.src === photoMenu.src); if (el) { el.remove(); handleContentInput(); flushContentSave(); } closePhotoMenu(); }}>
-              <Trash2 size={18} /> Удалить
-            </button>
+            <button type="button" className={styles.photoMenuItemDanger} onClick={() => { const el = contentRef.current && Array.from(contentRef.current.querySelectorAll('img')).find((i) => i.src === photoMenu.src); if (el) { el.remove(); handleContentInput(); flushContentSave(); } closePhotoMenu(); }}><Trash2 size={18} /> Удалить</button>
           </div>
+        </div>
+      )}
+      {photoMenu && !mobileLayout && photoMenuPosition && (
+        <>
+          <div className={styles.photoMenuBackdrop} onClick={closePhotoMenu} aria-hidden="true" />
+          <div ref={photoMenuPopoverRef} className={styles.photoMenuPopover} style={{ left: (photoMenuClamped ?? photoMenuPosition).x, top: (photoMenuClamped ?? photoMenuPosition).y }} onClick={(e) => e.stopPropagation()}>
+            <button type="button" className={styles.photoMenuItem} onClick={() => { copyImageToClipboard(photoMenu.src); }}><Copy size={18} /> Скопировать</button>
+            <div className={styles.photoMenuDropdown}>
+              <button type="button" className={styles.photoMenuItemPreview} onClick={() => setPhotoMenuPreviewOpen((o) => !o)} aria-expanded={photoMenuPreviewOpen}>
+                <LayoutGrid size={18} className={styles.photoMenuPreviewIcon} />
+                <span className={styles.photoMenuItemPreviewText}>
+                  <span className={styles.photoMenuItemPreviewMain}>Размер</span>
+                  <span className={styles.photoMenuItemPreviewSub}>{photoMenu.previewSize === 'small' ? 'Мелкий' : 'Крупный'}</span>
+                </span>
+                <ChevronRight size={18} className={styles.photoMenuPreviewChevron} />
+              </button>
+              {photoMenuPreviewOpen && (
+                <div className={styles.photoMenuDropdownList}>
+                  <button type="button" className={styles.photoMenuDropdownItem} onClick={() => setPhotoPreviewSize('large')}>Крупный</button>
+                  <button type="button" className={styles.photoMenuDropdownItem} onClick={() => setPhotoPreviewSize('small')}>Мелкий</button>
+                </div>
+              )}
+            </div>
+            <button type="button" className={styles.photoMenuItemDanger} onClick={() => { const el = contentRef.current && Array.from(contentRef.current.querySelectorAll('img')).find((i) => i.src === photoMenu.src); if (el) { el.remove(); handleContentInput(); flushContentSave(); } closePhotoMenu(); }}><Trash2 size={18} /> Удалить</button>
+          </div>
+        </>
+      )}
+
+      {!mobileLayout && hoveredImage?.rect && (
+        <div
+          className={styles.deskImageHoverBar}
+          style={{
+            left: hoveredImage.rect.left,
+            top: hoveredImage.rect.bottom + 6,
+          }}
+        >
+          <button type="button" className={styles.deskImageHoverBtn} onClick={() => { const imgs = contentRef.current?.querySelectorAll?.('img.inline-photo'); openFullscreenImage(hoveredImage.src, imgs ? Array.from(imgs).map((i) => i.src) : [hoveredImage.src]); setHoveredImage(null); }} title="Открыть">Открыть</button>
+          <button type="button" className={styles.deskImageHoverBtnDanger} onClick={() => { const el = contentRef.current?.querySelectorAll?.('img.inline-photo'); const img = el && Array.from(el).find((i) => i.src === hoveredImage.src); if (img) { img.remove(); handleContentInput(); flushContentSave(); } setHoveredImage(null); }} title="Удалить">Удалить</button>
         </div>
       )}
 
@@ -800,20 +1227,12 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
         />
       )}
 
-      {docViewer && (
-        <div className={styles.docViewerOverlay} onClick={() => setDocViewer(null)}>
-          <div className={styles.docViewerBox} onClick={(e) => e.stopPropagation()}>
-            <button type="button" className={styles.docViewerClose} onClick={() => setDocViewer(null)} aria-label="Закрыть">×</button>
-            {/\.pdf$/i.test(docViewer) ? (
-              <embed src={docViewer} type="application/pdf" className={styles.docEmbed} />
-            ) : (
-              <a href={docViewer} target="_blank" rel="noopener noreferrer" className={styles.docViewerLink}>
-                Открыть документ
-              </a>
-            )}
-          </div>
-        </div>
-      )}
+      <DocumentPreviewOverlay
+        isOpen={Boolean(docViewer)}
+        onClose={() => setDocViewer(null)}
+        url={docViewer?.url}
+        title={docViewer?.title}
+      />
 
       {linkDialog && (
         <LinkDialog

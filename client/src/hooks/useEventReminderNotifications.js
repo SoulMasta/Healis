@@ -4,6 +4,7 @@ import { getToken } from '../http/userAPI';
 import { loadPreferences } from '../utils/preferences';
 import { toast } from '../utils/toast';
 import { pushNotificationFeed } from '../utils/notificationFeed';
+import { showSystemNotification } from '../utils/systemNotification';
 
 const SENT_KEY = 'healis.eventReminders.sent.v1';
 
@@ -104,23 +105,6 @@ function buildBody(ev, days) {
   return parts.join('\n');
 }
 
-async function trySystemNotification(title, body) {
-  try {
-    if (!('Notification' in window)) return;
-    if (window.Notification.permission !== 'granted') return;
-    // Prefer ServiceWorker notification on mobile PWAs (more "system-like").
-    const reg = await navigator?.serviceWorker?.getRegistration?.();
-    if (reg?.showNotification) {
-      await reg.showNotification(title, { body });
-      return;
-    }
-    // Fallback: page-level Notification.
-    // eslint-disable-next-line no-new
-    new window.Notification(title, { body });
-  } catch {
-    // ignore
-  }
-}
 
 export function useEventReminderNotifications() {
   const runningRef = useRef(false);
@@ -176,7 +160,7 @@ export function useEventReminderNotifications() {
                 message: body,
                 durationMs: 7000,
               });
-              await trySystemNotification('Ближайшее событие', body);
+              await showSystemNotification('Ближайшее событие', body);
               pushNotificationFeed({
                 id: `reminder:${key}:${th.kind}`,
                 kind: 'calendar',
@@ -204,7 +188,7 @@ export function useEventReminderNotifications() {
             message: body,
             durationMs: 7000,
           });
-          await trySystemNotification('Ближайшее событие', body);
+          await showSystemNotification('Ближайшее событие', body);
           pushNotificationFeed({
             id: `reminder:${key}:${d}`,
             kind: 'calendar',

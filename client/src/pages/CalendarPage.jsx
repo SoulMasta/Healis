@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Check, ChevronLeft, ChevronRight, Home, Inbox, Loader2, Plus, Trash2, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Home, Inbox, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import styles from '../styles/CalendarPage.module.css';
 import {
   createGroupCalendarEvent,
@@ -14,9 +14,12 @@ import {
   getMyCalendar,
   respondToCalendarInvite,
   respondToCalendarPeriodInvite,
+  updateGroupCalendarEvent,
+  updateMyCalendarEvent,
 } from '../http/calendarAPI';
 import { getMyGroups } from '../http/groupAPI';
 import { getToken } from '../http/userAPI';
+import { requestNotificationPermissionIfNeeded } from '../utils/systemNotification';
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -154,6 +157,149 @@ function parseMaterialsText(text) {
   return out;
 }
 
+function formatMaterialsForInput(materials) {
+  if (!Array.isArray(materials)) return '';
+  return materials.map((m) => (m?.title ? `${m.title} | ${m?.url || ''}` : m?.url || '')).filter(Boolean).join('\n');
+}
+
+function EditEventModal({ open, onClose, onSaved, event, kind, groupId }) {
+  const ev = event || {};
+  const dateStr = ev.startsAt ? ev.startsAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const timeStr =
+    ev.startsAt && !ev.allDay && ev.startsAt.length >= 16 ? ev.startsAt.slice(11, 16) : '09:00';
+
+  const [title, setTitle] = useState(ev.title || '');
+  const [type, setType] = useState(ev.type || 'CT');
+  const [date, setDate] = useState(dateStr);
+  const [allDay, setAllDay] = useState(ev.allDay !== false);
+  const [time, setTime] = useState(timeStr);
+  const [subject, setSubject] = useState(ev.subject || '');
+  const [comment, setComment] = useState(ev.comment || ev.description || '');
+  const [materialsText, setMaterialsText] = useState(() => formatMaterialsForInput(ev.materials));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open && ev?.title !== undefined) {
+      setTitle(ev.title || '');
+      setType(ev.type || 'CT');
+      setDate(ev.startsAt ? ev.startsAt.slice(0, 10) : new Date().toISOString().slice(0, 10));
+      setAllDay(ev.allDay !== false);
+      setTime(ev.startsAt && !ev.allDay && ev.startsAt.length >= 16 ? ev.startsAt.slice(11, 16) : '09:00');
+      setSubject(ev.subject || '');
+      setComment(ev.comment || ev.description || '');
+      setMaterialsText(formatMaterialsForInput(ev.materials));
+    }
+  }, [open, ev?.title, ev?.type, ev?.startsAt, ev?.allDay, ev?.subject, ev?.comment, ev?.description, ev?.materials]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    setBusy(true);
+    try {
+      const timePart = allDay ? '00:00' : time || '09:00';
+      const startsAt = new Date(`${date}T${timePart}`).toISOString();
+      const payload = {
+        title: title.trim(),
+        type,
+        subject: subject.trim() || null,
+        comment: comment.trim() || null,
+        materials: parseMaterialsText(materialsText),
+        startsAt,
+        allDay,
+      };
+      const k = String(kind || '').toUpperCase();
+      if (k === 'MY' && ev.myEventId) {
+        await updateMyCalendarEvent(ev.myEventId, payload);
+      } else if (k === 'GROUP' && groupId && ev.eventId) {
+        await updateGroupCalendarEvent(groupId, ev.eventId, payload);
+      } else return;
+      onSaved?.();
+      onClose?.();
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      alert(err?.response?.data?.error || err?.message || 'Не удалось сохранить');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <div className={styles.modal} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className={styles.titleRow}>
+          <div className={styles.modalTitle}>Редактировать событие</div>
+          <button type="button" className={styles.iconBtn} onClick={onClose} aria-label="Закрыть">
+            <X size={16} />
+          </button>
+        </div>
+        <form className={styles.createForm} onSubmit={submit}>
+          <label className={styles.formLabel}>
+            Название *
+            <input className={styles.input} value={title} onChange={(e) => setTitle(e.target.value)} required />
+          </label>
+          <div className={styles.row2}>
+            <label className={styles.formLabel}>
+              Тип
+              <select className={styles.select} value={type} onChange={(e) => setType(e.target.value)}>
+                <option value="CT">ЦТ</option>
+                <option value="EXAM">Экзамен</option>
+                <option value="COLLOQUIUM">Коллоквиум</option>
+                <option value="HOMEWORK">ДЗ</option>
+                <option value="OTHER">Другое</option>
+              </select>
+            </label>
+            <label className={styles.formLabel}>
+              Дата
+              <input className={styles.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+            </label>
+          </div>
+          <div className={styles.row2}>
+            <label className={styles.formLabel}>
+              Режим
+              <select className={styles.select} value={allDay ? 'allDay' : 'time'} onChange={(e) => setAllDay(e.target.value === 'allDay')}>
+                <option value="allDay">Весь день</option>
+                <option value="time">Указать время</option>
+              </select>
+            </label>
+            <label className={styles.formLabel}>
+              Время
+              <input className={styles.input} type="time" value={time} onChange={(e) => setTime(e.target.value)} disabled={allDay} />
+            </label>
+          </div>
+          <label className={styles.formLabel}>
+            Предмет (опц.)
+            <input className={styles.input} value={subject} onChange={(e) => setSubject(e.target.value)} />
+          </label>
+          <label className={styles.formLabel}>
+            Комментарий (опц.)
+            <textarea className={styles.textarea} value={comment} onChange={(e) => setComment(e.target.value)} />
+          </label>
+          <label className={styles.formLabel}>
+            Материалы (опц.)
+            <textarea
+              className={styles.textarea}
+              value={materialsText}
+              onChange={(e) => setMaterialsText(e.target.value)}
+              placeholder={'Ссылки, по одной на строку\nили: Название | https://...'}
+            />
+          </label>
+          <div className={styles.modalActions}>
+            <button type="button" className={styles.btnGhost} onClick={onClose} disabled={busy}>
+              Отмена
+            </button>
+            <button type="submit" className={styles.primaryBtn} disabled={busy || !title.trim()}>
+              {busy ? <Loader2 size={16} className={styles.spinner} /> : null}
+              Сохранить
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function CalendarPage() {
   const navigate = useNavigate();
   const [token, setToken] = useState(() => getToken());
@@ -164,6 +310,7 @@ export default function CalendarPage() {
   const [selectedDayKey, setSelectedDayKey] = useState(() => isoDateKey(new Date()));
   const [view, setView] = useState('month'); // 'month' | 'day'
   const [details, setDetails] = useState(null); // { kind: 'MY'|'GROUP'|'PERIOD', event }
+  const [editingEvent, setEditingEvent] = useState(null); // { kind, event, groupId? }
 
   const [groups, setGroups] = useState([]);
   const [, setLoadingGroups] = useState(false);
@@ -449,6 +596,8 @@ export default function CalendarPage() {
         startsAt,
         allDay: Boolean(myAllDay),
       });
+      const { requestNotificationPermissionIfNeeded } = await import('../utils/systemNotification');
+      requestNotificationPermissionIfNeeded();
       setMyTitle('');
       setMySubject('');
       setMyComment('');
@@ -481,6 +630,7 @@ export default function CalendarPage() {
         startsAt,
         allDay: Boolean(gAllDay),
       });
+      requestNotificationPermissionIfNeeded();
       setGTitle('');
       setGSubject('');
       setGComment('');
@@ -782,16 +932,27 @@ export default function CalendarPage() {
                               Подтверждения: {ev.stats?.confirmed ?? 0}/{ev.stats?.total ?? 0} (ожид: {ev.stats?.pending ?? 0})
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            className={styles.iconBtn}
-                            onClick={() => deleteGroupItem('e', ev.eventId)}
-                            disabled={busy}
-                            title="Удалить событие"
-                            aria-label="Удалить событие"
-                          >
-                            {busy ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
-                          </button>
+                          <div className={styles.listItemActions}>
+                            <button
+                              type="button"
+                              className={styles.iconBtn}
+                              onClick={() => setEditingEvent({ kind: 'group', event: ev, groupId: myGroupId })}
+                              title="Редактировать событие"
+                              aria-label="Редактировать"
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.iconBtn}
+                              onClick={() => deleteGroupItem('e', ev.eventId)}
+                              disabled={busy}
+                              title="Удалить событие"
+                              aria-label="Удалить событие"
+                            >
+                              {busy ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
+                            </button>
+                          </div>
                         </div>
                       );
                     })}
@@ -1024,17 +1185,39 @@ export default function CalendarPage() {
                                       {ev?.subject ? ` • ${ev.subject}` : ''}
                                     </div>
                                   </div>
-                                  {canDelete ? (
-                                    <button
-                                      type="button"
-                                      className={styles.iconBtn}
-                                      onClick={() => deleteMy(ev.myEventId)}
-                                      disabled={busyDelete}
-                                      aria-label="Удалить событие"
-                                      title="Удалить"
-                                    >
-                                      {busyDelete ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
-                                    </button>
+                                  {(canDelete || (kind === 'GROUP' && canManageMyGroup && ev?.eventId)) ? (
+                                    <div className={styles.dayRowActions}>
+                                      {(canDelete || (kind === 'GROUP' && canManageMyGroup)) ? (
+                                        <button
+                                          type="button"
+                                          className={styles.iconBtn}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditingEvent({
+                                              kind: kind,
+                                              event: ev,
+                                              groupId: kind === 'GROUP' ? (ev?.groupId || myGroupId) : undefined,
+                                            });
+                                          }}
+                                          aria-label="Редактировать"
+                                          title="Редактировать"
+                                        >
+                                          <Pencil size={16} />
+                                        </button>
+                                      ) : null}
+                                      {canDelete ? (
+                                        <button
+                                          type="button"
+                                          className={styles.iconBtn}
+                                          onClick={(e) => { e.stopPropagation(); deleteMy(ev.myEventId); }}
+                                          disabled={busyDelete}
+                                          aria-label="Удалить событие"
+                                          title="Удалить"
+                                        >
+                                          {busyDelete ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
+                                        </button>
+                                      ) : null}
+                                    </div>
                                   ) : null}
                                 </div>
                               );
@@ -1256,14 +1439,46 @@ export default function CalendarPage() {
         )}
       </main>
 
+      <EditEventModal
+        open={!!editingEvent}
+        onClose={() => setEditingEvent(null)}
+        onSaved={() => {
+          loadCalendar();
+          if (canManageMyGroup && myGroupId) loadGroupData();
+        }}
+        event={editingEvent?.event}
+        kind={editingEvent?.kind}
+        groupId={editingEvent?.groupId}
+      />
+
       {details?.event ? (
         <div className={styles.modalOverlay} role="presentation" onClick={() => setDetails(null)}>
           <div className={styles.modal} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <div className={styles.titleRow}>
               <div className={styles.modalTitle}>{details.event?.title || 'Событие'}</div>
-              <button type="button" className={styles.iconBtn} onClick={() => setDetails(null)} aria-label="Закрыть">
-                <X size={16} />
-              </button>
+              <div className={styles.titleRowActions}>
+                {(details.kind === 'MY' || (details.kind === 'GROUP' && canManageMyGroup)) ? (
+                  <button
+                    type="button"
+                    className={styles.iconBtn}
+                    onClick={() => {
+                      setDetails(null);
+                      setEditingEvent({
+                        kind: details.kind,
+                        event: details.event,
+                        groupId: details.kind === 'GROUP' ? (details.event?.groupId || myGroupId) : undefined,
+                      });
+                    }}
+                    aria-label="Редактировать"
+                    title="Редактировать"
+                  >
+                    <Pencil size={16} />
+                  </button>
+                ) : null}
+                <button type="button" className={styles.iconBtn} onClick={() => setDetails(null)} aria-label="Закрыть">
+                  <X size={16} />
+                </button>
+              </div>
             </div>
 
             <div className={styles.modalMeta}>

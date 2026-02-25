@@ -100,7 +100,7 @@ export function renderHighlightedText(text, query, markClassName) {
   const q = String(query ?? '').trim();
   if (!q) return s;
 
-  const re = new RegExp(escapeRegExp(q), 'ig');
+  const re = new RegExp(escapeRegExp(q), 'giu');
   const nodes = [];
   let last = 0;
   let m = null;

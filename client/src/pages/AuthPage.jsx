@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Home, Lock, Mail, Loader2, LogIn, AtSign, User, GraduationCap } from 'lucide-react';
-import { googleAuth, login, registration } from '../http/userAPI';
+import { login, registration } from '../http/userAPI';
 import styles from '../styles/AuthPage.module.css';
 
 function normalizeError(err) {
@@ -25,80 +25,6 @@ export default function AuthPage() {
   const [error, setError] = useState(null);
 
   const isRegister = mode === 'register';
-
-  const googleBtnRef = useRef(null);
-  const googleInitRef = useRef(false);
-  const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
-
-  useEffect(() => {
-    if (!googleClientId) return undefined;
-    if (googleInitRef.current) return undefined;
-
-    let cancelled = false;
-
-    const ensureScript = () =>
-      new Promise((resolve, reject) => {
-        if (window.google?.accounts?.id) return resolve(true);
-        const existing = document.querySelector('script[data-google-gsi="true"]');
-        if (existing) {
-          existing.addEventListener('load', () => resolve(true), { once: true });
-          existing.addEventListener('error', () => reject(new Error('Failed to load Google script')), { once: true });
-          return;
-        }
-        const script = document.createElement('script');
-        script.src = 'https://accounts.google.com/gsi/client';
-        script.async = true;
-        script.defer = true;
-        script.dataset.googleGsi = 'true';
-        script.onload = () => resolve(true);
-        script.onerror = () => reject(new Error('Failed to load Google script'));
-        document.head.appendChild(script);
-      });
-
-    (async () => {
-      try {
-        await ensureScript();
-        if (cancelled) return;
-        if (!googleBtnRef.current) return;
-        if (!window.google?.accounts?.id) return;
-
-        googleInitRef.current = true;
-        window.google.accounts.id.initialize({
-          client_id: googleClientId,
-          callback: async (resp) => {
-            const credential = resp?.credential;
-            if (!credential) return;
-            setError(null);
-            setLoading(true);
-            try {
-              await googleAuth(credential);
-              navigate('/home');
-            } catch (err) {
-              setError(normalizeError(err));
-            } finally {
-              setLoading(false);
-            }
-          },
-        });
-
-        // Clear container to avoid StrictMode double-render artifacts.
-        googleBtnRef.current.innerHTML = '';
-        window.google.accounts.id.renderButton(googleBtnRef.current, {
-          theme: 'outline',
-          size: 'large',
-          shape: 'pill',
-          width: 320,
-          text: 'continue_with',
-        });
-      } catch (e) {
-        // Silent: we just won't show Google auth if script fails to load.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [googleClientId, navigate]);
 
   const canSubmit = useMemo(() => {
     if (!email.trim() || !password) return false;
@@ -220,15 +146,6 @@ export default function AuthPage() {
             </div>
 
             <form className={styles.form} onSubmit={onSubmit}>
-              {googleClientId ? (
-                <div className={styles.oauthBlock}>
-                  <div ref={googleBtnRef} className={styles.googleBtn} />
-                  <div className={styles.divider}>
-                    <span>или</span>
-                  </div>
-                </div>
-              ) : null}
-
               {isRegister && (
                 <div className={styles.grid2}>
                   <div className={styles.formGroup}>

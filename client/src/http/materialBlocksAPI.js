@@ -60,8 +60,16 @@ export async function deleteMaterialCard(cardId) {
   return res.data;
 }
 
+const UPLOAD_SAVE_TIMEOUT_MS = 30000;
+const UPLOAD_RETRY_COUNT = 2;
+const UPLOAD_RETRY_DELAY_MS = 1500;
+
+function delay(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 /**
- * Upload a file to Supabase and save the URL to a material card
+ * Upload a file to Supabase and save the URL to a material card (with retries for mobile reliability).
  * @param {string} cardId - Material card ID
  * @param {File} file - File to upload
  * @param {Object} options - Upload options
@@ -70,21 +78,34 @@ export async function deleteMaterialCard(cardId) {
  */
 export async function uploadMaterialCardFile(cardId, file, options = {}) {
   const { onProgress } = options;
+  let lastError;
 
-  // Upload to Supabase Storage
-  const uploaded = await uploadFile(file, {
-    folder: `cards/${cardId}`,
-    onProgress,
-  });
+  for (let attempt = 0; attempt <= UPLOAD_RETRY_COUNT; attempt++) {
+    try {
+      const uploaded = await uploadFile(file, {
+        folder: `cards/${cardId}`,
+        onProgress,
+      });
 
-  // Save the URL to the backend
-  const res = await axios.post(`${API_BASE}/material-cards/${cardId}/upload`, {
-    url: uploaded.url,
-    fileType: uploaded.type,
-    size: uploaded.size,
-  });
-
-  return res.data;
+      const res = await axios.post(
+        `${API_BASE}/material-cards/${cardId}/upload`,
+        { url: uploaded.url, fileType: uploaded.type, size: uploaded.size },
+        { timeout: UPLOAD_SAVE_TIMEOUT_MS }
+      );
+      return res.data;
+    } catch (err) {
+      lastError = err;
+      const isRetryable =
+        !err?.response?.status || err.response.status >= 500 || err.code === 'ECONNABORTED' || err.message?.includes('network');
+      if (attempt < UPLOAD_RETRY_COUNT && isRetryable) {
+        if (onProgress) onProgress(0);
+        await delay(UPLOAD_RETRY_DELAY_MS);
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError;
 }
 
 export async function addMaterialCardLink(cardId, { url, title }) {

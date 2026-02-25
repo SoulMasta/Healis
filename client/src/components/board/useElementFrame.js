@@ -88,6 +88,7 @@ export function useElementFrame(opts) {
 
       const el = elementsRef.current.find((x) => sameId(x.id, elementId));
       if (!el) return;
+      if (el.locked) return;
 
       const before = snapshotForHistory(el);
       const startX = pointerDownEvent.clientX;
@@ -218,9 +219,9 @@ export function useElementFrame(opts) {
     (elementId, handle, e) => {
       e.stopPropagation();
       e.preventDefault();
-      setConnectorsFollowDuringDrag(true);
       const el = elements.find((x) => sameId(x.id, elementId));
-      if (!el) return;
+      if (!el || el.locked) return;
+      setConnectorsFollowDuringDrag(true);
       const before = snapshotForHistory(el);
 
       const startX = e.clientX;

@@ -15,7 +15,7 @@ const SORT_OPTIONS = [
   { value: 'createdAt:desc', label: 'По дате создания' },
 ];
 
-export default function MaterialBlockModal({ block, onClose, isMobile, deskId, onAddCardToBoard }) {
+export default function MaterialBlockModal({ block, onClose, isMobile, deskId, onAddCardToBoard, socketRef }) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('updatedAt:desc');
@@ -239,6 +239,8 @@ export default function MaterialBlockModal({ block, onClose, isMobile, deskId, o
             onClose={handleCloseEditor}
             onBack={handleBack}
             isMobile={isMobile}
+            socketRef={socketRef}
+            deskId={deskId}
           />
         </div>
       </div>

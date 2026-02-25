@@ -6,9 +6,7 @@ const User = sequelize.define('user', {
   email: { type: DataTypes.STRING, unique: true, allowNull: false },
   password: { type: DataTypes.STRING, allowNull: false },
   role: { type: DataTypes.STRING, defaultValue: 'USER', allowNull: false },
-  // Auth provider metadata (for Google sign-in / account linking).
-  authProvider: { type: DataTypes.STRING, allowNull: false, defaultValue: 'local' }, // 'local' | 'google'
-  googleSub: { type: DataTypes.STRING, unique: true, allowNull: true },
+  authProvider: { type: DataTypes.STRING, allowNull: false, defaultValue: 'local' },
   emailVerified: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   // Public profile fields
   // username is stored WITHOUT '@' (display as `@${username}` in UI).
@@ -170,6 +168,7 @@ const Element = sequelize.define('element', {
   zIndex: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   // Emoji reactions: { "😍": [1,2], "😎": [5] }
   reactions: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+  locked: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   deskId: { type: DataTypes.INTEGER, allowNull: false, references: { model: Desk, key: 'deskId' } },
 });
 
@@ -181,6 +180,9 @@ const Note = sequelize.define('note', {
     references: { model: Element, key: 'elementId' },
   },
   text: { type: DataTypes.TEXT, allowNull: false, defaultValue: '' },
+  bold: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  italic: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  underline: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
 });
 
 // History of note versions for collaboration / restore.
@@ -220,6 +222,9 @@ const Text = sequelize.define('text', {
   fontFamily: { type: DataTypes.STRING, allowNull: true },
   fontSize: { type: DataTypes.INTEGER, allowNull: true },
   color: { type: DataTypes.STRING, allowNull: true },
+  bold: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  italic: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  underline: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
 });
 
 const Document = sequelize.define('document', {

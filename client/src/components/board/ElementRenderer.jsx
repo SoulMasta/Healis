@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, Trash2, MessageCircle, Link2, ExternalLink, Download } from 'lucide-react';
+import { MessageCircle, Link2, ExternalLink, Download } from 'lucide-react';
 import { ElementWrapper } from './ElementWrapper';
 import MaterialBlock from '../materialBlock/MaterialBlock';
 import { idKey, sameId } from '../../workspace/useWorkspace';
@@ -24,7 +24,6 @@ const FrameElement = React.memo(function FrameElement({
   isEditing,
   dragPos,
   resizeOffset,
-  deletingElementId,
   activeTool,
   connectorHoverElementId,
   connectorFromElementId,
@@ -33,7 +32,6 @@ const FrameElement = React.memo(function FrameElement({
   onPointerDown,
   onElementClick,
   startResize,
-  handleDeleteElement,
   beginEditing,
   endEditing,
   updateLocalElement,
@@ -69,28 +67,7 @@ const FrameElement = React.memo(function FrameElement({
     (activeTool === 'connector' && connectorHoverElementId === elementId) ||
     connectorFromElementId === elementId ||
     connectorToHoverElementId === elementId;
-  const renderActions = (
-    <div className={s.elementActions}>
-      <button
-        type="button"
-        className={s.deleteElementBtn}
-        onPointerDown={(ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          handleDeleteElement(el);
-        }}
-        disabled={sameId(deletingElementId, elementId)}
-        aria-label="Delete frame"
-        title="Delete frame"
-      >
-        {sameId(deletingElementId, elementId) ? (
-          <Loader2 size={16} className={s.spinner} />
-        ) : (
-          <Trash2 size={16} />
-        )}
-      </button>
-    </div>
-  );
+  const renderActions = <div className={s.elementActions} />;
   return (
     <ElementWrapper
       element={el}
@@ -267,6 +244,7 @@ const NoteTextElement = React.memo(function NoteTextElement({
   const displayTextClass = el.type === 'note' ? `${styles.displayText} ${styles.notePad}` : styles.displayText;
   const editorClass = el.type === 'note' ? `${styles.editor} ${styles.noteEditorPad}` : styles.editor;
   const padX = el.type === 'note' ? 22 : 18;
+  const textStyle = el.type === 'note' ? (el.note ?? el.Note) : (el.text ?? el.Text);
   const fitInlineStyle = {
     fontSize: `${fitStyle.fontSizePx}px`,
     lineHeight: 1.15,
@@ -275,33 +253,15 @@ const NoteTextElement = React.memo(function NoteTextElement({
     paddingLeft: `${padX}px`,
     paddingRight: `${padX}px`,
     textAlign: 'center',
+    fontWeight: textStyle?.bold ? 'bold' : undefined,
+    fontStyle: textStyle?.italic ? 'italic' : undefined,
+    textDecoration: textStyle?.underline ? 'underline' : undefined,
   };
 
   const reactionBubbles = actions.layoutReactionBubbles(elementId, el.reactions);
   const dragPos = dragX != null || dragY != null ? { x: dragX ?? el.x ?? 0, y: dragY ?? el.y ?? 0 } : null;
 
-  const renderActions = (
-    <div className={styles.elementActions}>
-      <button
-        type="button"
-        className={styles.deleteElementBtn}
-        onPointerDown={(ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          actions.handleDeleteElement(el);
-        }}
-        disabled={sameId(deletingElementId, elementId)}
-        aria-label="Delete element"
-        title="Delete element"
-      >
-        {sameId(deletingElementId, elementId) ? (
-          <Loader2 size={16} className={styles.spinner} />
-        ) : (
-          <Trash2 size={16} />
-        )}
-      </button>
-    </div>
-  );
+  const renderActions = <div className={styles.elementActions} />;
 
   return (
     <ElementWrapper
@@ -632,6 +592,7 @@ export function ElementRenderer({
   persistElement,
   editStartSnapRef,
   openDocument,
+  openPhotoPreview,
   downloadDocument,
   openExternalUrl,
   getLinkPreview,
@@ -645,12 +606,46 @@ export function ElementRenderer({
   setMaterialBlockModal,
   startBlockResize,
   setSelectedMaterialBlockId,
+  onSelectMaterialBlock,
   registerMaterialBlockNode,
   handleMaterialBlockTitleUpdate,
   handleDeleteMaterialBlock,
   startConnectorDragFromBlock,
 }) {
   const s = stylesProp || styles;
+  const lastDocTapRef = React.useRef({ elementId: null, time: 0, x: 0, y: 0 });
+  const handleDocCardPointerUp = React.useCallback(
+    (e, el) => {
+      if (e.pointerType === 'mouse') return;
+      const now = Date.now();
+      const x = e.clientX;
+      const y = e.clientY;
+      const prev = lastDocTapRef.current;
+      const isDoubleTap =
+        prev &&
+        prev.elementId === el.id &&
+        now - prev.time < 400 &&
+        Math.hypot(x - prev.x, y - prev.y) < 25;
+      if (isDoubleTap) {
+        lastDocTapRef.current = { elementId: null, time: 0, x: 0, y: 0 };
+        e.preventDefault();
+        e.stopPropagation();
+        if (el.type === 'document') {
+          const doc = el.document ?? el.Document;
+          const docUrl = doc?.url;
+          if (docUrl) {
+            const docTitle = fixMojibakeNameClient(doc?.title || 'Document');
+            openPhotoPreview?.(docUrl, docTitle);
+            return;
+          }
+        }
+        beginEditing?.(el.id);
+        return;
+      }
+      lastDocTapRef.current = { elementId: el.id, time: now, x, y };
+    },
+    [openPhotoPreview, beginEditing]
+  );
 
   return (
     <>
@@ -724,26 +719,7 @@ export function ElementRenderer({
 
               {isSelected ? (
                 <div className={s.transformBox}>
-                  <div className={s.elementActions}>
-                    <button
-                      type="button"
-                      className={s.deleteElementBtn}
-                      onPointerDown={(ev) => {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        handleDeleteElement(el);
-                      }}
-                      disabled={sameId(deletingElementId, el.id)}
-                      aria-label="Delete element"
-                      title="Delete element"
-                    >
-                      {sameId(deletingElementId, el.id) ? (
-                        <Loader2 size={16} className={s.spinner} />
-                      ) : (
-                        <Trash2 size={16} />
-                      )}
-                    </button>
-                  </div>
+                  <div className={s.elementActions} />
                   <div
                     className={`${s.resizeHandle} ${s.hNW}`}
                     onPointerDown={(ev) => startResize(el.id, 'nw', ev)}
@@ -783,7 +759,6 @@ export function ElementRenderer({
               isEditing={isEditing}
               dragPos={dragPos}
               resizeOffset={elementResizeOffset[el.id]}
-              deletingElementId={deletingElementId}
               activeTool={activeTool}
               connectorHoverElementId={connectorHoverElementId}
               connectorFromElementId={connectorDraft?.from?.elementId ?? null}
@@ -792,7 +767,6 @@ export function ElementRenderer({
               onPointerDown={onElementPointerDown}
               onElementClick={onElementClick}
               startResize={startResize}
-              handleDeleteElement={handleDeleteElement}
               beginEditing={beginEditing}
               endEditing={endEditing}
               updateLocalElement={updateLocalElement}
@@ -849,6 +823,17 @@ export function ElementRenderer({
               : `${s.elementInner} ${s.textInner}`;
         const displayTextClass = el.type === 'note' ? `${s.displayText} ${s.notePad}` : s.displayText;
         const editorClass = el.type === 'note' ? `${s.editor} ${s.noteEditorPad}` : s.editor;
+        const noteTextStyle =
+          el.type === 'note' || el.type === 'text'
+            ? (() => {
+                const t = el.type === 'note' ? (el.note ?? el.Note) : (el.text ?? el.Text);
+                return {
+                  fontWeight: t?.bold ? 'bold' : undefined,
+                  fontStyle: t?.italic ? 'italic' : undefined,
+                  textDecoration: t?.underline ? 'underline' : undefined,
+                };
+              })()
+            : undefined;
 
         const doc = isDocument ? el.document ?? el.Document : null;
         const docTitle = fixMojibakeNameClient(doc?.title || 'Document');
@@ -897,8 +882,13 @@ export function ElementRenderer({
             }}
             onDoubleClick={() => {
               if (activeTool === 'pen' || activeTool === 'eraser') return;
+              if (isDocument && docUrl) {
+                openPhotoPreview?.(docUrl, docTitle);
+                return;
+              }
               beginEditing(el.id);
             }}
+            onPointerUp={(ev) => handleDocCardPointerUp(ev, el)}
           >
             {commentsEnabled ? (
               <button
@@ -1177,7 +1167,7 @@ export function ElementRenderer({
                   }}
                 />
               ) : (
-                <div className={displayTextClass}>
+                <div className={displayTextClass} style={noteTextStyle}>
                   {renderHighlightedText(el.content ?? '', searchQuery, s.searchMark)}
                 </div>
               )}
@@ -1233,26 +1223,7 @@ export function ElementRenderer({
 
             {isSelected ? (
               <div className={s.transformBox}>
-                <div className={s.elementActions}>
-                  <button
-                    type="button"
-                    className={s.deleteElementBtn}
-                    onPointerDown={(ev) => {
-                      ev.preventDefault();
-                      ev.stopPropagation();
-                      handleDeleteElement(el);
-                    }}
-                    disabled={sameId(deletingElementId, el.id)}
-                    aria-label="Delete element"
-                    title="Delete element"
-                  >
-                    {sameId(deletingElementId, el.id) ? (
-                      <Loader2 size={16} className={s.spinner} />
-                    ) : (
-                      <Trash2 size={16} />
-                    )}
-                  </button>
-                </div>
+                <div className={s.elementActions} />
                 <div
                   className={`${s.resizeHandle} ${s.hNW}`}
                   onPointerDown={(ev) => startResize(el.id, 'nw', ev)}
@@ -1294,7 +1265,7 @@ export function ElementRenderer({
           onPointerDown={startBlockDrag}
           onOpen={(b) => setMaterialBlockModal(b)}
           onResizeStart={startBlockResize}
-          onSelect={(b) => setSelectedMaterialBlockId(b?.id ?? null)}
+          onSelect={onSelectMaterialBlock ?? ((b) => setSelectedMaterialBlockId(b?.id ?? null))}
           onRegisterNode={registerMaterialBlockNode}
           onUpdateTitle={handleMaterialBlockTitleUpdate}
           onDelete={handleDeleteMaterialBlock}

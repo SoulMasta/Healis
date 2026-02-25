@@ -43,3 +43,25 @@ USING (bucket_id = 'healis-files');
 ```
 
 После сохранения политик загрузка файлов должна проходить без ошибки RLS.
+
+---
+
+## Переменные окружения (Vercel / мобильный фронт)
+
+Чтобы загрузка с телефона и с продакшена работала, на фронте должны быть заданы:
+
+- `REACT_APP_SUPABASE_URL` — URL проекта (например `https://xxxx.supabase.co`)
+- `REACT_APP_SUPABASE_ANON_KEY` — публичный anon key
+
+В **Vercel** их задают в Project → Settings → Environment Variables и пересобирают деплой.
+
+Без этих переменных в консоли будет предупреждение «Supabase is not configured» и загрузка не сработает.
+
+## CORS для Storage (если запросы блокируются)
+
+Запросы в Storage идут с домена приложения (например `https://your-app.vercel.app`). Если в браузере видите CORS-ошибку при загрузке:
+
+1. **Supabase Dashboard** → **Project Settings** → **API**
+2. В блоке **CORS** добавьте ваш домен (например `https://your-app.vercel.app` или `https://*.vercel.app` при необходимости).
+
+Обычно для стандартных доменов Supabase уже разрешает запросы; настраивать CORS нужно только при появлении соответствующей ошибки в консоли.

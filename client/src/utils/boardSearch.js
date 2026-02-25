@@ -1,5 +1,6 @@
 function normalize(s) {
   return String(s ?? '')
+    .normalize('NFC')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
@@ -123,7 +124,7 @@ export function runManualBoardSearch(index = [], query = '', { limit = 40 } = {}
 }
 
 export function makeSnippet(text, query, radius = 28) {
-  const s = String(text ?? '');
+  const s = String(text ?? '').normalize('NFC');
   const q = normalize(query);
   if (!q) return s.slice(0, Math.max(0, radius * 2));
   const low = s.toLowerCase();

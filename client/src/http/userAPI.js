@@ -88,17 +88,6 @@ export async function login(email, password) {
   return res.data;
 }
 
-export async function googleAuth(credential) {
-  const res = await axios.post(`${API_BASE}/google`, { credential }, authHeaders());
-  const token = res.data?.token;
-  if (token) {
-    setAuthToken(token);
-    setSessionFlag(true);
-    notifyTokenChanged();
-  }
-  return res.data;
-}
-
 // Get a new access token using httpOnly refresh cookie (server rotates refresh token).
 export async function refreshAuth() {
   // #region agent log
@@ -139,7 +128,6 @@ function isAuthEndpoint(url) {
   return (
     s.includes('/api/user/login') ||
     s.includes('/api/user/registration') ||
-    s.includes('/api/user/google') ||
     s.includes('/api/user/refresh') ||
     s.includes('/api/user/logout')
   );

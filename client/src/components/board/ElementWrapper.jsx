@@ -50,10 +50,10 @@ export function ElementWrapper({
       onDoubleClick={onDoubleClick}
     >
       {children}
-      {isSelected && renderActions ? (
+      {isSelected ? (
         <div className={elementType === 'frame' ? (s.transformBoxFrame ?? s.transformBox) : s.transformBox}>
           {renderActions}
-          {elementType !== 'note' ? (
+          {!element?.locked && elementType !== 'note' ? (
             <>
               <div className={`${s.resizeHandle} ${s.hNW}`} onPointerDown={(ev) => startResize?.(elementId, 'nw', ev)} />
               <div className={`${s.resizeHandle} ${s.hN}`} onPointerDown={(ev) => startResize?.(elementId, 'n', ev)} />
@@ -64,14 +64,14 @@ export function ElementWrapper({
               <div className={`${s.resizeHandle} ${s.hSW}`} onPointerDown={(ev) => startResize?.(elementId, 'sw', ev)} />
               <div className={`${s.resizeHandle} ${s.hW}`} onPointerDown={(ev) => startResize?.(elementId, 'w', ev)} />
             </>
-          ) : (
+          ) : !element?.locked ? (
             <>
               <div className={`${s.resizeHandle} ${s.hNW}`} onPointerDown={(ev) => startResize?.(elementId, 'nw', ev)} />
               <div className={`${s.resizeHandle} ${s.hNE}`} onPointerDown={(ev) => startResize?.(elementId, 'ne', ev)} />
               <div className={`${s.resizeHandle} ${s.hSE}`} onPointerDown={(ev) => startResize?.(elementId, 'se', ev)} />
               <div className={`${s.resizeHandle} ${s.hSW}`} onPointerDown={(ev) => startResize?.(elementId, 'sw', ev)} />
             </>
-          )}
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -38,7 +38,7 @@ import {
   updateMaterialBlock,
   deleteMaterialBlock,
 } from '../http/materialBlocksAPI';
-import { MaterialBlockModal } from '../components/materialBlock';
+import { MaterialBlockModal, DocumentPreviewOverlay } from '../components/materialBlock';
 import UserMenu from '../components/UserMenu';
 import MembersMenu from '../components/MembersMenu';
 import { useBreakpoints } from '../hooks/useBreakpoints';
@@ -51,6 +51,7 @@ import { useCanvasViewportState } from '../workspace/Canvas';
 import { useElementFrame } from '../components/board/useElementFrame';
 import { useBlockFrame } from '../components/board/useBlockFrame';
 import { ElementRenderer } from '../components/board/ElementRenderer';
+import { ElementToolbar, DUPLICATE_OFFSET } from '../components/board/ElementToolbar';
 import {
   pointsToSvgPath,
   getExt,
@@ -88,6 +89,8 @@ export default function WorkspacePage() {
   const socketRef = useRef(null);
   const noteVersionsRef = useRef(new Map()); // elementId -> version
   const noteEditTimersRef = useRef(new Map()); // elementId -> timeoutId
+  // Realtime handlers: keep in ref so socket effect can depend only on deskId (avoids disconnect on re-render).
+  const socketHandlersRef = useRef(null);
   const [health, setHealth] = useState(null);
   const [workspace, setWorkspace] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -114,6 +117,7 @@ export default function WorkspacePage() {
   const [mobileBrushBarOpen, setMobileBrushBarOpen] = useState(false);
   const [mobileLinkOpen, setMobileLinkOpen] = useState(false);
   const [mobileMembersOpen, setMobileMembersOpen] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState(null);
 
   const [materialBlocks, setMaterialBlocks] = useState([]);
   const [materialBlockModal, setMaterialBlockModal] = useState(null);
@@ -462,6 +466,36 @@ export default function WorkspacePage() {
     return null;
   }, []);
 
+  const selectedElement = useMemo(() => {
+    if (selectedElementIds.size !== 1) return null;
+    const k = [...selectedElementIds][0];
+    const el = elements.find((x) => idKey(x?.id) === k) ?? null;
+    return el?.type === 'connector' ? null : el;
+  }, [elements, selectedElementIds]);
+
+  const selectedMaterialBlock = useMemo(
+    () => (selectedMaterialBlockId ? materialBlocks.find((b) => b.id === selectedMaterialBlockId) ?? null : null),
+    [materialBlocks, selectedMaterialBlockId]
+  );
+
+  const selectedToolbarTarget = useMemo(
+    () =>
+      selectedElement
+        ? { type: 'element', data: selectedElement }
+        : selectedMaterialBlock
+          ? { type: 'materialBlock', data: selectedMaterialBlock }
+          : null,
+    [selectedElement, selectedMaterialBlock]
+  );
+
+  const elementToolbarDesktopPosition = useMemo(() => {
+    if (isMobile || !selectedToolbarTarget) return null;
+    const d = selectedToolbarTarget.data;
+    const x = Number(d?.x ?? 0) + Number(d?.width ?? 240) / 2;
+    const y = Number(d?.y ?? 0) - 44;
+    return { x, y };
+  }, [selectedToolbarTarget, isMobile]);
+
   const toolManager = useToolManager({
     connectorsRef,
     isMobile,
@@ -616,48 +650,53 @@ export default function WorkspacePage() {
     }
   }, [isMobile, mobileBrushBarOpen, toolManager.activeTool, toolManager]);
 
-  const persistElement = async (el, opts = {}) => {
-    if (!el?.id) return;
-    const base = {
-      x: Math.round(el.x ?? 0),
-      y: Math.round(el.y ?? 0),
-      width: Math.max(40, Math.round(el.width ?? 0)),
-      height: Math.max(30, Math.round(el.height ?? 0)),
-      rotation: el.rotation ?? 0,
-      zIndex: el.zIndex ?? 0,
-    };
-    const doc = el.type === 'document' ? el.document ?? el.Document : null;
-    const link = el.type === 'link' ? el.link ?? el.Link : null;
-    const frame = el.type === 'frame' ? el.frame ?? el.Frame : null;
-    const payload =
-      el.type === 'note'
-        ? { text: el.content ?? '' }
-        : el.type === 'text'
-          ? { content: el.content ?? '' }
-          : el.type === 'document'
-            ? { title: doc?.title, url: doc?.url }
-            : el.type === 'link'
-              ? { title: link?.title, url: link?.url, previewImageUrl: link?.previewImageUrl }
-              : el.type === 'frame'
-                ? { title: frame?.title ?? 'Frame' }
-                : undefined;
+  const persistElement = useCallback(
+    async (el, opts = {}) => {
+      if (!el?.id) return;
+      const base = {
+        x: Math.round(el.x ?? 0),
+        y: Math.round(el.y ?? 0),
+        width: Math.max(40, Math.round(el.width ?? 0)),
+        height: Math.max(30, Math.round(el.height ?? 0)),
+        rotation: el.rotation ?? 0,
+        zIndex: el.zIndex ?? 0,
+        locked: Boolean(el.locked),
+      };
+      const doc = el.type === 'document' ? el.document ?? el.Document : null;
+      const link = el.type === 'link' ? el.link ?? el.Link : null;
+      const frame = el.type === 'frame' ? el.frame ?? el.Frame : null;
+      const note = el.note ?? el.Note;
+      const text = el.text ?? el.Text;
+      const payload =
+        el.type === 'note'
+          ? { text: el.content ?? '', bold: note?.bold, italic: note?.italic, underline: note?.underline }
+          : el.type === 'text'
+            ? { content: el.content ?? '', fontFamily: text?.fontFamily, fontSize: text?.fontSize, color: text?.color, bold: text?.bold, italic: text?.italic, underline: text?.underline }
+            : el.type === 'document'
+              ? { title: doc?.title, url: doc?.url }
+              : el.type === 'link'
+                ? { title: link?.title, url: link?.url, previewImageUrl: link?.previewImageUrl }
+                : el.type === 'frame'
+                  ? { title: frame?.title ?? 'Frame' }
+                  : undefined;
 
-    const updated = await updateElement(el.id, { ...base, payload });
-    const vm = elementToVm(updated);
-      setElements((prev) => prev.map((x) => (sameId(x.id, vm.id) ? { ...x, ...vm } : x)));
-
-    if (!opts.skipHistory && !applyingHistoryRef.current && opts.historyBefore) {
-      const afterSnap = snapshotForHistory({ ...el, ...vm });
-      if (afterSnap && !snapshotEquals(opts.historyBefore, afterSnap)) {
-        pushHistory({
-          kind: 'update-element',
-          elementId: el.id,
-          before: opts.historyBefore,
-          after: afterSnap,
-        });
-      }
-    }
-  };
+      setElements((prev) => prev.map((x) => (x && sameId(x?.id, el.id) ? { ...x, ...el } : x)));
+      updateElement(el.id, { ...base, payload })
+        .then((updated) => {
+          if (updated == null) return;
+          const vm = elementToVm(updated);
+          if (vm?.id) setElements((prev) => prev.map((x) => (x && sameId(x?.id, vm.id) ? { ...x, ...vm } : x)));
+          if (!opts.skipHistory && !applyingHistoryRef.current && opts.historyBefore) {
+            const afterSnap = snapshotForHistory({ ...el, ...vm });
+            if (afterSnap && !snapshotEquals(opts.historyBefore, afterSnap)) {
+              pushHistory({ kind: 'update-element', elementId: el.id, before: opts.historyBefore, after: afterSnap });
+            }
+          }
+        })
+        .catch(() => {});
+    },
+    [elementToVm, setElements, applyingHistoryRef, snapshotForHistory, snapshotEquals, pushHistory]
+  );
 
   const beginEditing = (elementId, explicitBeforeSnap) => {
     if (!elementId) return;
@@ -693,7 +732,7 @@ export default function WorkspacePage() {
     editStartSnapRef.current.delete(idToEnd);
 
     // Optimistic: reflect the latest local changes immediately; server sync happens async.
-    if (current) setElements((prev) => prev.map((el) => (el.id === idToEnd ? { ...el, ...current } : el)));
+    if (current) setElements((prev) => prev.map((el) => (el && el.id === idToEnd ? { ...el, ...current } : el)));
 
     endingEditRef.current = false;
 
@@ -928,58 +967,127 @@ export default function WorkspacePage() {
     noteEditTimersRef.current.set(k, timer);
   };
 
-  const handleDeleteElement = async (elOrId) => {
-    const idToDeleteRaw = elOrId?.id ?? elOrId?.elementId ?? elOrId;
-    const idToDeleteKey = idKey(idToDeleteRaw);
-    if (!idToDeleteKey) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to delete element: invalid elementId', idToDeleteRaw);
-      setActionError('Element not found');
-      window.setTimeout(() => setActionError(null), 3000);
-      return;
-    }
+  const handleDeleteElement = useCallback(
+    async (elOrId) => {
+      const idToDeleteRaw = elOrId?.id ?? elOrId?.elementId ?? elOrId;
+      const idToDeleteKey = idKey(idToDeleteRaw);
+      if (!idToDeleteKey) {
+        setActionError('Element not found');
+        window.setTimeout(() => setActionError(null), 3000);
+        return;
+      }
+      const latestEl =
+        elementsRef.current?.find?.((x) => sameId(x?.id, idToDeleteRaw)) ||
+        elements.find?.((x) => sameId(x?.id, idToDeleteRaw)) ||
+        null;
+      setDeletingElementId(idToDeleteKey);
+      setActionError(null);
+      try {
+        setEditingElementId((cur) => (sameId(cur, idToDeleteRaw) ? null : cur));
+        setSelectedElementIds((cur) => {
+          const k = idKey(idToDeleteRaw);
+          if (!k || !cur?.has?.(k)) return cur;
+          const next = new Set(cur);
+          next.delete(k);
+          return next;
+        });
+        setCommentsPanel((cur) => (sameId(cur?.elementId, idToDeleteRaw) ? null : cur));
+        setElements((prev) => prev.filter((x) => x != null && !sameId(x?.id, idToDeleteRaw)));
+        await deleteElement(idToDeleteRaw);
+        if (!applyingHistoryRef.current) {
+          const deskId = workspace?.id ?? workspace?.deskId ?? id;
+          const snap = snapshotForHistory(latestEl || elOrId);
+          if (deskId && snap) pushHistory({ kind: 'delete-element', deskId, elementId: idToDeleteRaw, snapshot: snap });
+        }
+      } catch (err) {
+        setActionError(err?.response?.data?.error || err?.message || 'Failed to delete element');
+        window.setTimeout(() => setActionError(null), 4000);
+      } finally {
+        setDeletingElementId(null);
+      }
+    },
+    [setEditingElementId, setSelectedElementIds, setCommentsPanel, setElements, setActionError, setDeletingElementId, workspace, id, snapshotForHistory, pushHistory, applyingHistoryRef, elements]
+  );
 
-    // Prefer the latest in-memory element snapshot (may include unsaved local edits).
-    const latestEl =
-      elementsRef.current?.find?.((x) => sameId(x?.id, idToDeleteRaw)) ||
-      elements.find?.((x) => sameId(x?.id, idToDeleteRaw)) ||
-      null;
-    setDeletingElementId(idToDeleteKey);
-    setActionError(null);
-    try {
-      // Optimistic: remove immediately, server sync in background.
-      setEditingElementId((cur) => (sameId(cur, idToDeleteRaw) ? null : cur));
-      setSelectedElementIds((cur) => {
-        const k = idKey(idToDeleteRaw);
-        if (!k || !cur?.has?.(k)) return cur;
-        const next = new Set(cur);
-        next.delete(k);
-        return next;
-      });
-      setCommentsPanel((cur) => (sameId(cur?.elementId, idToDeleteRaw) ? null : cur));
-      setElements((prev) => prev.filter((x) => !sameId(x.id, idToDeleteRaw)));
-      await deleteElement(idToDeleteRaw);
-      if (!applyingHistoryRef.current) {
-        const deskId = workspace?.id ?? workspace?.deskId ?? id;
-        const snap = snapshotForHistory(latestEl || elOrId);
-        if (deskId && snap) {
-          pushHistory({
-            kind: 'delete-element',
-            deskId,
-            elementId: idToDeleteRaw,
-            snapshot: snap,
-          });
+  const handleElementUpdate = useCallback(
+    (elementId, patch) => {
+      if (!elementId || !patch) return;
+      const cur = elementsRef.current?.find((x) => sameId(x?.id, elementId));
+      const textKeys = ['bold', 'italic', 'underline'];
+      const textPatch = Object.fromEntries(textKeys.filter((k) => patch[k] !== undefined).map((k) => [k, patch[k]]));
+      const isTextPatch = Object.keys(textPatch).length > 0;
+      let merged = { ...cur, ...patch };
+      if (cur && isTextPatch) {
+        if (cur.type === 'note') {
+          const n = cur.note ?? cur.Note ?? {};
+          merged = { ...merged, note: { ...n, ...textPatch } };
+        } else if (cur.type === 'text') {
+          const t = cur.text ?? cur.Text ?? {};
+          merged = { ...merged, text: { ...t, ...textPatch } };
         }
       }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to delete element:', err?.response?.data || err);
-      setActionError(err?.response?.data?.error || err?.message || 'Failed to delete element');
-      window.setTimeout(() => setActionError(null), 4000);
-    } finally {
-      setDeletingElementId(null);
-    }
-  };
+      updateLocalElement(elementId, isTextPatch ? (cur?.type === 'note' ? { note: merged.note } : { text: merged.text }) : patch);
+      if (cur) persistElement(merged, {}).catch(() => {});
+    },
+    [updateLocalElement, persistElement]
+  );
+
+  const handleToggleLock = useCallback(
+    (el) => {
+      if (el?.id == null) return;
+      handleElementUpdate(el.id, { locked: !el.locked });
+    },
+    [handleElementUpdate]
+  );
+
+  const handleDuplicateElement = useCallback(
+    async (el) => {
+      if (!el?.id) return;
+      const deskId = workspace?.id ?? workspace?.deskId ?? id;
+      if (!deskId) return;
+      const note = el.note ?? el.Note;
+      const text = el.text ?? el.Text;
+      const doc = el.type === 'document' ? el.document ?? el.Document : null;
+      const link = el.type === 'link' ? el.link ?? el.Link : null;
+      const frame = el.type === 'frame' ? el.frame ?? el.Frame : null;
+      const conn = el.type === 'connector' ? el.connector ?? el.Connector : null;
+      const draw = el.type === 'drawing' ? el.drawing ?? el.Drawing : null;
+      let payload;
+      if (el.type === 'note') payload = { text: el.content ?? '', bold: note?.bold, italic: note?.italic, underline: note?.underline };
+      else if (el.type === 'text') payload = { content: el.content ?? '', fontFamily: text?.fontFamily, fontSize: text?.fontSize, color: text?.color, bold: text?.bold, italic: text?.italic, underline: text?.underline };
+      else if (el.type === 'document') payload = { title: doc?.title, url: doc?.url };
+      else if (el.type === 'link') payload = { title: link?.title, url: link?.url, previewImageUrl: link?.previewImageUrl };
+      else if (el.type === 'frame') payload = { title: frame?.title ?? 'Frame' };
+      else if (el.type === 'connector') payload = { data: conn?.data ?? {} };
+      else if (el.type === 'drawing') payload = { data: draw?.data ?? {} };
+      else return;
+      setActionError(null);
+      try {
+        const created = await createElementOnDesk(deskId, {
+          type: el.type,
+          x: Math.round(Number(el.x ?? 0) + DUPLICATE_OFFSET),
+          y: Math.round(Number(el.y ?? 0) + DUPLICATE_OFFSET),
+          width: Math.round(el.width ?? 240),
+          height: Math.round(el.height ?? 160),
+          rotation: el.rotation ?? 0,
+          zIndex: getNextZIndex(),
+          locked: Boolean(el.locked),
+          payload,
+        });
+        const vm = elementToVm(created);
+        if (vm?.id) createdElementIdsRef.current.add(vm.id);
+        setElements((prev) => upsertById(prev, vm));
+        setSelectedElementIds(new Set([idKey(vm.id)]));
+        if (!applyingHistoryRef.current && snapshotForHistory(vm)) {
+          pushHistory({ kind: 'create-element', deskId, elementId: vm.id, snapshot: snapshotForHistory(vm) });
+        }
+      } catch (err) {
+        setActionError(err?.response?.data?.error || err?.message || 'Failed to duplicate');
+        window.setTimeout(() => setActionError(null), 4000);
+      }
+    },
+    [workspace, id, getNextZIndex, elementToVm, setElements, setSelectedElementIds, applyingHistoryRef, createdElementIdsRef, snapshotForHistory, pushHistory]
+  );
 
   const openDocument = async (docUrl) => {
     if (!docUrl) return;
@@ -1008,6 +1116,11 @@ export default function WorkspacePage() {
     if (!normalized) return;
     window.open(normalized, '_blank', 'noopener,noreferrer');
   };
+
+  const openPhotoPreview = useCallback((url, title) => {
+    if (url) setPhotoPreview({ url, title: title || 'Фото' });
+  }, []);
+  const closePhotoPreview = useCallback(() => setPhotoPreview(null), []);
 
   const downloadDocument = async (docUrl, docTitle) => {
     if (!docUrl) return;
@@ -1322,6 +1435,60 @@ export default function WorkspacePage() {
     deleteMaterialBlock(blockId).catch(() => {});
   }, []);
 
+  const handleDuplicateMaterialBlock = useCallback(
+    async (block) => {
+      if (!block?.id) return;
+      const deskId = workspace?.id ?? workspace?.deskId ?? id;
+      if (!deskId) return;
+      setActionError(null);
+      try {
+        const created = await createMaterialBlock(deskId, {
+          title: `${(block.title || 'Материалы').trim()} (копия)`,
+          x: Math.round(Number(block.x ?? 0) + DUPLICATE_OFFSET),
+          y: Math.round(Number(block.y ?? 0) + DUPLICATE_OFFSET),
+          width: block.width ?? 280,
+          height: block.height ?? 160,
+        });
+        setMaterialBlocks((prev) => [...prev, { ...created, cardsCount: 0 }]);
+        setSelectedMaterialBlockId(created.id);
+      } catch (err) {
+        setActionError(err?.response?.data?.error || err?.message || 'Не удалось скопировать блок');
+        window.setTimeout(() => setActionError(null), 4000);
+      }
+    },
+    [workspace, id]
+  );
+
+  const handleToolbarDelete = useCallback(
+    (t) => {
+      if (!t?.type || !t?.data) return;
+      if (t.type === 'element') handleDeleteElement(t.data);
+      else if (t.type === 'materialBlock') handleDeleteMaterialBlock(t.data);
+    },
+    [handleDeleteElement, handleDeleteMaterialBlock]
+  );
+
+  const handleToolbarDuplicate = useCallback(
+    (t) => {
+      if (!t?.type || !t?.data) return;
+      if (t.type === 'element') handleDuplicateElement(t.data);
+      else if (t.type === 'materialBlock') handleDuplicateMaterialBlock(t.data);
+    },
+    [handleDuplicateElement, handleDuplicateMaterialBlock]
+  );
+
+  const handleToolbarToggleLock = useCallback(
+    (t) => {
+      if (t?.type === 'element' && t?.data) handleToggleLock(t.data);
+    },
+    [handleToggleLock]
+  );
+
+  const handleSelectMaterialBlock = useCallback((b) => {
+    setSelectedMaterialBlockId(b?.id ?? null);
+    setSelectedElementIds(new Set());
+  }, [setSelectedMaterialBlockId, setSelectedElementIds]);
+
   const handleAddCardToBoard = useCallback(
     (card) => {
       const deskId = workspace?.id ?? workspace?.deskId ?? id;
@@ -1495,7 +1662,7 @@ export default function WorkspacePage() {
         const idToDelete = selectedConnectorId;
         setSelectedConnectorId(null);
         deleteElement(idToDelete)
-          .then(() => setElements((prev) => prev.filter((x) => !sameId(x.id, idToDelete))))
+          .then(() => setElements((prev) => prev.filter((x) => x != null && !sameId(x?.id, idToDelete))))
           .catch(() => {
             // ignore
           });
@@ -1552,6 +1719,19 @@ export default function WorkspacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- key handler: minimal deps to avoid re-subscribing
   }, [shortcuts, toolManager.activeTool, selectedConnectorId, undoEv, redoEv, isMobile, setElements]);
 
+  socketHandlersRef.current = {
+    setElements,
+    setEditingElementId,
+    setCommentsByElement,
+    setCommentsPanel,
+    setSelectedElementIds,
+    setPresentUserIds,
+    setActionError,
+    elementToVm,
+    normalizeReactions,
+    commentsEnabled,
+  };
+
   useEffect(() => {
     const deskId = workspace?.id ?? workspace?.deskId ?? id;
     const token = getToken();
@@ -1570,14 +1750,16 @@ export default function WorkspacePage() {
     socket.on('connect', () => {
       socket.emit('desk:join', { deskId }, (ack = {}) => {
         if (!ack?.ok) {
-          setActionError(String(ack?.error || 'Failed to join realtime room'));
-          window.setTimeout(() => setActionError(null), 4500);
+          const setErr = socketHandlersRef.current?.setActionError;
+          if (setErr) setErr(String(ack?.error || 'Failed to join realtime room'));
+          window.setTimeout(() => setErr && setErr(null), 4500);
         }
       });
     });
 
     socket.on('connect_error', (err) => {
       const msg = String(err?.message || 'unknown error');
+      const setErr = socketHandlersRef.current?.setActionError;
       if (!didAuthRetry && msg.toLowerCase().includes('not authorized')) {
         didAuthRetry = true;
         refreshAuth()
@@ -1587,19 +1769,19 @@ export default function WorkspacePage() {
             socket.connect();
           })
           .catch(() => {
-            setActionError('Realtime auth failed. Please sign in again.');
-            window.setTimeout(() => setActionError(null), 4500);
+            if (setErr) setErr('Realtime auth failed. Please sign in again.');
+            window.setTimeout(() => setErr && setErr(null), 4500);
           });
         return;
       }
-      setActionError(`Realtime connection failed: ${msg}`);
-      window.setTimeout(() => setActionError(null), 4500);
+      if (setErr) setErr(`Realtime connection failed: ${msg}`);
+      window.setTimeout(() => setErr && setErr(null), 4500);
     });
 
     socket.on('desk:presence', (p = {}) => {
       if (Number(p.deskId) !== Number(deskId)) return;
       const next = Array.isArray(p.users) ? p.users.map((u) => u.userId).filter((x) => x != null) : [];
-      setPresentUserIds(next);
+      socketHandlersRef.current?.setPresentUserIds?.(next);
     });
 
     const wsBatchRef = { current: [] };
@@ -1611,7 +1793,8 @@ export default function WorkspacePage() {
         wsFlushScheduled = false;
         const batch = wsBatchRef.current.splice(0);
         if (batch.length === 0) return;
-        setElements((prev) => {
+        const setEl = socketHandlersRef.current?.setElements;
+        if (setEl) setEl((prev) => {
           let next = prev;
           for (const op of batch) {
             if (op.type === 'created') next = upsertById(next, op.vm);
@@ -1640,14 +1823,16 @@ export default function WorkspacePage() {
     });
 
     socket.on('element:created', (raw) => {
-      const vm = elementToVm(raw);
+      const toVm = socketHandlersRef.current?.elementToVm;
+      const vm = toVm ? toVm(raw) : raw;
       if (!vm?.id) return;
       wsBatchRef.current.push({ type: 'created', vm });
       scheduleWsFlush();
     });
 
     socket.on('element:updated', (raw) => {
-      const vm = elementToVm(raw);
+      const toVm = socketHandlersRef.current?.elementToVm;
+      const vm = toVm ? toVm(raw) : raw;
       if (!vm?.id) return;
       wsBatchRef.current.push({ type: 'updated', vm });
       scheduleWsFlush();
@@ -1657,7 +1842,8 @@ export default function WorkspacePage() {
       if (Number(msg.deskId) !== Number(deskId)) return;
       const elementId = msg.elementId;
       if (!idKey(elementId)) return;
-      wsBatchRef.current.push({ type: 'reactions', elementId, reactions: normalizeReactions(msg.reactions) });
+      const norm = socketHandlersRef.current?.normalizeReactions;
+      wsBatchRef.current.push({ type: 'reactions', elementId, reactions: norm ? norm(msg.reactions) : msg.reactions });
       scheduleWsFlush();
     });
 
@@ -1667,24 +1853,28 @@ export default function WorkspacePage() {
       if (!idKey(elementId)) return;
       wsBatchRef.current.push({ type: 'deleted', elementId });
       scheduleWsFlush();
-      setEditingElementId((cur) => (sameId(cur, elementId) ? null : cur));
-      setSelectedElementIds((cur) => {
+      const setEdit = socketHandlersRef.current?.setEditingElementId;
+      if (setEdit) setEdit((cur) => (sameId(cur, elementId) ? null : cur));
+      const setSel = socketHandlersRef.current?.setSelectedElementIds;
+      if (setSel) setSel((cur) => {
         const k = idKey(elementId);
         if (!k || !cur?.has?.(k)) return cur;
         const next = new Set(cur);
         next.delete(k);
         return next;
       });
-      setCommentsPanel((cur) => (sameId(cur?.elementId, elementId) ? null : cur));
+      const setPanel = socketHandlersRef.current?.setCommentsPanel;
+      if (setPanel) setPanel((cur) => (sameId(cur?.elementId, elementId) ? null : cur));
     });
 
     socket.on('comment:created', (msg = {}) => {
-      if (!commentsEnabled) return;
+      if (!socketHandlersRef.current?.commentsEnabled) return;
       if (Number(msg.deskId) !== Number(deskId)) return;
       const elementId = idKey(msg.elementId);
       const c = msg.comment;
       if (!elementId || !c?.id) return;
-      setCommentsByElement((prev) => {
+      const setByEl = socketHandlersRef.current?.setCommentsByElement;
+      if (setByEl) setByEl((prev) => {
         const existing = prev[elementId] || [];
         if (existing.some((x) => Number(x?.id) === Number(c.id))) return prev;
         return { ...prev, [elementId]: [...existing, c] };
@@ -1692,7 +1882,7 @@ export default function WorkspacePage() {
     });
 
     socket.on('disconnect', () => {
-      setPresentUserIds([]);
+      socketHandlersRef.current?.setPresentUserIds?.([]);
     });
 
     return () => {
@@ -1705,20 +1895,10 @@ export default function WorkspacePage() {
       noteEditTimers.clear();
       socket.disconnect();
       socketRef.current = null;
-      setPresentUserIds([]);
+      socketHandlersRef.current?.setPresentUserIds?.([]);
     };
-  }, [
-    workspace?.id,
-    workspace?.deskId,
-    id,
-    commentsEnabled,
-    elementToVm,
-    normalizeReactions,
-    setElements,
-    setEditingElementId,
-    setCommentsByElement,
-    setCommentsPanel,
-  ]);
+    // Only re-run when desk changes; handlers read from socketHandlersRef to avoid closing socket on re-render.
+  }, [workspace?.id, workspace?.deskId, id]);
 
   const mutateElementRef = useCallback((elementId, patch) => {
     if (!elementId || !patch) return;
@@ -2246,7 +2426,7 @@ export default function WorkspacePage() {
                     if (!idToDelete) return;
                     setSelectedConnectorId(null);
                     deleteElement(idToDelete)
-                      .then(() => setElements((prev) => prev.filter((x) => !sameId(x.id, idToDelete))))
+                      .then(() => setElements((prev) => prev.filter((x) => x != null && !sameId(x?.id, idToDelete))))
                       .catch(() => {});
                   }}
                 >
@@ -2290,7 +2470,7 @@ export default function WorkspacePage() {
                       if (!idToDelete) return;
                       setSelectedConnectorId(null);
                       deleteElement(idToDelete)
-                        .then(() => setElements((prev) => prev.filter((x) => !sameId(x.id, idToDelete))))
+                        .then(() => setElements((prev) => prev.filter((x) => x != null && !sameId(x?.id, idToDelete))))
                         .catch(() => {
                           // ignore
                         });
@@ -2299,39 +2479,55 @@ export default function WorkspacePage() {
                     <Trash2 size={22} />
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  className={`${styles.mobileFabBtn} ${aiPanelOpen ? styles.mobileFabBtnActive : ''}`}
-                  aria-label="Open AI chat"
-                  aria-pressed={aiPanelOpen}
-                  title="Чат с ИИ"
-                  onClick={() => {
-                    setAiPanelOpen(true);
-                    setMobileToolsOpen(false);
-                    setMobileBrushBarOpen(false);
-                    setMobileLinkOpen(false);
-                    setMobileSheetDragY(0);
-                    setMobileSheetDragging(false);
-                    setCommentsPanel(null);
-                    setActionError(null);
-                  }}
-                >
-                  <MessageCircle size={22} />
-                </button>
-                <button
-                  type="button"
-                  className={styles.mobileFabBtn}
-                  aria-label="Open tools"
-                  aria-expanded={mobileToolsOpen}
-                  onClick={() => {
-                    setMobileBrushBarOpen(false);
-                    setMobileLinkOpen(false);
-                    setMobileToolsOpen(true);
-                  }}
-                >
-                  <Plus size={22} />
-                </button>
+                {!selectedToolbarTarget ? (
+                  <>
+                    <button
+                      type="button"
+                      className={`${styles.mobileFabBtn} ${aiPanelOpen ? styles.mobileFabBtnActive : ''}`}
+                      aria-label="Open AI chat"
+                      aria-pressed={aiPanelOpen}
+                      title="Чат с ИИ"
+                      onClick={() => {
+                        setAiPanelOpen(true);
+                        setMobileToolsOpen(false);
+                        setMobileBrushBarOpen(false);
+                        setMobileLinkOpen(false);
+                        setMobileSheetDragY(0);
+                        setMobileSheetDragging(false);
+                        setCommentsPanel(null);
+                        setActionError(null);
+                      }}
+                    >
+                      <MessageCircle size={22} />
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.mobileFabBtn}
+                      aria-label="Open tools"
+                      aria-expanded={mobileToolsOpen}
+                      onClick={() => {
+                        setMobileBrushBarOpen(false);
+                        setMobileLinkOpen(false);
+                        setMobileToolsOpen(true);
+                      }}
+                    >
+                      <Plus size={22} />
+                    </button>
+                  </>
+                ) : null}
               </div>
+            ) : null}
+
+            {isMobile && selectedToolbarTarget ? (
+              <ElementToolbar
+                target={selectedToolbarTarget}
+                isMobile
+                desktopPosition={null}
+                onUpdate={handleElementUpdate}
+                onDelete={handleToolbarDelete}
+                onDuplicate={handleToolbarDuplicate}
+                onToggleLock={handleToolbarToggleLock}
+              />
             ) : null}
 
             {mobileBrushBarOpen ? (
@@ -2680,6 +2876,12 @@ export default function WorkspacePage() {
           ) : null}
           <div className={styles.grid} />
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}
+          <DocumentPreviewOverlay
+            isOpen={Boolean(photoPreview)}
+            onClose={closePhotoPreview}
+            url={photoPreview?.url}
+            title={photoPreview?.title}
+          />
           <div className={styles.boardContent}>
             <ElementRenderer
               styles={styles}
@@ -2723,6 +2925,7 @@ export default function WorkspacePage() {
               persistElement={persistElement}
               editStartSnapRef={editStartSnapRef}
               openDocument={openDocument}
+              openPhotoPreview={openPhotoPreview}
               downloadDocument={downloadDocument}
               openExternalUrl={openExternalUrl}
               getLinkPreview={getLinkPreview}
@@ -2736,11 +2939,23 @@ export default function WorkspacePage() {
               setMaterialBlockModal={setMaterialBlockModal}
               startBlockResize={startBlockResize}
               setSelectedMaterialBlockId={setSelectedMaterialBlockId}
+              onSelectMaterialBlock={handleSelectMaterialBlock}
               registerMaterialBlockNode={registerMaterialBlockNode}
               handleMaterialBlockTitleUpdate={handleMaterialBlockTitleUpdate}
               handleDeleteMaterialBlock={handleDeleteMaterialBlock}
               startConnectorDragFromBlock={startConnectorDragFromBlock}
             />
+            {!isMobile && selectedToolbarTarget ? (
+              <ElementToolbar
+                target={selectedToolbarTarget}
+                isMobile={false}
+                desktopPosition={elementToolbarDesktopPosition}
+                onUpdate={handleElementUpdate}
+                onDelete={handleToolbarDelete}
+                onDuplicate={handleToolbarDuplicate}
+                onToggleLock={handleToolbarToggleLock}
+              />
+            ) : null}
             {toolManager.liveStroke?.points?.length ? (
               (() => {
                 const pts = toolManager.liveStroke.points;
@@ -3303,6 +3518,7 @@ export default function WorkspacePage() {
           isMobile={isMobile}
           deskId={workspace?.id ?? workspace?.deskId ?? id}
           onAddCardToBoard={handleAddCardToBoard}
+          socketRef={socketRef}
         />
       ) : null}
     </div>

@@ -84,11 +84,12 @@ app.use((req, res, next) => {
 // Middleware order: cors → OPTIONS short-circuit → express.json → cookieParser → routes → errorHandler (last).
 // CORS: must be first, before any routes. credentials:true requires explicit origin (no wildcard).
 const isDev = process.env.NODE_ENV !== 'production';
+const isLocalRun = !process.env.RAILWAY_ENVIRONMENT; // Railway sets this; locally it's absent
 const allowedOrigins = [
   'https://healis111.vercel.app',
   // healis + healis111 and their previews (e.g. healis-xxx, healis111-xxx.vercel.app)
   /^https:\/\/(healis|healis111)(-[\w\-.]+)?\.vercel\.app$/,
-  ...(isDev ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : []),
+  ...(isDev || isLocalRun ? ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5000', 'http://127.0.0.1:5000'] : []),
 ];
 const envOrigins = [process.env.CORS_ORIGINS, process.env.CORS_ORIGIN, process.env.CLIENT_URL]
   .filter(Boolean)
@@ -259,10 +260,40 @@ async function start() {
       // ignore
     }
 
-    // Schema back-compat: add reactions column if missing (we don't require DB_SYNC_ALTER for this).
+    // Schema back-compat: add elements columns if missing (we don't require DB_SYNC_ALTER for this).
     try {
       await sequelize.query(
         'ALTER TABLE "elements" ADD COLUMN IF NOT EXISTS "reactions" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
+      );
+      await sequelize.query(
+        'ALTER TABLE "elements" ADD COLUMN IF NOT EXISTS "locked" BOOLEAN NOT NULL DEFAULT FALSE;'
+      );
+    } catch {
+      // ignore
+    }
+
+    // Schema back-compat: element child tables (note/text formatting: bold, italic, underline, etc.).
+    try {
+      await sequelize.query('ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "bold" BOOLEAN NOT NULL DEFAULT FALSE;');
+      await sequelize.query('ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "italic" BOOLEAN NOT NULL DEFAULT FALSE;');
+      await sequelize.query('ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "underline" BOOLEAN NOT NULL DEFAULT FALSE;');
+      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "fontFamily" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "fontSize" INTEGER;');
+      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "color" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "bold" BOOLEAN NOT NULL DEFAULT FALSE;');
+      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "italic" BOOLEAN NOT NULL DEFAULT FALSE;');
+      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "underline" BOOLEAN NOT NULL DEFAULT FALSE;');
+      await sequelize.query('ALTER TABLE "documents" ADD COLUMN IF NOT EXISTS "title" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "links" ADD COLUMN IF NOT EXISTS "title" VARCHAR(255);');
+      await sequelize.query('ALTER TABLE "links" ADD COLUMN IF NOT EXISTS "previewImageUrl" TEXT;');
+      await sequelize.query(
+        'ALTER TABLE "drawings" ADD COLUMN IF NOT EXISTS "data" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
+      );
+      await sequelize.query(
+        'ALTER TABLE "connectors" ADD COLUMN IF NOT EXISTS "data" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
+      );
+      await sequelize.query(
+        'ALTER TABLE "frames" ADD COLUMN IF NOT EXISTS "title" VARCHAR(255) NOT NULL DEFAULT \'Frame\';'
       );
     } catch {
       // ignore
@@ -270,11 +301,8 @@ async function start() {
 
     // Schema back-compat: user profile columns (so profile works even without DB_SYNC_ALTER).
     try {
-      // Auth provider columns (Google sign-in)
       await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "authProvider" VARCHAR(32) NOT NULL DEFAULT \'local\';');
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "googleSub" VARCHAR(255);');
       await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "emailVerified" BOOLEAN NOT NULL DEFAULT FALSE;');
-      await sequelize.query('CREATE UNIQUE INDEX IF NOT EXISTS "users_googleSub_key" ON "users" ("googleSub");');
 
       await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "username" VARCHAR(255);');
       await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "nickname" VARCHAR(255);');

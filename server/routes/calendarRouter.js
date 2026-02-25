@@ -7,6 +7,7 @@ const router = express.Router();
 // Student calendar
 router.get('/my', authMiddleware, calendarCtrl.getMyCalendar);
 router.post('/my/events', authMiddleware, calendarCtrl.createMyEvent);
+router.patch('/my/events/:myEventId', authMiddleware, calendarCtrl.updateMyEvent);
 router.delete('/my/events/:myEventId', authMiddleware, calendarCtrl.deleteMyEvent);
 router.post('/my/invites/:inviteId/respond', authMiddleware, calendarCtrl.respondToInvite);
 router.post('/my/period-invites/:inviteId/respond', authMiddleware, calendarCtrl.respondToPeriodInvite);
@@ -14,6 +15,7 @@ router.post('/my/period-invites/:inviteId/respond', authMiddleware, calendarCtrl
 // Group calendar management (starosta/admin)
 router.get('/groups/:groupId/events', authMiddleware, calendarCtrl.getGroupEvents);
 router.post('/groups/:groupId/events', authMiddleware, calendarCtrl.createGroupEvent);
+router.patch('/groups/:groupId/events/:eventId', authMiddleware, calendarCtrl.updateGroupEvent);
 router.delete('/groups/:groupId/events/:eventId', authMiddleware, calendarCtrl.deleteGroupEvent);
 
 router.get('/groups/:groupId/periods', authMiddleware, calendarCtrl.getGroupPeriods);

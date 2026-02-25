@@ -57,6 +57,54 @@ function isAllowedExtension(filename, allowedSet = ALLOWED_EXTENSIONS) {
   return allowedSet.has(ext);
 }
 
+/** Compress image for faster mobile uploads. Returns original file if not an image or compression fails. */
+export function compressImageForUpload(file, opts = {}) {
+  const { maxWidth = 1600, quality = 0.85 } = opts;
+  if (!file?.type?.startsWith('image/')) return Promise.resolve(file);
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let w = img.naturalWidth;
+      let h = img.naturalHeight;
+      if (w <= maxWidth && file.size <= 1024 * 1024) {
+        resolve(file);
+        return;
+      }
+      if (w > maxWidth) {
+        h = Math.round((h * maxWidth) / w);
+        w = maxWidth;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(file);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas.toBlob(
+        (blob) => {
+          if (blob && blob.size < file.size) {
+            resolve(new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() }));
+          } else {
+            resolve(file);
+          }
+        },
+        'image/jpeg',
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+    img.src = url;
+  });
+}
+
 /**
  * Upload a file to Supabase Storage
  * @param {File} file - File to upload

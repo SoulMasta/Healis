@@ -14,8 +14,8 @@ const TYPE_TO_MODEL = {
 };
 
 const TYPE_ALLOWED_FIELDS = {
-  note: ['text'],
-  text: ['content', 'fontFamily', 'fontSize', 'color'],
+  note: ['text', 'bold', 'italic', 'underline'],
+  text: ['content', 'fontFamily', 'fontSize', 'color', 'bold', 'italic', 'underline'],
   document: ['title', 'url'],
   link: ['title', 'url', 'previewImageUrl'],
   drawing: ['data'],
@@ -87,9 +87,11 @@ class ElementsController {
         order: [['zIndex', 'ASC'], ['elementId', 'ASC']],
       });
 
-      return res.json(elements);
+      const payload = elements.map((el) => (typeof el?.toJSON === 'function' ? el.toJSON() : el));
+      return res.json(payload);
     } catch (error) {
-      return res.status(500).json({ error: error.message });
+      console.error('[elementsCtrl.getAllByDesk]', error?.message || error, error?.stack);
+      return res.status(500).json({ error: error.message || 'Internal server error' });
     }
   }
 
@@ -128,6 +130,7 @@ class ElementsController {
         height,
         rotation,
         zIndex,
+        locked,
         // type-specific payload:
         payload,
         // also allow passing type-specific fields at top-level:
@@ -148,7 +151,7 @@ class ElementsController {
         {
           deskId,
           type,
-          ...pickDefined({ x, y, width, height, rotation, zIndex }),
+          ...pickDefined({ x, y, width, height, rotation, zIndex, locked }),
         },
         { transaction: t }
       );
@@ -226,6 +229,7 @@ class ElementsController {
         height: rest.height,
         rotation: rest.rotation,
         zIndex: rest.zIndex,
+        locked: rest.locked,
       });
       if (Object.keys(baseFields).length) {
         await element.update(baseFields, { transaction: t });
