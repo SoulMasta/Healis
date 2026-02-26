@@ -367,7 +367,7 @@ export default function WorkspacePage() {
     [elementToPayload]
   );
 
-  const snapshotEquals = (a, b) => {
+  const snapshotEquals = useCallback((a, b) => {
     if (!a || !b) return false;
     return (
       a.elementId === b.elementId &&
@@ -380,7 +380,7 @@ export default function WorkspacePage() {
       a.zIndex === b.zIndex &&
       JSON.stringify(a.payload ?? null) === JSON.stringify(b.payload ?? null)
     );
-  };
+  }, []);
 
   const elementToVm = useCallback((el) => {
     if (!el || typeof el !== 'object') return el;
