@@ -241,6 +241,7 @@ function CreateEventSheet({ open, onClose, onCreated, defaultDate }) {
 
 function EditEventSheet({ open, onClose, onSaved, event, kind, groupId }) {
   const ev = event || {};
+  const k = String(kind || '').toUpperCase();
   const dateStr = ev.startsAt ? ev.startsAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
   const timeStr =
     ev.startsAt && !ev.allDay && ev.startsAt.length >= 16
@@ -256,6 +257,8 @@ function EditEventSheet({ open, onClose, onSaved, event, kind, groupId }) {
   const [comment, setComment] = useState(ev.comment || ev.description || '');
   const [materialsText, setMaterialsText] = useState(() => formatMaterialsForInput(ev.materials));
   const [busy, setBusy] = useState(false);
+
+  const canSave = (k === 'MY' && ev.myEventId) || (k === 'GROUP' && groupId && ev.eventId);
 
   useEffect(() => {
     if (open && ev?.title !== undefined) {
@@ -274,7 +277,7 @@ function EditEventSheet({ open, onClose, onSaved, event, kind, groupId }) {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || !canSave) return;
     setBusy(true);
     try {
       const allDay = mode === 'allDay';
@@ -288,7 +291,6 @@ function EditEventSheet({ open, onClose, onSaved, event, kind, groupId }) {
         startsAt: startsAtPayload,
         allDay,
       };
-      const k = String(kind || '').toUpperCase();
       if (k === 'MY' && ev.myEventId) {
         await updateMyCalendarEvent(ev.myEventId, payload);
       } else if (k === 'GROUP' && groupId && ev.eventId) {
@@ -363,7 +365,7 @@ function EditEventSheet({ open, onClose, onSaved, event, kind, groupId }) {
             <button type="button" className={styles.btnGhost} onClick={onClose} disabled={busy}>
               Отмена
             </button>
-            <button type="submit" className={styles.btnPrimary} disabled={busy || !title.trim()}>
+            <button type="submit" className={styles.btnPrimary} disabled={busy || !title.trim() || !canSave}>
               {busy ? <Loader2 size={16} className={styles.spinner} /> : null}
               Сохранить
             </button>
@@ -722,25 +724,27 @@ export default function MobileCalendarPage() {
                         <div className={styles.eventCard}>
                           <div className={styles.eventTitle}>{ev.title}</div>
                           <div className={styles.eventSub}>{typeLabel(ev.type)}{ev.subject ? ` • ${ev.subject}` : ''}</div>
-                          <button
-                            type="button"
-                            className={styles.inlineIconBtn}
-                            onClick={() => setEditingEvent({ kind: 'group', event: ev, groupId: myGroupId })}
-                            aria-label="Редактировать"
-                            title="Редактировать"
-                          >
-                            <Pencil size={16} />
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.inlineIconBtn}
-                            onClick={() => deleteGroupItem('e', ev.eventId)}
-                            disabled={busy}
-                            aria-label="Удалить"
-                            title="Удалить"
-                          >
-                            {busy ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
-                          </button>
+                          <div className={styles.eventCardActions}>
+                            <button
+                              type="button"
+                              className={styles.inlineIconBtn}
+                              onClick={() => setEditingEvent({ kind: 'GROUP', event: ev, groupId: myGroupId })}
+                              aria-label="Редактировать"
+                              title="Редактировать"
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.inlineIconBtn}
+                              onClick={() => deleteGroupItem('e', ev.eventId)}
+                              disabled={busy}
+                              aria-label="Удалить"
+                              title="Удалить"
+                            >
+                              {busy ? <Loader2 size={16} className={styles.spinner} /> : <Trash2 size={16} />}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );

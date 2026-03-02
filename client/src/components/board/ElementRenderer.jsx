@@ -28,6 +28,8 @@ const FrameElement = React.memo(function FrameElement({
   connectorHoverElementId,
   connectorFromElementId,
   connectorToHoverElementId,
+  connectorDraft,
+  elements,
   registerNode,
   onPointerDown,
   onElementClick,
@@ -62,11 +64,26 @@ const FrameElement = React.memo(function FrameElement({
   }, [activeTool, beginEditing, elementId]);
   const { onPointerUp: onDoubleTapPointerUp } = useDoubleTap(openFrameTitleEdit);
 
+  const isInsideFrame = React.useCallback((childEl, frameEl) => {
+    if (!childEl || !frameEl || childEl.type === 'frame') return false;
+    const fx = Number(frameEl.x ?? 0), fy = Number(frameEl.y ?? 0), fw = Number(frameEl.width ?? 240), fh = Number(frameEl.height ?? 160);
+    const cx = Number(childEl.x ?? 0), cy = Number(childEl.y ?? 0), cw = Number(childEl.width ?? 240), ch = Number(childEl.height ?? 160);
+    return cx >= fx && cy >= fy && cx + cw <= fx + fw && cy + ch <= fy + fh;
+  }, []);
+  const fromId = connectorDraft?.from?.elementId ?? null;
+  const fromInside = fromId && !connectorDraft?.from?.blockId;
+  const list = Array.isArray(elements) ? elements : [];
+  const fromEl = fromInside ? list.find((e) => e?.id === fromId) : null;
+  const hideFrameAnchorsWhenConnectingInside = Boolean(
+    connectorDraft && fromEl && isInsideFrame(fromEl, el)
+  );
+
   const showConnectorEndpoints =
-    isSelected ||
+    !hideFrameAnchorsWhenConnectingInside &&
+    (isSelected ||
     (activeTool === 'connector' && connectorHoverElementId === elementId) ||
     connectorFromElementId === elementId ||
-    connectorToHoverElementId === elementId;
+    connectorToHoverElementId === elementId);
   const renderActions = <div className={s.elementActions} />;
   return (
     <ElementWrapper
@@ -763,6 +780,8 @@ export function ElementRenderer({
               connectorHoverElementId={connectorHoverElementId}
               connectorFromElementId={connectorDraft?.from?.elementId ?? null}
               connectorToHoverElementId={connectorDraft?.toHover?.elementId ?? null}
+              connectorDraft={connectorDraft}
+              elements={elements}
               registerNode={registerElementNode}
               onPointerDown={onElementPointerDown}
               onElementClick={onElementClick}

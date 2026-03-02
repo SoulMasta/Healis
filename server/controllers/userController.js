@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { User, RefreshToken } = require('../models/models');
 const { randomToken, hashToken } = require('../utils/authTokens');
+const { logUserEvent } = require('../services/userEventLogger');
 
 const JWT_SECRET = process.env.JWT_SECRET || process.env.SECRET_KEY;
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
@@ -311,6 +312,15 @@ class UserController {
       const token = generateAccessToken(user);
       const refresh = await issueRefreshToken({ userId: user.id, req });
       res.cookie('refreshToken', refresh.raw, cookieOptions());
+
+      // Pilot analytics: best-effort login tracking (never blocks auth).
+      logUserEvent({
+        userId: user.id,
+        eventType: 'login',
+        metadata: {
+          deviceId: getDeviceId(req),
+        },
+      });
 
       return res.json({ token });
     } catch (error) {

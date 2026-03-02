@@ -46,6 +46,26 @@ export function useConnectors({
 
   const isConnectableElement = (el) => Boolean(el?.id) && Boolean(el?.type) && el.type !== 'connector';
 
+  const isElementInsideFrame = useCallback((childEl, frameEl) => {
+    if (!childEl || !frameEl || childEl.type === 'frame') return false;
+    const fx = Number(frameEl.x ?? 0), fy = Number(frameEl.y ?? 0), fw = Number(frameEl.width ?? 240), fh = Number(frameEl.height ?? 160);
+    const cx = Number(childEl.x ?? 0), cy = Number(childEl.y ?? 0), cw = Number(childEl.width ?? 240), ch = Number(childEl.height ?? 160);
+    return cx >= fx && cy >= fy && cx + cw <= fx + fw && cy + ch <= fy + fh;
+  }, []);
+
+  const getFrameIdsContainingElement = useCallback(
+    (list, elementId) => {
+      const el = (list || []).find((e) => e?.id === elementId);
+      if (!el) return [];
+      const ids = [];
+      for (const e of list || []) {
+        if (e?.type === 'frame' && isElementInsideFrame(el, e)) ids.push(e.id);
+      }
+      return ids;
+    },
+    [isElementInsideFrame]
+  );
+
   const getAnchorPoint = useCallback((el, side) => {
     const OUTSET = 10;
     const x = Number(el?.x ?? 0);
@@ -69,15 +89,17 @@ export function useConnectors({
   }, []);
 
   const pickHoverElementId = useCallback(
-    (deskP, threshold = 15) => {
+    (deskP, threshold = 15, excludeElementIds = null) => {
       const px = Number(deskP?.x ?? 0);
       const py = Number(deskP?.y ?? 0);
       const t = Math.max(0, Number(threshold ?? 0));
+      const exclude = Array.isArray(excludeElementIds) ? excludeElementIds : excludeElementIds != null ? [excludeElementIds] : [];
       let bestId = null;
       let bestD2 = Infinity;
       const list = elementsRef?.current || [];
       for (const el of list) {
         if (!isConnectableElement(el)) continue;
+        if (exclude.length && exclude.some((id) => id === el.id)) continue;
         const x = Number(el.x ?? 0);
         const y = Number(el.y ?? 0);
         const w = Number(el.width ?? 0);
@@ -340,7 +362,10 @@ export function useConnectors({
       const onMove = (ev) => {
         if (ev.pointerId !== pointerId) return;
         const deskP = getDeskPointFromClient?.(ev.clientX, ev.clientY);
-        const hoverElId = pickHoverElementId(deskP, isMobile ? 24 : 15);
+        const excludeFrameIds = initial.from.elementId
+          ? getFrameIdsContainingElement(elementsRef?.current || [], initial.from.elementId)
+          : [];
+        const hoverElId = pickHoverElementId(deskP, isMobile ? 24 : 15, excludeFrameIds);
         const hoverBlockId = pickHoverBlockId(deskP, isMobile ? 24 : 15);
         const hoverEl = hoverElId ? (elementsRef?.current || []).find((x) => x?.id === hoverElId) : null;
         const elSide = hoverEl ? pickSideAtPoint(hoverEl, deskP, isMobile ? 26 : 18) : null;
@@ -364,7 +389,10 @@ export function useConnectors({
         cancelConnectorDraft();
         if (!cur?.from?.side) return;
         const deskP = getDeskPointFromClient?.(ev.clientX, ev.clientY);
-        const hoverElId = pickHoverElementId(deskP, isMobile ? 24 : 15);
+        const excludeFrameIds = cur.from.elementId
+          ? getFrameIdsContainingElement(elementsRef?.current || [], cur.from.elementId)
+          : [];
+        const hoverElId = pickHoverElementId(deskP, isMobile ? 24 : 15, excludeFrameIds);
         const hoverBlockId = pickHoverBlockId(deskP, isMobile ? 24 : 15);
         const hoverEl = hoverElId ? (elementsRef?.current || []).find((x) => x?.id === hoverElId) : null;
         const elSide = hoverEl ? pickSideAtPoint(hoverEl, deskP, isMobile ? 26 : 18) : null;
@@ -397,6 +425,7 @@ export function useConnectors({
       pickHoverBlockId,
       pickSideAtPoint,
       pickSideAtPointForBlock,
+      getFrameIdsContainingElement,
       isMobile,
       elementsRef,
       materialBlocksRef,

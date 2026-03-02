@@ -360,3 +360,15 @@
 {"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772104868136}
 {"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772104906286}
 {"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772105078607}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772105459490}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772106052548}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772107755266}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772107755274}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772107756316}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth failed","data":{"runId":"refresh","status":401,"status401":true},"hypothesisId":"H1,H2,H3","timestamp":1772107756680}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772107756685}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth failed","data":{"runId":"refresh","status":401,"status401":true},"hypothesisId":"H1,H2,H3","timestamp":1772107756922}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772107853477}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth failed","data":{"runId":"refresh","status":401,"status401":true},"hypothesisId":"H1,H2,H3","timestamp":1772107854239}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth called","data":{"runId":"refresh"},"hypothesisId":"H1,H5","timestamp":1772197982308}
+{"location":"userAPI.js:refreshAuth","message":"refreshAuth failed","data":{"runId":"refresh","status":401,"status401":true},"hypothesisId":"H1,H2,H3","timestamp":1772197982571}

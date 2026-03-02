@@ -558,6 +558,29 @@ const MaterialCardTag = sequelize.define(
   }
 );
 
+// --- Minimal pilot analytics: user activity events ---
+const UserEvent = sequelize.define(
+  'user_event',
+  {
+    id: { type: DataTypes.BIGINT, primaryKey: true, autoIncrement: true },
+    userId: { type: DataTypes.INTEGER, allowNull: false, references: { model: User, key: 'id' } },
+    eventType: { type: DataTypes.STRING, allowNull: false },
+    // Keep entityId as string: supports int IDs and UUIDs.
+    entityId: { type: DataTypes.STRING, allowNull: true },
+    entityType: { type: DataTypes.STRING, allowNull: true },
+    metadata: { type: DataTypes.JSONB, allowNull: true },
+  },
+  {
+    timestamps: true,
+    updatedAt: false,
+    indexes: [
+      { fields: ['userId', 'createdAt'] },
+      { fields: ['eventType', 'createdAt'] },
+      { fields: ['entityType', 'entityId'] },
+    ],
+  }
+);
+
 // --- Relationships ---
 User.hasMany(Project, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 Project.belongsTo(User, { foreignKey: 'userId' });
@@ -691,6 +714,9 @@ MaterialLink.belongsTo(MaterialCard, { foreignKey: 'cardId' });
 MaterialCard.hasMany(MaterialCardTag, { foreignKey: 'cardId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 MaterialCardTag.belongsTo(MaterialCard, { foreignKey: 'cardId' });
 
+User.hasMany(UserEvent, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+UserEvent.belongsTo(User, { foreignKey: 'userId' });
+
 module.exports = {
   User,
   RefreshToken,
@@ -722,4 +748,5 @@ module.exports = {
   MaterialFile,
   MaterialLink,
   MaterialCardTag,
+  UserEvent,
 };

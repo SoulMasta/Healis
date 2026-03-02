@@ -485,6 +485,27 @@ async function start() {
       // ignore
     }
 
+    // Pilot analytics: user activity events.
+    // Keep it safe even if DB_SYNC_ALTER is off.
+    try {
+      await sequelize.query(
+        'CREATE TABLE IF NOT EXISTS "user_events" (' +
+          '"id" BIGSERIAL PRIMARY KEY,' +
+          '"userId" INTEGER NOT NULL REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
+          '"eventType" VARCHAR(64) NOT NULL,' +
+          '"entityId" VARCHAR(255),' +
+          '"entityType" VARCHAR(64),' +
+          '"metadata" JSONB,' +
+          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "user_events_user_created" ON "user_events" ("userId","createdAt");');
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "user_events_type_created" ON "user_events" ("eventType","createdAt");');
+      await sequelize.query('CREATE INDEX IF NOT EXISTS "user_events_entity" ON "user_events" ("entityType","entityId");');
+    } catch {
+      // ignore
+    }
+
     // In early development it's convenient to auto-align schema with models.
     // Set DB_SYNC_ALTER=true to enable non-destructive alters (still be careful in production).
     await sequelize.sync({ alter: process.env.DB_SYNC_ALTER === 'true' });

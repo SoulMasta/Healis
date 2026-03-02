@@ -10,6 +10,7 @@ const {
 } = require('../models/models');
 const { canReadDesk, canManageDesk } = require('../utils/deskAccess');
 const { emitToDesk } = require('../realtime/bus');
+const { logUserEvent } = require('../services/userEventLogger');
 
 const DEFAULT_BLOCK_WIDTH = 280;
 const DEFAULT_BLOCK_HEIGHT = 160;
@@ -287,6 +288,16 @@ class MaterialBlocksController {
       delete j.material_files;
       delete j.material_links;
       delete j.material_card_tags;
+
+      // Pilot analytics: material created
+      logUserEvent({
+        userId,
+        eventType: 'create_material',
+        entityType: 'material_card',
+        entityId: card.id,
+        metadata: { blockId: block.id, deskId: desk.deskId ?? desk.id ?? null },
+      });
+
       return res.status(201).json(j);
     } catch (error) {
       console.error('MaterialBlocksCtrl.createCard', error);
@@ -325,6 +336,16 @@ class MaterialBlocksController {
       delete j.material_files;
       delete j.material_links;
       delete j.material_card_tags;
+
+      // Pilot analytics: material opened (best-effort)
+      logUserEvent({
+        userId,
+        eventType: 'open_material',
+        entityType: 'material_card',
+        entityId: card.id,
+        metadata: { blockId: block.id, deskId: desk.deskId ?? desk.id ?? null },
+      });
+
       return res.json(j);
     } catch (error) {
       return res.status(500).json({ error: error.message });
@@ -382,6 +403,16 @@ class MaterialBlocksController {
           updatedBy: userId,
         });
       }
+
+      // Pilot analytics: material edited
+      logUserEvent({
+        userId,
+        eventType: 'edit_material',
+        entityType: 'material_card',
+        entityId: j.id,
+        metadata: { blockId: card.blockId, deskId: deskId ?? null },
+      });
+
       return res.json(j);
     } catch (error) {
       console.error('MaterialBlocksCtrl.updateCard', error);
@@ -438,6 +469,15 @@ class MaterialBlocksController {
         fileUrl: url,
         fileType: fileType || null,
         size: size || null,
+      });
+
+      // Pilot analytics: file uploaded to a material card
+      logUserEvent({
+        userId,
+        eventType: 'upload_file',
+        entityType: 'material_file',
+        entityId: mf.id,
+        metadata: { cardId: card.id, fileType: fileType || null, size: size || null },
       });
 
       return res.status(201).json({

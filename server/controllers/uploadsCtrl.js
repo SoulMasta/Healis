@@ -1,5 +1,6 @@
 const { Desk } = require('../models/models');
 const { canManageDesk } = require('../utils/deskAccess');
+const { logUserEvent } = require('../services/userEventLogger');
 
 /**
  * UploadsController - handles saving file URLs to the database
@@ -23,6 +24,20 @@ class UploadsController {
 
       const { url, originalName, mimeType, size } = req.body || {};
       if (!url) return res.status(400).json({ error: 'No URL provided' });
+
+      // Pilot analytics: file uploaded to a desk (document/link element, etc.)
+      logUserEvent({
+        userId,
+        eventType: 'upload_file',
+        entityType: 'desk',
+        entityId: deskId,
+        metadata: {
+          url,
+          originalName: originalName || null,
+          mimeType: mimeType || null,
+          size: size || null,
+        },
+      });
 
       // Return the file info (URL is already a Supabase public URL)
       return res.status(201).json({
