@@ -113,9 +113,8 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       if (!el.contains(document.activeElement)) return;
       const vv = window.visualViewport;
       const keyboardOpen = window.innerHeight - vv.height > KEYBOARD_OPEN_THRESHOLD;
-      const safeBottom = keyboardOpen
-        ? vv.offsetTop + vv.height - MOBILE_TOOLBAR_HEIGHT - CURSOR_MARGIN_ABOVE_KEYBOARD
-        : vv.offsetTop + vv.height - CURSOR_MARGIN_ABOVE_KEYBOARD;
+      const extraKeyboardOffset = keyboardBottomOffset || 0;
+      const safeBottom = vv.offsetTop + vv.height - (keyboardOpen ? (MOBILE_TOOLBAR_HEIGHT + extraKeyboardOffset + CURSOR_MARGIN_ABOVE_KEYBOARD) : CURSOR_MARGIN_ABOVE_KEYBOARD);
       const sel = document.getSelection();
       if (!sel || sel.rangeCount === 0) return;
       const range = sel.getRangeAt(0);
@@ -135,7 +134,7 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
         else el.scrollTop += delta;
       }
     },
-    [mobileLayout]
+    [mobileLayout, keyboardBottomOffset]
   );
 
   const scheduleScrollAfterKeyboard = useCallback(() => {
@@ -154,12 +153,12 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     const update = () => {
       const nextOffset = Math.max(0, window.innerHeight - vv.height);
       setKeyboardBottomOffset(nextOffset);
+      /* Position toolbar above the visual viewport, taking safe-area inset into account.
+         Use bottom so it won't overlap the iPhone home indicator. */
       setToolbarViewportStyle({
-        top: vv.offsetTop + vv.height,
         left: vv.offsetLeft,
-        right: 'auto',
         width: vv.width,
-        transform: 'translateY(-100%)',
+        bottom: `calc(${nextOffset}px + env(safe-area-inset-bottom, 0px))`,
       });
       if (prevOffset < KEYBOARD_OPEN_THRESHOLD && nextOffset > KEYBOARD_OPEN_THRESHOLD && contentRef.current?.contains(document.activeElement)) {
         scheduleScrollAfterKeyboard();
@@ -251,6 +250,12 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     setDocCardTargets(targets);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- set content only on card open to avoid overwriting edits
   }, [card?.id, migrateOldDocCards, mobileLayout]);
+
+  // Notify external UI (board) that material editor opened/closed so they can hide bottom panels.
+  useEffect(() => {
+    try { window.dispatchEvent(new Event('materialEditor:open')); } catch (_) {}
+    return () => { try { window.dispatchEvent(new Event('materialEditor:close')); } catch (_) {} };
+  }, [card?.id]);
 
   const isInHeadingBlock = useCallback(() => {
     const sel = document.getSelection();
@@ -715,6 +720,8 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
         e.preventDefault();
         photoLongPressRef.current = setTimeout(() => {
           photoLongPressRef.current = null;
+          // Hide keyboard before opening photo menu to avoid freezing/overlap on mobile
+          try { contentRef.current?.blur(); } catch (_) {}
           openPhotoMenu(img.src, img.getAttribute('data-preview-size') || 'large');
         }, LONG_PRESS_MS);
       }
@@ -865,39 +872,44 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const attachInputRef = useRef(null);
   const handleAttachSelected = useCallback(
     (e) => {
-      const file = e.target?.files?.[0];
+      const files = Array.from(e.target?.files ?? []);
       e.target.value = '';
-      if (!file) return;
-      const asImage = isImageFile(file);
-      const doUpload = (f) => {
-        if (asImage) {
-          runUpload(f, {
-            asImage: true,
-            onSuccessInsert: (data) => {
-              const url = resolveFileUrl(data?.file_url);
-              if (url) {
-                const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:85%;height:auto;" loading="lazy" />`;
-                insertMediaAtCursor(html, 'img.inline-photo');
-              }
-            },
-          });
-        } else {
-          runUpload(f, {
-            asImage: false,
-            fileName: f.name,
-            onSuccessInsert: (data) => {
-              const url = resolveFileUrl(data?.file_url);
-              const name = f.name || decodeDocName(data?.file_url?.split?.('/')?.pop()) || 'Документ';
-              if (url) insertDocCard(url, name, data?.id);
-            },
-          });
-        }
+      if (!files.length) return;
+      // Process files sequentially to avoid flooding upload pipeline and to preserve order
+      const processNext = (index) => {
+        if (index >= files.length) return;
+        const file = files[index];
+        const asImage = isImageFile(file);
+        const doUpload = (f) => {
+          if (asImage) {
+            runUpload(f, {
+              asImage: true,
+              onSuccessInsert: (data) => {
+                const url = resolveFileUrl(data?.file_url);
+                if (url) {
+                  const html = `<img src="${url.replace(/"/g, '&quot;')}" alt="" class="inline-photo" data-preview-size="large" style="max-width:85%;height:auto;" loading="lazy" />`;
+                  insertMediaAtCursor(html, 'img.inline-photo');
+                }
+              },
+              onAfter: () => processNext(index + 1),
+            });
+          } else {
+            runUpload(f, {
+              asImage: false,
+              fileName: f.name,
+              onSuccessInsert: (data) => {
+                const url = resolveFileUrl(data?.file_url);
+                const name = f.name || decodeDocName(data?.file_url?.split?.('/')?.pop()) || 'Документ';
+                if (url) insertDocCard(url, name, data?.id);
+              },
+              onAfter: () => processNext(index + 1),
+            });
+          }
+        };
+        if (mobileLayout && isImageFile(file)) compressImageForUpload(file).then(doUpload).catch(() => doUpload(file));
+        else doUpload(file);
       };
-      if (mobileLayout && asImage) {
-        compressImageForUpload(file).then(doUpload);
-      } else {
-        doUpload(file);
-      }
+      processNext(0);
     },
     [runUpload, insertMediaAtCursor, insertDocCard, mobileLayout]
   );
@@ -928,8 +940,8 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
         )
       )}
       <input ref={photoInputRef} type="file" accept="image/*" multiple className={styles.hiddenInput} onChange={handlePhotoSelected} />
-      <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" className={styles.hiddenInput} onChange={handleDocSelected} />
-      <input ref={attachInputRef} type="file" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" className={styles.hiddenInput} onChange={handleAttachSelected} />
+      <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" multiple className={styles.hiddenInput} onChange={handleDocSelected} />
+      <input ref={attachInputRef} type="file" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip,.rar" multiple className={styles.hiddenInput} onChange={handleAttachSelected} />
 
       <header className={styles.editorHeader}>
         {mobileLayout && onBack ? (
@@ -1117,7 +1129,7 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       {mobileLayout && (
         <div
           className={styles.mobileToolbar}
-          style={toolbarViewportStyle ? { ...toolbarViewportStyle, bottom: 'auto' } : undefined}
+          style={toolbarViewportStyle ? { ...toolbarViewportStyle } : undefined}
         >
           {isEditing && (
             <button

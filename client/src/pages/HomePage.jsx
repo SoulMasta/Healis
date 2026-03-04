@@ -50,7 +50,6 @@ import {
 import { getToken } from '../http/userAPI';
 import UserMenu from '../components/UserMenu';
 import styles from '../styles/HomePage.module.css';
-import noteImg from '../static/note.png';
 
 function safeParseJwt(token) {
   try {
@@ -192,6 +191,8 @@ function BoardCard({
   onOpen,
   onOpenMenu,
 }) {
+  const gradientIndex = board?.id != null ? Number(board.id) % 6 : 0;
+  const previewClass = `${styles.previewArea} ${styles[`previewGradient${gradientIndex}`]}`;
   return (
     <div
       className={styles.boardCard}
@@ -221,7 +222,7 @@ function BoardCard({
         </button>
       </div>
 
-      <div className={styles.previewArea} aria-hidden="true">
+      <div className={previewClass} aria-hidden="true">
         <button
           type="button"
           className={`${styles.starBtn} ${isFavorite ? styles.starBtnActive : ''}`}
@@ -234,9 +235,6 @@ function BoardCard({
         >
           <Star size={18} fill={isFavorite ? 'currentColor' : 'none'} />
         </button>
-        <div className={styles.previewArt}>
-          <img src={noteImg} alt="" />
-        </div>
       </div>
 
       <div className={styles.metaList}>
