@@ -9,3 +9,4 @@ if (apiBase) {
   axios.defaults.baseURL = apiBase;
 }
 
+// (instrumentation removed)

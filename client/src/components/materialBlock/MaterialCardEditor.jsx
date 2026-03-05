@@ -87,9 +87,12 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
   const photoInputRef = useRef(null);
   const docInputRef = useRef(null);
   const titleInputRef = useRef(null);
-  const mobileLayout = Boolean(isMobile);
+  // Treat touch devices as mobile layout too (prevents switching to desktop on orientation change)
+  const isTouchDevice = typeof navigator !== 'undefined' && typeof window !== 'undefined' && (navigator.maxTouchPoints > 0 || 'ontouchstart' in window);
+  const mobileLayout = Boolean(isMobile) || Boolean(isTouchDevice);
   const [keyboardBottomOffset, setKeyboardBottomOffset] = useState(0);
   const [toolbarViewportStyle, setToolbarViewportStyle] = useState(null);
+  const [mobileContentStyle, setMobileContentStyle] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [uploadError, setUploadError] = useState(null);
   const [uploadRetryPayload, setUploadRetryPayload] = useState(null);
@@ -153,13 +156,42 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
     const update = () => {
       const nextOffset = Math.max(0, window.innerHeight - vv.height);
       setKeyboardBottomOffset(nextOffset);
-      /* Position toolbar above the visual viewport, taking safe-area inset into account.
-         Use bottom so it won't overlap the iPhone home indicator. */
+      // Determine base bottom for toolbar. When keyboard is open use keyboard offset so toolbar sits above it.
+      // When keyboard is closed, nudge toolbar slightly above the bottom (so it's above iPhone interface) and hide content below it.
+      const safeAreaExpr = 'env(safe-area-inset-bottom, 0px)';
+      const isKeyboardOpen = nextOffset > KEYBOARD_OPEN_THRESHOLD;
+      const bottomValue = isKeyboardOpen
+        ? `calc(${nextOffset}px + ${safeAreaExpr})`
+        : `calc(${nextOffset}px + ${safeAreaExpr} + 8px)`;
+
       setToolbarViewportStyle({
         left: vv.offsetLeft,
         width: vv.width,
-        bottom: `calc(${nextOffset}px + env(safe-area-inset-bottom, 0px))`,
+        bottom: bottomValue,
       });
+
+      // When keyboard is closed, clamp the editor content so nothing appears below the toolbar.
+      try {
+        const headerEl = document.querySelector(`.${styles.editorHeader}`);
+        const headerHeight = headerEl?.getBoundingClientRect?.().height || 56;
+        const available = Math.max(0, vv.height - headerHeight - MOBILE_TOOLBAR_HEIGHT - 8);
+        if (!isKeyboardOpen) {
+          setMobileContentStyle({
+            paddingBottom: `max(50vh, calc(${MOBILE_TOOLBAR_HEIGHT}px + ${nextOffset}px + ${safeAreaExpr} + 24px))`,
+            maxHeight: `${available}px`,
+            overflow: 'hidden',
+          });
+        } else {
+          setMobileContentStyle({
+            paddingBottom: `max(50vh, calc(${MOBILE_TOOLBAR_HEIGHT}px + ${nextOffset}px + ${safeAreaExpr} + 24px))`,
+            maxHeight: undefined,
+            overflow: undefined,
+          });
+        }
+      } catch (_) {
+        // ignore measurement errors
+      }
+
       if (prevOffset < KEYBOARD_OPEN_THRESHOLD && nextOffset > KEYBOARD_OPEN_THRESHOLD && contentRef.current?.contains(document.activeElement)) {
         scheduleScrollAfterKeyboard();
       }
@@ -194,6 +226,8 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       if (raf) cancelAnimationFrame(raf);
     };
   }, [mobileLayout, scrollToKeepCursorVisible]);
+
+  
 
   // После вставки строки (Enter) прокручиваем так, чтобы курсор оставался над панелью и клавиатурой
   const scrollAfterInsertRef = useRef(null);
@@ -248,6 +282,28 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
       if (url) targets.push({ id: node.getAttribute('data-attachment-id') || `doc-${i}-${url}`, node, url, title });
     });
     setDocCardTargets(targets);
+    // Ensure media that is already present in the saved content starts loading immediately.
+    // Images were previously inserted with `loading="lazy"` which can defer network requests
+    // and cause long delays when opening the editor. Force eager loading for images
+    // that are embedded in the card content so they appear instantly.
+    try {
+      const imgs = Array.from(contentRef.current.querySelectorAll('img'));
+      imgs.forEach((img) => {
+        if (!img) return;
+        // Resolve relative URLs through API base if necessary.
+        try {
+          const src = img.getAttribute('src') || '';
+          const resolved = resolveFileUrl(src);
+          if (resolved && resolved !== src) img.setAttribute('src', resolved);
+        } catch (_) {}
+        // Force eager loading for existing inline images.
+        try {
+          img.loading = 'eager';
+        } catch (_) {}
+        // Mark as processed to avoid toggling on subsequent renders.
+        img.setAttribute('data-eager-loaded', '1');
+      });
+    } catch (_) {}
     // eslint-disable-next-line react-hooks/exhaustive-deps -- set content only on card open to avoid overwriting edits
   }, [card?.id, migrateOldDocCards, mobileLayout]);
 
@@ -1052,7 +1108,7 @@ export default function MaterialCardEditor({ card, blockTitle, onClose, onBack, 
                 className={`${styles.contentEditable} ${styles.mobileContent}`}
                 contentEditable
                 suppressContentEditableWarning
-                style={{ paddingBottom: `max(50vh, calc(44px + ${keyboardBottomOffset}px + env(safe-area-inset-bottom, 0px) + 24px))` }}
+                style={mobileContentStyle ? { ...mobileContentStyle } : { paddingBottom: `max(50vh, calc(44px + ${keyboardBottomOffset}px + env(safe-area-inset-bottom, 0px) + 24px))` }}
                 onInput={handleContentInput}
                 onKeyDown={handleContentKeyDown}
                 onPointerDown={handleContentPointerDown}

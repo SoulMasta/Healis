@@ -30,11 +30,40 @@ function isProductionOrigin() {
 
 export function getApiBaseUrl() {
   const fromEnv = normalizeUrl(process.env.REACT_APP_API_URL);
+  // (instrumentation removed)
   if (fromEnv && isRenderUrl(fromEnv)) return DEFAULT_PROD_API_URL;
   // On Vercel, use same-origin so API is proxied -> cookie is first-party (no third-party block)
   if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) return '';
+
+  // If an explicit env var is provided, normally respect it. However, in local CRA dev
+  // we prefer the locally-running backend port (5027) because common localhost ports
+  // (5000/5001 and the reserved Windows range) may be blocked. Only override when:
+  // - running in the browser (window defined) AND frontend is on :3000 AND
+  // - the env URL points at localhost/127.0.0.1/0.0.0.0 with a problematic port.
+  if (fromEnv && typeof window !== 'undefined' && window.location.port === '3000') {
+    try {
+      const parsed = new URL(fromEnv);
+      const host = parsed.hostname;
+      const portStr = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+      const portNum = Number(portStr);
+      const isLocalHostTarget = ['localhost', '127.0.0.1', '0.0.0.0'].includes(host);
+      const inReservedRange = Number.isFinite(portNum) && portNum >= 4927 && portNum <= 5026;
+      if (isLocalHostTarget && (portNum === 5000 || portNum === 5001 || inReservedRange)) {
+        // (instrumentation removed)
+        return `${window.location.protocol}//${window.location.hostname}:5027`;
+      }
+    } catch {
+      // ignore parse errors and fall back to using fromEnv
+    }
+    return fixLocalhostUrl(fromEnv);
+  }
+
   if (fromEnv) return fixLocalhostUrl(fromEnv);
   if (isProductionOrigin()) return DEFAULT_PROD_API_URL;
+  // Dev convenience: when CRA runs on :3000, point API to backend dev port 5027.
+  if (typeof window !== 'undefined' && window.location.port === '3000') {
+    return `${window.location.protocol}//${window.location.hostname}:5027`;
+  }
   return '';
 }
 
@@ -46,10 +75,10 @@ export function getSocketBaseUrl() {
   const api = getApiBaseUrl();
   if (api) return fixLocalhostUrl(api);
 
-  // Dev convenience: CRA on :3000, backend on :5000.
+  // Dev convenience: CRA on :3000, backend on :5027.
   if (typeof window !== 'undefined') {
     if (window.location.port === '3000') {
-      return `${window.location.protocol}//${window.location.hostname}:5000`;
+      return `${window.location.protocol}//${window.location.hostname}:5027`;
     }
     return window.location.origin;
   }

@@ -42,9 +42,32 @@ const aiRoutes = require('./routes/aiRouter');
 const { startCalendarNotificationWorker } = require('./services/calendarNotificationWorker');
 const { startCleanup: startRateLimitCleanup } = require('./middleware/rateLimit');
 
-// Production: use only process.env.PORT (Railway sets it). Local: fallback 5000. Never assign to process.env.PORT.
-const isProduction = process.env.NODE_ENV === 'production';
-const port = isProduction ? Number(process.env.PORT) : (Number(process.env.PORT) || 5000);
+// Production: use only process.env.PORT (Railway sets it). Local: fallback 5001. Never assign to process.env.PORT.
+// Consider the process to be production only when NODE_ENV=production AND we're running on Railway.
+// This avoids treating local runs with NODE_ENV=production as production (which caused binding to reserved ports).
+const isProduction = process.env.NODE_ENV === 'production' && Boolean(process.env.RAILWAY_ENVIRONMENT);
+const envPortNum = Number(process.env.PORT);
+let port;
+if (isProduction) {
+  port = envPortNum;
+} else {
+  // Dev safeguard: on Windows, port 5000 is commonly reserved/blocked causing EACCES.
+  // If the environment accidentally sets PORT=5000 on Windows local runs, override to 5001.
+  if (process.platform === 'win32') {
+    // Windows commonly reserves ranges; if the requested port is inside a known reserved
+    // range (4927-5026), pick a safe port above that range (5027).
+    if (Number.isFinite(envPortNum) && envPortNum >= 4927 && envPortNum <= 5026) {
+      // Reserved range detected; pick a safe port above the reserved range.
+      port = 5027;
+    } else if (envPortNum && envPortNum > 0) {
+      port = envPortNum;
+    } else {
+      port = 5027;
+    }
+  } else {
+    port = envPortNum || 5001;
+  }
+}
 if (isProduction && (!port || port <= 0)) {
   console.error('PORT is required in production (Railway sets it).');
   process.exit(1);
@@ -237,6 +260,13 @@ async function start() {
   initRealtime(server);
   startCalendarNotificationWorker({ intervalMs: 60_000 });
   startRateLimitCleanup(5 * 60_000);
+  // (instrumentation removed)
+
+  server.on('error', (err) => {
+    // Log listen errors and re-throw to preserve existing behavior.
+    console.error('[LISTEN ERROR]', err && err.message);
+    throw err;
+  });
 
   server.listen(port, '0.0.0.0', () => {
     process.stderr.write('[LISTEN] Server listening on http://0.0.0.0:' + port + '\n');
