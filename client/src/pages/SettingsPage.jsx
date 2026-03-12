@@ -331,29 +331,38 @@ export default function SettingsPage() {
             <label className={styles.label} htmlFor="course">
               Курс
             </label>
-            <input
+            <select
               className={styles.input}
               id="course"
-              inputMode="numeric"
               value={form.course}
               onChange={(e) => setForm((s) => ({ ...s, course: e.target.value }))}
-              placeholder="1"
-              autoComplete="off"
-            />
+            >
+              <option value="">Выберите курс</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+            </select>
           </div>
 
           <div className={styles.fieldRow}>
             <label className={styles.label} htmlFor="faculty">
               Факультет
             </label>
-            <input
+            <select
               className={styles.input}
               id="faculty"
               value={form.faculty}
               onChange={(e) => setForm((s) => ({ ...s, faculty: e.target.value }))}
-              placeholder="Ваш факультет"
-              autoComplete="off"
-            />
+            >
+              <option value="">Выберите факультет</option>
+              <option value="Лечебное дело">Лечебное дело</option>
+              <option value="Педиатрия">Педиатрия</option>
+              <option value="Стоматология">Стоматология</option>
+              <option value="МПФ">МПФ</option>
+            </select>
           </div>
 
           <div className={styles.fieldRow}>

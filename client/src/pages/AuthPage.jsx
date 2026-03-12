@@ -271,30 +271,38 @@ export default function AuthPage() {
                       <label className={styles.formLabel} htmlFor="faculty">
                         Факультет
                       </label>
-                      <input
+                      <select
                         id="faculty"
-                        type="text"
                         className={styles.formInput}
-                        placeholder="напр. Информатика"
                         value={faculty}
                         onChange={(e) => setFaculty(e.target.value)}
-                      />
+                      >
+                        <option value="">Выберите факультет</option>
+                        <option value="Лечебное дело">Лечебное дело</option>
+                        <option value="Педиатрия">Педиатрия</option>
+                        <option value="Стоматология">Стоматология</option>
+                        <option value="МПФ">МПФ</option>
+                      </select>
                     </div>
 
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel} htmlFor="course">
                         Курс
                       </label>
-                      <input
+                      <select
                         id="course"
-                        type="number"
                         className={styles.formInput}
-                        placeholder="1..10"
                         value={course}
                         onChange={(e) => setCourse(e.target.value)}
-                        min={1}
-                        max={10}
-                      />
+                      >
+                        <option value="">Выберите курс</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                      </select>
                     </div>
                   </div>
                 </>

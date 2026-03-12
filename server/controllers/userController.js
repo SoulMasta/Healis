@@ -65,9 +65,12 @@ function normalizeCourse(value) {
   const raw = value;
   const course = raw === '' || raw === null || raw === undefined ? null : Number(raw);
   if (course === null) return null;
-  if (!Number.isFinite(course) || course % 1 !== 0 || course < 1 || course > 10) return 'INVALID';
+  if (!Number.isFinite(course) || course % 1 !== 0 || course < 1 || course > 6) return 'INVALID';
   return course;
 }
+
+// Allowed faculties (strict selection)
+const ALLOWED_FACULTIES = ['Лечебное дело', 'Педиатрия', 'Стоматология', 'МПФ'];
 
 function cookieOptions() {
   const isProd = process.env.NODE_ENV === 'production';
@@ -181,8 +184,14 @@ class UserController {
       }
 
       if (req.body?.faculty !== undefined) {
-        const faculty = String(req.body.faculty || '').trim();
-        next.faculty = faculty ? faculty.slice(0, 120) : null;
+        const facultyRaw = String(req.body.faculty || '').trim();
+        if (!facultyRaw) {
+          next.faculty = null;
+        } else if (!ALLOWED_FACULTIES.includes(facultyRaw)) {
+          return res.status(400).json({ error: 'Invalid faculty selected' });
+        } else {
+          next.faculty = facultyRaw.slice(0, 120);
+        }
       }
 
       if (req.body?.course !== undefined) {
@@ -190,8 +199,8 @@ class UserController {
         const course = raw === '' || raw === null ? null : Number(raw);
         if (course === null) {
           next.course = null;
-        } else if (!Number.isFinite(course) || course % 1 !== 0 || course < 1 || course > 10) {
-          return res.status(400).json({ error: 'Course must be an integer from 1 to 10' });
+        } else if (!Number.isFinite(course) || course % 1 !== 0 || course < 1 || course > 6) {
+          return res.status(400).json({ error: 'Course must be an integer from 1 to 6' });
         } else {
           next.course = course;
         }
@@ -253,7 +262,10 @@ class UserController {
         return res.status(400).json({ error: 'Password must be at least 8 characters' });
       }
       if (course === 'INVALID') {
-        return res.status(400).json({ error: 'Course must be an integer from 1 to 10' });
+        return res.status(400).json({ error: 'Course must be an integer from 1 to 6' });
+      }
+      if (faculty !== null && !ALLOWED_FACULTIES.includes(faculty)) {
+        return res.status(400).json({ error: 'Invalid faculty selected' });
       }
 
       const candidate = await User.findOne({ where: { email } });

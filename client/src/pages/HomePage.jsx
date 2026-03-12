@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   Search,
+  BookOpen,
   Settings2,
   Star,
   Trash2,
@@ -417,7 +418,26 @@ export default function HomePage() {
     return searchedList;
   }, [chip, myUserId, searchedList]);
 
-  const title = activeTab === 'recent' ? 'Последние доски' : activeTab === 'favorites' ? 'Избранные доски' : 'Доски в этой группе';
+  const libraryList = useMemo(() => {
+    const course = user?.course || user?.courseId || null;
+    const faculty = user?.faculty || user?.facultyId || null;
+    return allBoards.filter((b) => {
+      if (b?.isLibrary) return true;
+      if (course && faculty && b?.course && b?.faculty) {
+        return String(b.course) === String(course) && String(b.faculty) === String(faculty);
+      }
+      return false;
+    });
+  }, [allBoards, user]);
+
+  const title =
+    activeTab === 'recent'
+      ? 'Последние доски'
+      : activeTab === 'favorites'
+      ? 'Избранные доски'
+      : activeTab === 'library'
+      ? 'Библиотека'
+      : 'Доски в этой группе';
 
   const openBoard = (b) => navigate(`/workspace/${b.id}`);
 
@@ -832,6 +852,9 @@ export default function HomePage() {
             >
               Календарь
             </NavItem>
+            <NavItem active={activeTab === 'library'} icon={BookOpen} onClick={() => setActiveTab('library')}>
+              Библиотека
+            </NavItem>
           </nav>
 
           <div className={styles.sideSection}>
@@ -881,35 +904,11 @@ export default function HomePage() {
             </div>
 
             <button type="button" className={styles.linkRow} onClick={() => setActiveTab('group')}>
-              Доски в этой группе
+              Библиотека
             </button>
           </div>
 
-          <div className={styles.sideSection}>
-            <div className={styles.sideHeader}>
-              <div className={styles.sideTitle}>Проекты</div>
-              <button
-                type="button"
-                className={styles.iconBtn}
-                aria-label="Создать проект"
-                title="Создать проект"
-                onClick={() => setShowCreateProject(true)}
-              >
-                <Plus size={18} />
-              </button>
-            </div>
-            {projects.length ? (
-              <div className={styles.projectList}>
-                {projects.map((p) => (
-                  <div key={p.projectId} className={styles.projectItem}>
-                    {p.name}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className={styles.emptyHint}>Создайте первый проект</div>
-            )}
-          </div>
+          
         </aside>
 
         <main className={styles.content}>
@@ -926,27 +925,48 @@ export default function HomePage() {
 
           <div className={styles.filtersRow}>
             <div className={styles.chips}>
-              <button
-                type="button"
-                className={`${styles.chip} ${chip === 'all' ? styles.chipActive : ''}`}
-                onClick={() => setChip('all')}
-              >
-                Все
-              </button>
-              <button
-                type="button"
-                className={`${styles.chip} ${chip === 'mine' ? styles.chipActive : ''}`}
-                onClick={() => setChip('mine')}
-              >
-                Мои
-              </button>
-              <button
-                type="button"
-                className={`${styles.chip} ${chip === 'other' ? styles.chipActive : ''}`}
-                onClick={() => setChip('other')}
-              >
-                Другие
-              </button>
+              {activeTab === 'library' ? (
+                <>
+                  <button
+                    type="button"
+                    className={`${styles.chip} ${chip === 'popular' ? styles.chipActive : ''}`}
+                    onClick={() => setChip('popular')}
+                  >
+                    Популярные
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.chip} ${chip === 'new' ? styles.chipActive : ''}`}
+                    onClick={() => setChip('new')}
+                  >
+                    Новые
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={`${styles.chip} ${chip === 'all' ? styles.chipActive : ''}`}
+                    onClick={() => setChip('all')}
+                  >
+                    Все
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.chip} ${chip === 'mine' ? styles.chipActive : ''}`}
+                    onClick={() => setChip('mine')}
+                  >
+                    Мои
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.chip} ${chip === 'other' ? styles.chipActive : ''}`}
+                    onClick={() => setChip('other')}
+                  >
+                    Другие
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -965,6 +985,37 @@ export default function HomePage() {
               <Loader2 size={22} className={styles.spinner} />
               <span>Загрузка...</span>
             </div>
+          ) : activeTab === 'library' ? (
+            !libraryList.length ? (
+              <div className={styles.empty}>
+                <div className={styles.emptyTitle}>Материалы библиотеки не найдены</div>
+                <div className={styles.emptySub}>Материалы будут отображаться по вашему факультету и курсу.</div>
+              </div>
+            ) : (
+              <div className={styles.boardGrid}>
+                {libraryList.map((b) => {
+                  const owner =
+                    myUserId && Number(b.userId) === Number(myUserId)
+                      ? myName
+                      : b.group?.name
+                        ? `Участник группы`
+                        : `Пользователь #${b.userId}`;
+                  return (
+                    <BoardCard
+                      key={`${b.groupId || 'p'}-${b.id}`}
+                      board={b}
+                      ownerLabel={owner}
+                      changedLabel={formatChangedLabel(b.updatedAt)}
+                      openedLabel={formatOpenedLabel(b.lastOpenedAt || recentOpenedAtById.get(Number(b.id)))}
+                      isFavorite={favoritesSet.has(Number(b.id))}
+                      onToggleFavorite={() => toggleFav(b)}
+                      onOpen={() => openBoard(b)}
+                      onOpenMenu={(e) => openMenuFor(b, e)}
+                    />
+                  );
+                })}
+              </div>
+            )
           ) : activeTab === 'group' && !groups.length ? (
             <div className={styles.empty}>
               <div className={styles.emptyTitle}>У вас пока нет групп</div>

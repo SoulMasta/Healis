@@ -2,3 +2,4 @@ CHECKLIST.md
 server/uploads/
 .env
 node_modules
+.cursor

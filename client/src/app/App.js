@@ -72,6 +72,7 @@ export default function App() {
         <Route path="/workspace" element={<Navigate to="/home" replace />} />
         <Route path="/workspace/:id" element={<WorkspacePage />} />
         <Route path="/calendar" element={isMobile ? <MobileCalendarPage /> : <CalendarPage />} />
+        {/* Library is integrated into HomePage for desktop; keep mobile linking to home */}
         <Route path="/notifications" element={isMobile ? <MobileNotificationsPage /> : <Navigate to="/home" replace />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/home" replace />} />
