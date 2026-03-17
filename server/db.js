@@ -8,29 +8,45 @@ const pool = {
   acquire: 30_000,
 };
 
-// Production (e.g. Docker/hosted): DATABASE_URL. Development: локальные DB_*.
-// Consider production when NODE_ENV=production. This allows using DATABASE_URL
-// in containerized deployments where RAILWAY_ENVIRONMENT is not set.
-const isProduction = process.env.NODE_ENV === 'production';
+// Strategy:
+// - If explicit DB_HOST is provided, prefer DB_* variables (works for local and
+//   docker setups where DB_HOST is set to the correct hostname).
+// - Otherwise, if DATABASE_URL is present, use it (common for managed DB URLs).
+// This avoids accidentally using a DATABASE_URL that points to an unresolved
+// service name like "postgres" when the network doesn't provide that DNS entry.
 const databaseUrl = process.env.DATABASE_URL;
+const hasDbHost = Boolean(process.env.DB_HOST);
 
-const useProductionDb = isProduction && databaseUrl;
+if (hasDbHost && databaseUrl) {
+  // Helpful log for operators/debugging.
+  console.error('[DB] DB_HOST provided — preferring DB_* variables over DATABASE_URL');
+}
 
-module.exports = useProductionDb
-  ? new Sequelize(databaseUrl, {
-      dialect: 'postgres',
-      logging,
-      pool,
-      dialectOptions: {
-        ssl: {
-          rejectUnauthorized: false,
-        },
+const useDatabaseUrl = !!databaseUrl && !hasDbHost;
+
+if (useDatabaseUrl) {
+  module.exports = new Sequelize(databaseUrl, {
+    dialect: 'postgres',
+    logging,
+    pool,
+    dialectOptions: {
+      ssl: {
+        rejectUnauthorized: false,
       },
-    })
-  : new Sequelize(process.env.DB_NAME, process.env.DB_USER, process.env.DB_PASSWORD, {
-      dialect: 'postgres',
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      logging,
-      pool,
-    });
+    },
+  });
+} else {
+  const dbName = process.env.DB_NAME || 'postgres';
+  const dbUser = process.env.DB_USER || 'postgres';
+  const dbPassword = process.env.DB_PASSWORD || '';
+  const dbHost = process.env.DB_HOST || 'localhost';
+  const dbPort = Number(process.env.DB_PORT || 5432);
+
+  module.exports = new Sequelize(dbName, dbUser, dbPassword, {
+    dialect: 'postgres',
+    host: dbHost,
+    port: dbPort,
+    logging,
+    pool,
+  });
+}

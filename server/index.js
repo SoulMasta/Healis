@@ -44,24 +44,9 @@ const storageRoutes = require('./routes/storageRouter');
 const { startCalendarNotificationWorker } = require('./services/calendarNotificationWorker');
 const { startCleanup: startRateLimitCleanup } = require('./middleware/rateLimit');
 
-// Production: use only process.env.PORT (set by environment). Local: force port 3000.
-// Consider the process to be production when NODE_ENV=production. This covers
-// containerized deployments where RAILWAY_ENVIRONMENT isn't present.
-const isProduction = process.env.NODE_ENV === 'production';
-const envPortNum = Number(process.env.PORT);
-let port;
-if (isProduction) {
-  port = envPortNum;
-} else {
-  // Hard dev port: force backend to listen on 3000 for local development.
-  // This overrides any local PORT settings to ensure a consistent dev port.
-  port = 3000;
-  process.stderr.write('[BOOT] forcing dev port 3000\n');
-}
-if (isProduction && (!port || port <= 0)) {
-  console.error('PORT is required in production (Railway sets it).');
-  process.exit(1);
-}
+// Always run backend on port 5000 for consistency across local and container runs.
+const port = 5000;
+process.stderr.write('[BOOT] server port forced to 5000\n');
 const app = express();
 
 function makeInviteCode(len = 10) {
