@@ -90,18 +90,12 @@ export async function login(email, password) {
 
 // Get a new access token using httpOnly refresh cookie (server rotates refresh token).
 export async function refreshAuth() {
-  // #region agent log
-  const runId = 'refresh';
-  fetch('http://127.0.0.1:7242/ingest/45c433a3-fa5c-4697-b19e-a367061682dc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'userAPI.js:refreshAuth',message:'refreshAuth called',data:{runId},hypothesisId:'H1,H5',timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
+  // instrumentation removed
   let res;
   try {
     res = await axios.post(`${API_BASE}/refresh`, null, authHeaders());
   } catch (e) {
-    // #region agent log
-    const status = e?.response?.status;
-    fetch('http://127.0.0.1:7242/ingest/45c433a3-fa5c-4697-b19e-a367061682dc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'userAPI.js:refreshAuth',message:'refreshAuth failed',data:{runId,status,status401:status===401},hypothesisId:status===401?'H1,H2,H3':undefined,timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
+    // instrumentation removed
     throw e;
   }
   const newToken = res.data?.token;

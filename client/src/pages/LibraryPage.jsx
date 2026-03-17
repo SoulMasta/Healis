@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Loader2, Plus } from 'lucide-react';
 import { getAllWorkspaces, createWorkspace } from '../http/workspaceAPI';
 import { getToken } from '../http/userAPI';
+import { getSubjects } from '../http/libraryAPI';
 import styles from '../styles/HomePage.module.css';
 
 function safeParseJwt(token) {
@@ -12,8 +13,21 @@ function safeParseJwt(token) {
     const base64Url = parts[1];
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
-    const json = atob(padded);
-    return JSON.parse(json);
+    const binary = atob(padded);
+    try {
+      if (typeof TextDecoder !== 'undefined') {
+        const bytes = Uint8Array.from(binary.split('').map((c) => c.charCodeAt(0)));
+        const json = new TextDecoder('utf-8').decode(bytes);
+        return JSON.parse(json);
+      }
+    } catch (_) {}
+    const jsonFallback = decodeURIComponent(
+      binary
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonFallback);
   } catch {
     return null;
   }
@@ -26,7 +40,9 @@ export default function LibraryPage() {
 
   const [loading, setLoading] = useState(false);
   const [boards, setBoards] = useState([]);
+  const [subjects, setSubjects] = useState([]);
   const [creating, setCreating] = useState(false);
+  const [selectedSubject, setSelectedSubject] = useState(null);
 
   useEffect(() => {
     let mounted = true;
@@ -48,6 +64,26 @@ export default function LibraryPage() {
       mounted = false;
     };
   }, []);
+
+  // Load subjects from server when user available
+  useEffect(() => {
+    let mounted = true;
+    const loadSubjects = async () => {
+      if (!user) return;
+      try {
+        const subs = await getSubjects(user.faculty || user.facultyId, user.course || user.courseId);
+        if (!mounted) return;
+        setSubjects(Array.isArray(subs) ? subs : []);
+      } catch (e) {
+        if (!mounted) return;
+        setSubjects([]);
+      }
+    };
+    loadSubjects();
+    return () => {
+      mounted = false;
+    };
+  }, [user]);
 
   const filtered = useMemo(() => {
     // Prefer explicit library flag; fallback to course/faculty matching if available.
@@ -109,37 +145,84 @@ export default function LibraryPage() {
               <Loader2 size={22} className={styles.spinner} />
               <span>Загрузка...</span>
             </div>
-          ) : !filtered.length ? (
+          ) : selectedSubject ? (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <button type="button" className={styles.btnSecondary} onClick={() => setSelectedSubject(null)}>
+                  ← Назад
+                </button>
+                <h3 style={{ margin: 0 }}>{selectedSubject.name}</h3>
+              </div>
+
+              <div style={{ marginBottom: 12, color: '#444' }}>Категории</div>
+              <div className={styles.boardGrid}>
+                {['Notes', 'Exams', 'Flashcards', 'Tables', 'Practice'].map((cat) => {
+                  const subjectBoards = filtered.filter((b) =>
+                    String(b.name || '').toLowerCase().includes((selectedSubject.name || '').toLowerCase())
+                  );
+                  return (
+                    <div key={cat} className={styles.boardCard}>
+                      <div className={styles.cardTop}>
+                        <div className={styles.boardTitle}>{cat}</div>
+                        <div style={{ marginLeft: 'auto', fontSize: 12, color: '#666' }}>
+                          {subjectBoards.length} досок
+                        </div>
+                      </div>
+                      <div style={{ padding: 8 }}>
+                        {subjectBoards.length ? (
+                          subjectBoards.slice(0, 10).map((b) => (
+                            <div key={b.id} style={{ padding: 8, borderBottom: '1px solid #eee' }}>
+                              <div style={{ fontWeight: 600 }}>{b.name}</div>
+                              <div style={{ fontSize: 12, color: '#666' }}>
+                                {b.ownerName || b.userId || '—'} · {b.updatedAt ? new Date(b.updatedAt).toLocaleDateString() : '—'}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div style={{ color: '#777' }}>No materials exist for this subject yet. Create the first board.</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : !subjects.length ? (
             <div className={styles.empty}>
               <div className={styles.emptyTitle}>Материалы библиотеки не найдены</div>
               <div className={styles.emptySub}>Материалы будут отображаться по вашему факультету и курсу.</div>
             </div>
           ) : (
-            <div className={styles.boardGrid}>
-              {filtered.map((b) => (
-                <div
-                  key={b.id}
-                  className={styles.boardCard}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => openBoard(b)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      openBoard(b);
-                    }
-                  }}
-                >
-                  <div className={styles.cardTop}>
-                    <div className={styles.boardTitle}>{b?.name || 'Без названия'}</div>
-                  </div>
-                  <div className={styles.previewArea} aria-hidden="true" />
-                  <div className={styles.metaList}>
-                    <div className={styles.boardMeta}>Владелец: {b?.ownerName || b?.userId || '—'}</div>
-                    <div className={styles.boardMeta}>Изменена: {b?.updatedAt ? new Date(b.updatedAt).toLocaleString() : '—'}</div>
-                  </div>
-                </div>
-              ))}
+            <div>
+              <div style={{ marginBottom: 12, color: '#444' }}>Предметы</div>
+              <div className={styles.boardGrid}>
+                {subjects.map((s) => {
+                  const count = filtered.filter((b) => String(b.name || '').toLowerCase().includes((s.name || '').toLowerCase())).length;
+                  return (
+                    <div
+                      key={s.id}
+                      className={styles.boardCard}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedSubject(s)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedSubject(s);
+                        }
+                      }}
+                    >
+                      <div className={styles.cardTop}>
+                        <div className={styles.boardTitle}>{s.name}</div>
+                      </div>
+                      <div className={styles.previewArea} aria-hidden="true" />
+                      <div className={styles.metaList}>
+                        <div className={styles.boardMeta}>Досок: {count}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </main>

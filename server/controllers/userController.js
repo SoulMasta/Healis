@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { User, RefreshToken } = require('../models/models');
 const { randomToken, hashToken } = require('../utils/authTokens');
 const { logUserEvent } = require('../services/userEventLogger');
+// debug instrumentation removed
 
 const JWT_SECRET = process.env.JWT_SECRET || process.env.SECRET_KEY;
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
@@ -100,8 +101,17 @@ function serializeProfile(user) {
 }
 
 function generateAccessToken(user) {
+  // Include non-sensitive profile claims used by the client (course, faculty).
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role, username: user.username || null, avatarUrl: user.avatarUrl || null },
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      username: user.username || null,
+      avatarUrl: user.avatarUrl || null,
+      course: typeof user.course === 'number' ? user.course : user.course || null,
+      faculty: user.faculty || null,
+    },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_TTL }
   );
@@ -143,6 +153,7 @@ class UserController {
 
       const user = await User.findByPk(userId);
       if (!user) return res.status(404).json({ error: 'User not found' });
+      // instrumentation removed
 
       return res.json({ profile: serializeProfile(user) });
     } catch (error) {
@@ -207,6 +218,7 @@ class UserController {
       }
 
       await user.update(next);
+      // instrumentation removed
 
       const token = generateAccessToken(user);
       return res.json({ profile: serializeProfile(user), token });
@@ -225,6 +237,21 @@ class UserController {
 
       const user = await User.findByPk(userId);
       if (!user) return res.status(404).json({ error: 'User not found' });
+      // Accept multipart upload (field 'file') or legacy avatarUrl in body
+      const storageService = require('../services/storageService');
+      const { randomUUID } = require('crypto');
+
+      if (req.file) {
+        const file = req.file;
+        const extMatch = (file.originalname || '').match(/(\.[^.]+)$/);
+        const ext = extMatch ? extMatch[1] : '';
+        const key = `users/${userId}/avatars/${randomUUID()}${ext}`;
+        await storageService.uploadFile(file.buffer, key, file.mimetype);
+        const publicUrl = await storageService.getFileUrl(key);
+        await user.update({ avatarUrl: publicUrl });
+        const token = generateAccessToken(user);
+        return res.status(201).json({ profile: serializeProfile(user), token });
+      }
 
       const { avatarUrl } = req.body || {};
       if (!avatarUrl) return res.status(400).json({ error: 'No avatar URL provided' });
@@ -291,6 +318,8 @@ class UserController {
         authProvider: 'local',
       });
 
+      // instrumentation removed
+
       const token = generateAccessToken(user);
       const refresh = await issueRefreshToken({ userId: user.id, req });
       res.cookie('refreshToken', refresh.raw, cookieOptions());
@@ -324,6 +353,8 @@ class UserController {
       const token = generateAccessToken(user);
       const refresh = await issueRefreshToken({ userId: user.id, req });
       res.cookie('refreshToken', refresh.raw, cookieOptions());
+
+      // instrumentation removed
 
       // Pilot analytics: best-effort login tracking (never blocks auth).
       logUserEvent({

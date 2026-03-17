@@ -29,16 +29,16 @@ registerRoute(
 );
 
 // -------------------------------------------------------------------
-// Supabase Storage (CDN): Cache aggressively
+// Object storage CDN (Yandex): Cache aggressively
 // Files are immutable (unique filenames with timestamps)
 // -------------------------------------------------------------------
 registerRoute(
   ({ url }) => {
-    // Match Supabase storage URLs (*.supabase.co/storage/*)
-    return url.hostname.endsWith('.supabase.co') && url.pathname.includes('/storage/');
+    // Match Yandex storage URLs (storage.yandexcloud.net/{bucket}/{key})
+    return url.hostname === 'storage.yandexcloud.net' && url.pathname.length > 1;
   },
   new CacheFirst({
-    cacheName: 'supabase-storage',
+    cacheName: 'object-storage',
     plugins: [
       new ExpirationPlugin({
         maxEntries: 200,
@@ -78,8 +78,8 @@ registerRoute(
 // -------------------------------------------------------------------
 registerRoute(
   ({ request, url }) => {
-    // Skip Supabase images (handled above with CacheFirst)
-    if (url.hostname.endsWith('.supabase.co')) return false;
+    // Skip object-storage images (handled above with CacheFirst)
+    if (url.hostname === 'storage.yandexcloud.net') return false;
     return request.destination === 'image';
   },
   new StaleWhileRevalidate({

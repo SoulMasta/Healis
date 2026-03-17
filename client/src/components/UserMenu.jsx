@@ -12,8 +12,21 @@ function safeParseJwt(token) {
     const base64Url = parts[1];
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
-    const json = atob(padded);
-    return JSON.parse(json);
+    const binary = atob(padded);
+    try {
+      if (typeof TextDecoder !== 'undefined') {
+        const bytes = Uint8Array.from(binary.split('').map((c) => c.charCodeAt(0)));
+        const json = new TextDecoder('utf-8').decode(bytes);
+        return JSON.parse(json);
+      }
+    } catch (_) {}
+    const jsonFallback = decodeURIComponent(
+      binary
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonFallback);
   } catch {
     return null;
   }

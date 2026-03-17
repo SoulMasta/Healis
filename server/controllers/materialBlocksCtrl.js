@@ -460,6 +460,41 @@ class MaterialBlocksController {
 
       const card = await MaterialCard.findByPk(cardId);
       if (!card) return res.status(404).json({ error: 'Card not found' });
+      // Accept multipart file upload (field 'file') or legacy URL in body
+      const storageService = require('../services/storageService');
+      const { randomUUID } = require('crypto');
+
+      if (req.file) {
+        const file = req.file;
+        const extMatch = (file.originalname || '').match(/(\.[^.]+)$/);
+        const ext = extMatch ? extMatch[1] : '';
+        const key = `documents/${userId}/${randomUUID()}${ext}`;
+        await storageService.uploadFile(file.buffer, key, file.mimetype);
+        const publicUrl = await storageService.getFileUrl(key);
+
+        const mf = await MaterialFile.create({
+          cardId: card.id,
+          fileUrl: publicUrl,
+          fileType: file.mimetype || null,
+          size: file.size || null,
+        });
+
+        // Pilot analytics: file uploaded to a material card
+        logUserEvent({
+          userId,
+          eventType: 'upload_file',
+          entityType: 'material_file',
+          entityId: mf.id,
+          metadata: { cardId: card.id, fileType: mf.fileType || null, size: mf.size || null, key },
+        });
+
+        return res.status(201).json({
+          id: mf.id,
+          file_url: mf.fileUrl,
+          file_type: mf.fileType,
+          size: mf.size,
+        });
+      }
 
       const { url, fileType, size } = req.body || {};
       if (!url) return res.status(400).json({ error: 'No URL provided' });

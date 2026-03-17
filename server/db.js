@@ -8,7 +8,9 @@ const pool = {
   acquire: 30_000,
 };
 
-// Production (e.g. Railway): DATABASE_URL. Development: локальные DB_*.
+// Production (e.g. Docker/hosted): DATABASE_URL. Development: локальные DB_*.
+// Consider production when NODE_ENV=production. This allows using DATABASE_URL
+// in containerized deployments where RAILWAY_ENVIRONMENT is not set.
 const isProduction = process.env.NODE_ENV === 'production';
 const databaseUrl = process.env.DATABASE_URL;
 

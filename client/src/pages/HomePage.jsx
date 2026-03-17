@@ -49,6 +49,7 @@ import {
   joinGroupByCode,
 } from '../http/groupAPI';
 import { getToken } from '../http/userAPI';
+import { getSubjects } from '../http/libraryAPI';
 import UserMenu from '../components/UserMenu';
 import styles from '../styles/HomePage.module.css';
 
@@ -59,8 +60,22 @@ function safeParseJwt(token) {
     const base64Url = parts[1];
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
-    const json = atob(padded);
-    return JSON.parse(json);
+    const binary = atob(padded);
+    // Decode UTF-8 safely. Prefer TextDecoder, fallback to percent-encoding method.
+    try {
+      if (typeof TextDecoder !== 'undefined') {
+        const bytes = Uint8Array.from(binary.split('').map((c) => c.charCodeAt(0)));
+        const json = new TextDecoder('utf-8').decode(bytes);
+        return JSON.parse(json);
+      }
+    } catch (_) {}
+    const jsonFallback = decodeURIComponent(
+      binary
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonFallback);
   } catch {
     return null;
   }
@@ -267,6 +282,8 @@ export default function HomePage() {
   const [selectedGroupId, setSelectedGroupId] = useState(null);
 
   const [loading, setLoading] = useState(false);
+  const [subjects, setSubjects] = useState([]);
+  const [selectedSubject, setSelectedSubject] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -372,6 +389,26 @@ export default function HomePage() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // Load subjects for library view from server
+  useEffect(() => {
+    let mounted = true;
+    const loadSubjects = async () => {
+      if (!user) return;
+      try {
+        const subs = await getSubjects(user.faculty || user.facultyId, user.course || user.courseId);
+        if (!mounted) return;
+        setSubjects(Array.isArray(subs) ? subs : []);
+      } catch {
+        if (!mounted) return;
+        setSubjects([]);
+      }
+    };
+    loadSubjects();
+    return () => {
+      mounted = false;
+    };
+  }, [user]);
 
   const selectedGroup = useMemo(
     () => groups.find((g) => g.groupId === selectedGroupId) || null,
@@ -903,9 +940,7 @@ export default function HomePage() {
               )}
             </div>
 
-            <button type="button" className={styles.linkRow} onClick={() => setActiveTab('group')}>
-              Библиотека
-            </button>
+            {/* duplicate library link removed per instruction */}
           </div>
 
           
@@ -986,34 +1021,85 @@ export default function HomePage() {
               <span>Загрузка...</span>
             </div>
           ) : activeTab === 'library' ? (
-            !libraryList.length ? (
+            // Library view: show subjects (from server) or subject page
+            selectedSubject ? (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                  <button type="button" className={styles.btnGhost} onClick={() => setSelectedSubject(null)}>
+                    ← Назад
+                  </button>
+                  <h3 style={{ margin: 0 }}>{selectedSubject.name}</h3>
+                </div>
+
+                <div style={{ marginBottom: 12, color: '#444' }}>Категории</div>
+                <div className={styles.boardGrid}>
+                  {['Notes', 'Exams', 'Flashcards', 'Tables', 'Practice'].map((cat) => {
+                    const subjectBoards = libraryList.filter((b) =>
+                      String(b.name || '').toLowerCase().includes((selectedSubject.name || '').toLowerCase())
+                    );
+                    return (
+                      <div key={cat} className={styles.boardCard}>
+                        <div className={styles.cardTop}>
+                          <div className={styles.boardTitle}>{cat}</div>
+                          <div style={{ marginLeft: 'auto', fontSize: 12, color: '#666' }}>
+                            {subjectBoards.length} досок
+                          </div>
+                        </div>
+                        <div style={{ padding: 8 }}>
+                          {subjectBoards.length ? (
+                            subjectBoards.slice(0, 10).map((b) => (
+                              <div key={b.id} style={{ padding: 8, borderBottom: '1px solid #eee' }}>
+                                <div style={{ fontWeight: 600 }}>{b.name}</div>
+                                <div style={{ fontSize: 12, color: '#666' }}>
+                                  {b.group?.name || b.ownerName || `Пользователь #${b.userId}`} · {formatChangedLabel(b.updatedAt)}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div style={{ color: '#777' }}>No materials exist for this subject yet. Create the first board.</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : !subjects.length ? (
               <div className={styles.empty}>
                 <div className={styles.emptyTitle}>Материалы библиотеки не найдены</div>
                 <div className={styles.emptySub}>Материалы будут отображаться по вашему факультету и курсу.</div>
               </div>
             ) : (
-              <div className={styles.boardGrid}>
-                {libraryList.map((b) => {
-                  const owner =
-                    myUserId && Number(b.userId) === Number(myUserId)
-                      ? myName
-                      : b.group?.name
-                        ? `Участник группы`
-                        : `Пользователь #${b.userId}`;
-                  return (
-                    <BoardCard
-                      key={`${b.groupId || 'p'}-${b.id}`}
-                      board={b}
-                      ownerLabel={owner}
-                      changedLabel={formatChangedLabel(b.updatedAt)}
-                      openedLabel={formatOpenedLabel(b.lastOpenedAt || recentOpenedAtById.get(Number(b.id)))}
-                      isFavorite={favoritesSet.has(Number(b.id))}
-                      onToggleFavorite={() => toggleFav(b)}
-                      onOpen={() => openBoard(b)}
-                      onOpenMenu={(e) => openMenuFor(b, e)}
-                    />
-                  );
-                })}
+              <div>
+                <div style={{ marginBottom: 12, color: '#444' }}>Предметы</div>
+                <div className={styles.boardGrid}>
+                  {subjects.map((s) => {
+                    const count = libraryList.filter((b) => String(b.name || '').toLowerCase().includes((s.name || '').toLowerCase())).length;
+                    return (
+                      <div
+                        key={s.id}
+                        className={styles.boardCard}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedSubject(s)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedSubject(s);
+                          }
+                        }}
+                      >
+                        <div className={styles.cardTop}>
+                          <div className={styles.boardTitle}>{s.name}</div>
+                        </div>
+                        <div className={styles.previewArea} aria-hidden="true" />
+                        <div className={styles.metaList}>
+                          <div className={styles.boardMeta}>Досок: {count}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )
           ) : activeTab === 'group' && !groups.length ? (

@@ -8,6 +8,8 @@ const linkPreviewCtrl = require('../controllers/linkPreviewCtrl');
 const commentsCtrl = require('../controllers/commentsCtrl');
 const materialBlocksCtrl = require('../controllers/materialBlocksCtrl');
 const authMiddleware = require('../middleware/authMiddleware');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const router = express.Router();
 
@@ -42,8 +44,8 @@ router.post('/elements/:elementId/versions/:version/restore', authMiddleware, no
 router.get('/elements/:elementId/comments', authMiddleware, commentsCtrl.listByElement);
 router.post('/elements/:elementId/comments', authMiddleware, commentsCtrl.create);
 
-// Save a file URL for a desk (file is uploaded to Supabase by frontend)
-router.post('/desk/:deskId/upload', authMiddleware, uploadsCtrl.uploadToDesk);
+// Save a file URL for a desk. Accepts either { url } (legacy) or multipart file (field 'file')
+router.post('/desk/:deskId/upload', authMiddleware, upload.single('file'), uploadsCtrl.uploadToDesk);
 
 // Link preview (OpenGraph/Twitter/meta) for creating `link` elements.
 router.post('/link/preview', authMiddleware, linkPreviewCtrl.preview);
@@ -59,8 +61,8 @@ router.post('/material-blocks/:blockId/cards', authMiddleware, materialBlocksCtr
 router.get('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.getCard);
 router.put('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.updateCard);
 router.delete('/material-cards/:cardId', authMiddleware, materialBlocksCtrl.deleteCard);
-// Save a file URL for a material card (file is uploaded to Supabase by frontend)
-router.post('/material-cards/:cardId/upload', authMiddleware, materialBlocksCtrl.uploadCardFile);
+// Save a file for a material card. Accepts either { url } (legacy) or multipart file (field 'file')
+router.post('/material-cards/:cardId/upload', authMiddleware, upload.single('file'), materialBlocksCtrl.uploadCardFile);
 router.post('/material-cards/:cardId/links', authMiddleware, materialBlocksCtrl.addCardLink);
 router.delete('/material-links/:linkId', authMiddleware, materialBlocksCtrl.deleteCardLink);
 router.delete('/material-files/:fileId', authMiddleware, materialBlocksCtrl.deleteCardFile);

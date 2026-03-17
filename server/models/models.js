@@ -558,6 +558,21 @@ const MaterialCardTag = sequelize.define(
   }
 );
 
+// --- Library subjects and categories ---
+const Subject = sequelize.define('subject', {
+  id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  name: { type: DataTypes.STRING, allowNull: false },
+  faculty: { type: DataTypes.STRING, allowNull: false },
+  course: { type: DataTypes.INTEGER, allowNull: false },
+});
+
+const SubjectCategory = sequelize.define('subject_category', {
+  id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  subjectId: { type: DataTypes.INTEGER, allowNull: false, references: { model: Subject, key: 'id' } },
+  name: { type: DataTypes.STRING, allowNull: false },
+});
+
+
 // --- Minimal pilot analytics: user activity events ---
 const UserEvent = sequelize.define(
   'user_event',
@@ -717,6 +732,10 @@ MaterialCardTag.belongsTo(MaterialCard, { foreignKey: 'cardId' });
 User.hasMany(UserEvent, { foreignKey: 'userId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
 UserEvent.belongsTo(User, { foreignKey: 'userId' });
 
+// Subject associations
+Subject.hasMany(SubjectCategory, { foreignKey: 'subjectId', onDelete: 'CASCADE', onUpdate: 'CASCADE' });
+SubjectCategory.belongsTo(Subject, { foreignKey: 'subjectId' });
+
 module.exports = {
   User,
   RefreshToken,
@@ -749,4 +768,6 @@ module.exports = {
   MaterialLink,
   MaterialCardTag,
   UserEvent,
+  Subject,
+  SubjectCategory,
 };

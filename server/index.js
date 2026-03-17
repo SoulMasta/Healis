@@ -39,34 +39,24 @@ const projectRoutes = require('./routes/projectRouter');
 const calendarRoutes = require('./routes/calendarRouter');
 const notificationsRoutes = require('./routes/notificationsRouter');
 const aiRoutes = require('./routes/aiRouter');
+const libraryRoutes = require('./routes/libraryRouter');
+const storageRoutes = require('./routes/storageRouter');
 const { startCalendarNotificationWorker } = require('./services/calendarNotificationWorker');
 const { startCleanup: startRateLimitCleanup } = require('./middleware/rateLimit');
 
-// Production: use only process.env.PORT (Railway sets it). Local: fallback 5001. Never assign to process.env.PORT.
-// Consider the process to be production only when NODE_ENV=production AND we're running on Railway.
-// This avoids treating local runs with NODE_ENV=production as production (which caused binding to reserved ports).
-const isProduction = process.env.NODE_ENV === 'production' && Boolean(process.env.RAILWAY_ENVIRONMENT);
+// Production: use only process.env.PORT (set by environment). Local: force port 3000.
+// Consider the process to be production when NODE_ENV=production. This covers
+// containerized deployments where RAILWAY_ENVIRONMENT isn't present.
+const isProduction = process.env.NODE_ENV === 'production';
 const envPortNum = Number(process.env.PORT);
 let port;
 if (isProduction) {
   port = envPortNum;
 } else {
-  // Dev safeguard: on Windows, port 5000 is commonly reserved/blocked causing EACCES.
-  // If the environment accidentally sets PORT=5000 on Windows local runs, override to 5001.
-  if (process.platform === 'win32') {
-    // Windows commonly reserves ranges; if the requested port is inside a known reserved
-    // range (4927-5026), pick a safe port above that range (5027).
-    if (Number.isFinite(envPortNum) && envPortNum >= 4927 && envPortNum <= 5026) {
-      // Reserved range detected; pick a safe port above the reserved range.
-      port = 5027;
-    } else if (envPortNum && envPortNum > 0) {
-      port = envPortNum;
-    } else {
-      port = 5027;
-    }
-  } else {
-    port = envPortNum || 5001;
-  }
+  // Hard dev port: force backend to listen on 3000 for local development.
+  // This overrides any local PORT settings to ensure a consistent dev port.
+  port = 3000;
+  process.stderr.write('[BOOT] forcing dev port 3000\n');
 }
 if (isProduction && (!port || port <= 0)) {
   console.error('PORT is required in production (Railway sets it).');
@@ -87,22 +77,10 @@ function makeInviteCode(len = 10) {
 app.set('trust proxy', 1);
 
 // ——— 1. Global logger: all incoming requests ———
-app.use((req, res, next) => {
-  console.log('[REQUEST]', {
-    method: req.method,
-    url: req.url,
-    headers: req.headers,
-    origin: req.headers.origin,
-    timestamp: new Date().toISOString(),
-  });
-  next();
-});
+// Global request logging removed to reduce noisy output in development.
 
 // ——— 2. REQUEST REACHED EXPRESS ———
-app.use((req, res, next) => {
-  console.log('REQUEST REACHED EXPRESS');
-  next();
-});
+// Lightweight express entry marker removed.
 
 // Middleware order: cors → OPTIONS short-circuit → express.json → cookieParser → routes → errorHandler (last).
 // CORS: must be first, before any routes. credentials:true requires explicit origin (no wildcard).
@@ -119,11 +97,7 @@ const envOrigins = [process.env.CORS_ORIGINS, process.env.CORS_ORIGIN, process.e
   .flatMap((s) => s.split(',').map((x) => x.trim()).filter(Boolean));
 
 // ——— Before CORS: log origin and allowed list ———
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  console.log('[CORS BEFORE] origin:', origin, '| allowedOrigins:', allowedOrigins, '| envOrigins:', envOrigins);
-  next();
-});
+// CORS pre-check logging removed.
 
 function corsOrigin(origin, cb) {
   if (!origin) return cb(null, true); // same-origin or non-browser
@@ -144,15 +118,7 @@ app.use(
 );
 
 // ——— After CORS: log origin, allowed, and response headers on finish ———
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const allowed = !origin || allowedOrigins.some((o) => (typeof o === 'string' ? o === origin : o.test(origin))) || envOrigins.includes(origin);
-  console.log('[CORS AFTER] origin:', origin, '| allowed:', allowed);
-  res.on('finish', () => {
-    console.log('[CORS AFTER] response headers:', res.getHeaders());
-  });
-  next();
-});
+// CORS after-hooks removed to avoid verbose logging.
 // Preflight: OPTIONS always 200 so CORS headers from cors() are sent and auth is never hit.
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -222,6 +188,8 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/library', libraryRoutes);
+app.use('/api/storage', storageRoutes);
 
 // Note: File uploads are now handled by Supabase Storage
 // Old /uploads static serving removed - all files served from Supabase public URLs
@@ -242,7 +210,7 @@ app.use((req, res) => {
   const indexPath = path.join(clientBuildDir, 'index.html');
   return res.sendFile(indexPath, (err) => {
     if (err) {
-      console.log('[404] Route not found:', req.method, req.url);
+      // 404 logging removed (kept response below)
       return res.status(404).json({ error: 'Not found' });
     }
   });
@@ -258,7 +226,6 @@ async function start() {
   process.stderr.write('[BOOT] start() entered\n');
   const server = http.createServer(app);
   initRealtime(server);
-  startCalendarNotificationWorker({ intervalMs: 60_000 });
   startRateLimitCleanup(5 * 60_000);
   // (instrumentation removed)
 
@@ -270,10 +237,7 @@ async function start() {
 
   server.listen(port, '0.0.0.0', () => {
     process.stderr.write('[LISTEN] Server listening on http://0.0.0.0:' + port + '\n');
-    console.log('[LISTEN] Server started: http://0.0.0.0:' + port);
-    console.log('[LISTEN] process.env.PORT:', process.env.PORT);
-    console.log('[LISTEN] process.env.RAILWAY_ENVIRONMENT:', process.env.RAILWAY_ENVIRONMENT);
-    console.log('[LISTEN] process.env keys:', Object.keys(process.env));
+    // Reduced startup logging to minimize console noise.
   });
 
   try {
@@ -539,6 +503,40 @@ async function start() {
     // In early development it's convenient to auto-align schema with models.
     // Set DB_SYNC_ALTER=true to enable non-destructive alters (still be careful in production).
     await sequelize.sync({ alter: process.env.DB_SYNC_ALTER === 'true' });
+
+    // Start background workers only after DB is confirmed healthy.
+    startCalendarNotificationWorker({ intervalMs: 60_000 });
+
+    // Seed: ensure predefined subjects for 2 курс, факультет "Лечебное дело" exist.
+    try {
+      const { Subject } = require('./models/models');
+      const subjects = [
+        'Патологическая анатомия',
+        'Патофизиология',
+        'Микробиология',
+        'Топографическая анатомия и оперативная хирургия',
+        'Гигиена',
+        'Сестринское дело',
+        'Прикладная физическая культура и спорт',
+        'Практика по получению первичных навыков научно-исследовательской работы',
+        'Практика по получению профессиональных умений и опыта профессиональной деятельности \"Сестринская\"',
+        'Организация предпринимательской деятельности',
+        'Философия',
+        'Иностранный язык для профессионального общения'
+      ];
+      for (const name of subjects) {
+        try {
+          await Subject.findOrCreate({
+            where: { name, faculty: 'Лечебное дело', course: 2 },
+            defaults: { name, faculty: 'Лечебное дело', course: 2 },
+          });
+        } catch {
+          // ignore individual failures
+        }
+      }
+    } catch (e) {
+      // ignore seeding errors
+    }
 
     // Back-compat: older schema versions had a UNIQUE index on desks(userId,name).
     // Requirements changed: desk names may repeat even for the same user.

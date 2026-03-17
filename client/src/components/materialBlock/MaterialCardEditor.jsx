@@ -20,7 +20,21 @@ function safeParseJwt(token) {
     if (parts.length < 2) return null;
     const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
-    return JSON.parse(atob(padded));
+    const binary = atob(padded);
+    try {
+      if (typeof TextDecoder !== 'undefined') {
+        const bytes = Uint8Array.from(binary.split('').map((c) => c.charCodeAt(0)));
+        const json = new TextDecoder('utf-8').decode(bytes);
+        return JSON.parse(json);
+      }
+    } catch (_) {}
+    const jsonFallback = decodeURIComponent(
+      binary
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonFallback);
   } catch {
     return null;
   }
