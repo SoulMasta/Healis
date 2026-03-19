@@ -207,7 +207,26 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
+async function waitForDB(sequelize) {
+  let retries = 10;
+
+  while (retries) {
+    try {
+      await sequelize.authenticate();
+      console.log("DB connected");
+      return;
+    } catch (e) {
+      console.log("Waiting for DB...");
+      retries--;
+      await new Promise(res => setTimeout(res, 5000));
+    }
+  }
+
+  throw new Error("DB not available");
+}
+
 async function start() {
+  await waitForDB(sequelize);
   process.stderr.write('[BOOT] start() entered\n');
   const server = http.createServer(app);
   initRealtime(server);
@@ -515,7 +534,7 @@ async function start() {
             where: { name, faculty: 'Лечебное дело', course: 2 },
             defaults: { name, faculty: 'Лечебное дело', course: 2 },
           });
-        } catch {
+A        } catch {
           // ignore individual failures
         }
       }
