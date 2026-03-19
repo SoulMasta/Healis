@@ -228,100 +228,28 @@ async function start() {
   try {
     await sequelize.authenticate();
 
-    // Back-compat: older schema versions had a UNIQUE constraint on desks(name) and/or unique indexes.
-    // Requirements changed: desk names may repeat (even for the same user).
-    // Drop known legacy constraints/indexes if present (safe no-op if not).
+    // Use Sequelize to manage schema exclusively.
+    // Force non-destructive alignment with models.
+    await sequelize.sync({ alter: true });
+
+    // Start background workers only after DB is confirmed healthy.
+    startCalendarNotificationWorker({ intervalMs: 60_000 });
+
+    // Backfill: ensure existing groups have inviteCode (data-only, no schema changes).
     try {
-      // Postgres default name for UNIQUE(name) is typically "desks_name_key"
-      await sequelize.query('ALTER TABLE "desks" DROP CONSTRAINT IF EXISTS "desks_name_key";');
-      await sequelize.query('DROP INDEX IF EXISTS "desks_name_key";');
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: add elements columns if missing (we don't require DB_SYNC_ALTER for this).
-    try {
-      await sequelize.query(
-        'ALTER TABLE "elements" ADD COLUMN IF NOT EXISTS "reactions" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
-      );
-      await sequelize.query(
-        'ALTER TABLE "elements" ADD COLUMN IF NOT EXISTS "locked" BOOLEAN NOT NULL DEFAULT FALSE;'
-      );
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: element child tables (note/text formatting: bold, italic, underline, etc.).
-    try {
-      await sequelize.query('ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "bold" BOOLEAN NOT NULL DEFAULT FALSE;');
-      await sequelize.query('ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "italic" BOOLEAN NOT NULL DEFAULT FALSE;');
-      await sequelize.query('ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "underline" BOOLEAN NOT NULL DEFAULT FALSE;');
-      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "fontFamily" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "fontSize" INTEGER;');
-      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "color" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "bold" BOOLEAN NOT NULL DEFAULT FALSE;');
-      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "italic" BOOLEAN NOT NULL DEFAULT FALSE;');
-      await sequelize.query('ALTER TABLE "texts" ADD COLUMN IF NOT EXISTS "underline" BOOLEAN NOT NULL DEFAULT FALSE;');
-      await sequelize.query('ALTER TABLE "documents" ADD COLUMN IF NOT EXISTS "title" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "links" ADD COLUMN IF NOT EXISTS "title" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "links" ADD COLUMN IF NOT EXISTS "previewImageUrl" TEXT;');
-      await sequelize.query(
-        'ALTER TABLE "drawings" ADD COLUMN IF NOT EXISTS "data" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
-      );
-      await sequelize.query(
-        'ALTER TABLE "connectors" ADD COLUMN IF NOT EXISTS "data" JSONB NOT NULL DEFAULT \'{}\'::jsonb;'
-      );
-      await sequelize.query(
-        'ALTER TABLE "frames" ADD COLUMN IF NOT EXISTS "title" VARCHAR(255) NOT NULL DEFAULT \'Frame\';'
-      );
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: user profile columns (so profile works even without DB_SYNC_ALTER).
-    try {
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "authProvider" VARCHAR(32) NOT NULL DEFAULT \'local\';');
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "emailVerified" BOOLEAN NOT NULL DEFAULT FALSE;');
-
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "username" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "nickname" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "studyGroup" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "course" INTEGER;');
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "faculty" VARCHAR(255);');
-      await sequelize.query('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatarUrl" TEXT;');
-      await sequelize.query('CREATE UNIQUE INDEX IF NOT EXISTS "users_username_key" ON "users" ("username");');
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: group invite codes (join by code).
-    // We don't require DB_SYNC_ALTER for this; keep it safe for existing DBs.
-    try {
-      await sequelize.query('ALTER TABLE "groups" ADD COLUMN IF NOT EXISTS "inviteCode" VARCHAR(32);');
-      // Unique index allows multiple NULLs in Postgres; non-null values must be unique.
-      await sequelize.query('CREATE UNIQUE INDEX IF NOT EXISTS "groups_inviteCode_key" ON "groups" ("inviteCode");');
-
-      // Backfill legacy rows missing inviteCode.
-      const [rows] = await sequelize.query(
-        'SELECT "groupId" FROM "groups" WHERE "inviteCode" IS NULL OR "inviteCode" = \'\';'
-      );
-      const ids = Array.isArray(rows) ? rows.map((r) => Number(r.groupId)).filter((x) => Number.isFinite(x)) : [];
-      for (const groupId of ids) {
+      const { Group } = require('./models/models');
+      const groups = await Group.findAll({ where: { inviteCode: null } });
+      for (const g of groups) {
         let tries = 0;
-        // Try a few times to avoid rare collisions.
         while (tries < 8) {
           tries += 1;
           const code = makeInviteCode(10);
           try {
-            await sequelize.query(
-              'UPDATE "groups" SET "inviteCode" = :code WHERE "groupId" = :groupId AND ("inviteCode" IS NULL OR "inviteCode" = \'\');',
-              { replacements: { code, groupId } }
-            );
+            await Group.update({ inviteCode: code }, { where: { groupId: g.groupId, inviteCode: null } });
             break;
           } catch (e) {
-            // Unique violation -> retry.
-            const msg = String(e?.message || '');
-            if (msg.toLowerCase().includes('duplicate') || msg.toLowerCase().includes('unique')) continue;
+            const msg = String(e?.message || '').toLowerCase();
+            if (msg.includes('duplicate') || msg.includes('unique')) continue;
             break;
           }
         }
@@ -329,168 +257,6 @@ async function start() {
     } catch {
       // ignore
     }
-
-    // Schema back-compat: projects + desk.projectId.
-    // Keep it safe even when DB_SYNC_ALTER is off.
-    try {
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "projects" (' +
-          '"projectId" SERIAL PRIMARY KEY,' +
-          '"name" VARCHAR(255) NOT NULL,' +
-          '"userId" INTEGER NOT NULL,' +
-          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
-          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
-        ');'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "projects_userId_createdAt_key" ON "projects" ("userId","createdAt");');
-      await sequelize.query('ALTER TABLE "desks" ADD COLUMN IF NOT EXISTS "projectId" INTEGER;');
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "desks_projectId_key" ON "desks" ("projectId");');
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: group membership roles/status (needed for invites + join requests).
-    // Keep it safe for existing DBs even if DB_SYNC_ALTER is off.
-    try {
-      await sequelize.query('ALTER TABLE "group_members" ADD COLUMN IF NOT EXISTS "role" VARCHAR(16) NOT NULL DEFAULT \'MEMBER\';');
-      await sequelize.query('ALTER TABLE "group_members" ADD COLUMN IF NOT EXISTS "status" VARCHAR(16) NOT NULL DEFAULT \'ACTIVE\';');
-      await sequelize.query(
-        'CREATE UNIQUE INDEX IF NOT EXISTS "group_members_groupId_userId_key" ON "group_members" ("groupId", "userId");'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "group_members_groupId_status_key" ON "group_members" ("groupId", "status");');
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "group_members_userId_status_key" ON "group_members" ("userId", "status");');
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: calendar event attachments/materials.
-    // Keep safe even if DB_SYNC_ALTER is off.
-    try {
-      await sequelize.query(
-        'ALTER TABLE "calendar_events" ADD COLUMN IF NOT EXISTS "materials" JSONB NOT NULL DEFAULT \'[]\'::jsonb;'
-      );
-      await sequelize.query(
-        'ALTER TABLE "calendar_my_events" ADD COLUMN IF NOT EXISTS "materials" JSONB NOT NULL DEFAULT \'[]\'::jsonb;'
-      );
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: rate_limits table (DB-backed, no in-memory state).
-    try {
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "rate_limits" (' +
-          '"bucket_key" VARCHAR(255) PRIMARY KEY,' +
-          '"count" INTEGER NOT NULL DEFAULT 0,' +
-          '"reset_at" TIMESTAMP WITH TIME ZONE NOT NULL' +
-        ');'
-      );
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: refresh_token.device_id for PWA multi-device.
-    try {
-      await sequelize.query('ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "deviceId" VARCHAR(255);');
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "refresh_tokens_user_device" ON "refresh_tokens" ("userId","deviceId");');
-    } catch {
-      // ignore
-    }
-
-    // Schema back-compat: material blocks (учебное хранилище на доске).
-    try {
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "material_blocks" (' +
-          '"id" SERIAL PRIMARY KEY,' +
-          '"boardId" INTEGER NOT NULL REFERENCES "desks"("deskId") ON DELETE CASCADE ON UPDATE CASCADE,' +
-          '"title" VARCHAR(255) NOT NULL DEFAULT \'Материалы\',' +
-          '"x" INTEGER NOT NULL DEFAULT 0,' +
-          '"y" INTEGER NOT NULL DEFAULT 0,' +
-          '"width" INTEGER NOT NULL DEFAULT 280,' +
-          '"height" INTEGER NOT NULL DEFAULT 160,' +
-          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
-          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
-        ');'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_blocks_board_id" ON "material_blocks" ("boardId");');
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "material_cards" (' +
-          '"id" SERIAL PRIMARY KEY,' +
-          '"blockId" INTEGER NOT NULL REFERENCES "material_blocks"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
-          '"title" VARCHAR(255) NOT NULL DEFAULT \'\',' +
-          '"content" TEXT NOT NULL DEFAULT \'\',' +
-          '"createdBy" INTEGER REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE,' +
-          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
-          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
-        ');'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_cards_block_id" ON "material_cards" ("blockId");');
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_cards_block_created" ON "material_cards" ("blockId","createdAt");');
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "material_files" (' +
-          '"id" SERIAL PRIMARY KEY,' +
-          '"cardId" INTEGER NOT NULL REFERENCES "material_cards"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
-          '"fileUrl" TEXT NOT NULL,' +
-          '"fileType" VARCHAR(255),' +
-          '"size" INTEGER,' +
-          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
-          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
-        ');'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_files_card_id" ON "material_files" ("cardId");');
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "material_links" (' +
-          '"id" SERIAL PRIMARY KEY,' +
-          '"cardId" INTEGER NOT NULL REFERENCES "material_cards"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
-          '"url" TEXT NOT NULL,' +
-          '"title" VARCHAR(255),' +
-          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
-          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
-        ');'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_links_card_id" ON "material_links" ("cardId");');
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "material_card_tags" (' +
-          '"id" SERIAL PRIMARY KEY,' +
-          '"cardId" INTEGER NOT NULL REFERENCES "material_cards"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
-          '"tag" VARCHAR(255) NOT NULL,' +
-          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
-          '"updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),' +
-          'CONSTRAINT "material_card_tags_card_id_tag_key" UNIQUE("cardId","tag")' +
-        ');'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "material_card_tags_card_id" ON "material_card_tags" ("cardId");');
-    } catch {
-      // ignore
-    }
-
-    // Pilot analytics: user activity events.
-    // Keep it safe even if DB_SYNC_ALTER is off.
-    try {
-      await sequelize.query(
-        'CREATE TABLE IF NOT EXISTS "user_events" (' +
-          '"id" BIGSERIAL PRIMARY KEY,' +
-          '"userId" INTEGER NOT NULL REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,' +
-          '"eventType" VARCHAR(64) NOT NULL,' +
-          '"entityId" VARCHAR(255),' +
-          '"entityType" VARCHAR(64),' +
-          '"metadata" JSONB,' +
-          '"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()' +
-        ');'
-      );
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "user_events_user_created" ON "user_events" ("userId","createdAt");');
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "user_events_type_created" ON "user_events" ("eventType","createdAt");');
-      await sequelize.query('CREATE INDEX IF NOT EXISTS "user_events_entity" ON "user_events" ("entityType","entityId");');
-    } catch {
-      // ignore
-    }
-
-    // In early development it's convenient to auto-align schema with models.
-    // Set DB_SYNC_ALTER=true to enable non-destructive alters (still be careful in production).
-    await sequelize.sync({ alter: process.env.DB_SYNC_ALTER === 'true' });
-
-    // Start background workers only after DB is confirmed healthy.
-    startCalendarNotificationWorker({ intervalMs: 60_000 });
 
     // Seed: ensure predefined subjects for 2 курс, факультет "Лечебное дело" exist.
     try {
@@ -521,30 +287,6 @@ async function start() {
       }
     } catch (e) {
       // ignore seeding errors
-    }
-
-    // Back-compat: older schema versions had a UNIQUE index on desks(userId,name).
-    // Requirements changed: desk names may repeat even for the same user.
-    // Try to drop that unique index if it exists (safe no-op if not).
-    try {
-      const qi = sequelize.getQueryInterface();
-      const indexes = await qi.showIndex('desks');
-      const legacyIndexes = Array.isArray(indexes)
-        ? indexes.filter((i) => {
-            const fields = (i.fields || []).map((f) => f.attribute || f.name);
-            const isUserName =
-              fields.length === 2 && fields.includes('userId') && fields.includes('name');
-            const isNameOnly = fields.length === 1 && fields[0] === 'name';
-            return Boolean(i.unique) && (isUserName || isNameOnly);
-          })
-        : [];
-      for (const idx of legacyIndexes) {
-        if (idx?.name) {
-          await qi.removeIndex('desks', idx.name);
-        }
-      }
-    } catch {
-      // ignore
     }
   } catch (error) {
     console.error('DB connection failed:', error.message);
