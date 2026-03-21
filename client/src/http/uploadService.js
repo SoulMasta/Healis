@@ -51,9 +51,59 @@ function xhrUpload(url, formData, onProgress, timeout = 0) {
 }
 
 /**
+ * Compress image for faster mobile uploads. Returns original file if not an image or compression fails.
+ */
+export function compressImageForUpload(file, opts = {}) {
+  const { maxWidth = 1600, quality = 0.85 } = opts;
+  if (!file?.type?.startsWith('image/')) return Promise.resolve(file);
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let w = img.naturalWidth;
+      let h = img.naturalHeight;
+      if (w <= maxWidth && file.size <= 1024 * 1024) {
+        resolve(file);
+        return;
+      }
+      if (w > maxWidth) {
+        h = Math.round((h * maxWidth) / w);
+        w = maxWidth;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(file);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas.toBlob(
+        (blob) => {
+          if (blob && blob.size < file.size) {
+            resolve(new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() }));
+          } else {
+            resolve(file);
+          }
+        },
+        'image/jpeg',
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+    img.src = url;
+  });
+}
+
+/**
  * Upload a single file to backend storage.
  * Returns { url, key, size, type, originalName }.
- * folder is used only to route to specific backend endpoints when necessary.
+ * folder is sent as multipart field (server may use it to choose placement).
  */
 export async function uploadFile(file, options = {}) {
   const { folder = '', onProgress, isAvatar = false } = options;
@@ -69,12 +119,11 @@ export async function uploadFile(file, options = {}) {
     throw new Error(`File size exceeds ${maxMB}MB limit`);
   }
 
-  // Decide endpoint: avatars go to /api/user/avatar (server will accept multipart or legacy body).
-  // All other files use generic /api/storage/upload which only uploads to Yandex and returns URL.
   const form = new FormData();
   form.append('file', file, file.name);
-
-  const endpoint = isAvatar ? '/api/user/avatar' : '/api/storage/upload';
+  if (folder) form.append('folder', folder);
+  // Always upload via generic storage endpoint; backend will return { url, key, ... }.
+  const endpoint = '/api/storage/upload';
   const resp = await xhrUpload(endpoint, form, onProgress);
   return {
     url: resp.url,
@@ -99,6 +148,7 @@ export async function uploadFiles(files, options = {}) {
           onProgress(overallProgress);
         }
       },
+      isAvatar: options.isAvatar,
     });
     results.push(result);
     if (onFileComplete) onFileComplete(result, i, total);
