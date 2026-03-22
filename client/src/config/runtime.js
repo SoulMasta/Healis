@@ -32,8 +32,11 @@ export function getApiBaseUrl() {
   const fromEnv = normalizeUrl(process.env.REACT_APP_API_URL);
   // (instrumentation removed)
   if (fromEnv && isRenderUrl(fromEnv)) return DEFAULT_PROD_API_URL;
-  // On Vercel, use same-origin so API is proxied -> cookie is first-party (no third-party block)
-  if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) return '';
+  // On Vercel, prefer explicit env var; if absent, force external API origin
+  if (typeof window !== 'undefined' && isLikelyVercelHost(window.location.hostname)) {
+    if (fromEnv) return fixLocalhostUrl(fromEnv);
+    return DEFAULT_PROD_API_URL;
+  }
 
   // If an explicit env var is provided, normally respect it. However, in local CRA dev
   // we prefer the locally-running backend port (5027) because common localhost ports
