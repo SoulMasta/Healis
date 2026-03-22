@@ -32,7 +32,7 @@ export function useRealtimeNotifications() {
       if (existing && !existing.disconnected) return existing;
 
       safeDisconnect(existing);
-      const socket = io(getSocketBaseUrl(), { auth: { token } });
+      const socket = io(getSocketBaseUrl(), { auth: { token }, path: '/api/socket.io', withCredentials: true });
       socketRef.current = socket;
 
       socket.on('notification:new', (n = {}) => {

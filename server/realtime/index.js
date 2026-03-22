@@ -41,6 +41,7 @@ async function createNoteVersion({ elementId, text, userId, changeType = 'EDIT',
 
 function initRealtime(httpServer) {
   const io = new Server(httpServer, {
+    path: '/api/socket.io',
     cors: {
       origin: true,
       credentials: true,
