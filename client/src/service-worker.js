@@ -74,7 +74,7 @@ registerRoute(
 );
 
 // -------------------------------------------------------------------
-// Image caching (non-Supabase images)
+// Image caching (non-storage images)
 // -------------------------------------------------------------------
 registerRoute(
   ({ request, url }) => {

@@ -6,12 +6,12 @@ const { randomUUID } = require('crypto');
 
 /**
  * UploadsController - handles saving file URLs to the database
- * Files are uploaded directly to Supabase Storage from the frontend
- * Backend only receives and stores the resulting public URLs
+ * Files are uploaded directly to Object Storage (Yandex) from the frontend or via backend proxy
+ * Backend only receives and stores the resulting public or signed URLs
  */
 class UploadsController {
   /**
-   * Save a file URL for a desk (file already uploaded to Supabase by frontend)
+   * Save a file URL for a desk (file already uploaded to object storage by frontend)
    */
   async uploadToDesk(req, res) {
     try {

@@ -6,7 +6,7 @@
 
 Client (React SPA) ←→ Backend API (Node.js/Express + Socket.IO) ←→ PostgreSQL
 
-Дополнительно: файловое хранилище (S3/Supabase), кеш/adapter (Redis) и интеграционные адаптеры для внешних API.
+Дополнительно: файловое хранилище (S3-совместимое, например Yandex Object Storage), кеш/adapter (Redis) и интеграционные адаптеры для внешних API.
 
 ## Компоненты и взаимодействие
 
@@ -25,7 +25,7 @@ Client (React SPA) ←→ Backend API (Node.js/Express + Socket.IO) ←→ Postg
    - Индексы по FK и полям поиска.
 
 4. Хранилище файлов
-   - S3-совместимое хранилище или Supabase Storage для медиа и вложений.
+  - S3-совместимое хранилище (например, Yandex Object Storage) для медиа и вложений.
    - При загрузке файлов возвращаются публичные/приватные URL в метаданных.
 
 5. Интеграционные адаптеры

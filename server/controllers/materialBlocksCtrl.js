@@ -444,7 +444,7 @@ class MaterialBlocksController {
   }
 
   /**
-   * Save file URL for a material card (file already uploaded to Supabase by frontend)
+   * Save file URL for a material card (file already uploaded to object storage by frontend or uploaded via backend)
    */
   async uploadCardFile(req, res) {
     try {

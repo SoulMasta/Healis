@@ -9,7 +9,7 @@ Healis представляет собой типичный WEB-приложен
 - Frontend: собранные статические файлы (React build) — размещаются за CDN или в объектном хранилище (S3/Cloud Storage) + reverse-proxy (nginx).
 - Backend: Node.js приложение, запускается как сервис (systemd) или в контейнере. Рекомендуется использовать process manager (PM2) или контейнерный оркестр.
 - Database: PostgreSQL — отдельный управляемый инстанс с бэкапами и репликацией по необходимости.
-- Хранилище файлов: S3-совместимое (или Supabase Storage) для медиа и вложений.
+- Хранилище файлов: S3-совместимое (например, Yandex Object Storage) для медиа и вложений.
 - Очереди/планировщик: при росте нагрузки для фоновых задач (уведомления, синхронизация интеграций) — RabbitMQ/Redis/Sidekiq или cloud-queue.
 - Real-time: Socket.IO, работает поверх HTTP(S) и требует sticky sessions либо Redis Adapter для масштабирования в несколько экземпляров.
 
@@ -25,7 +25,7 @@ Healis представляет собой типичный WEB-приложен
   - DATABASE_URL / PG_* (подключение к Postgres)
   - JWT_SECRET
   - SSO_CLIENT_ID, SSO_CLIENT_SECRET (если есть)
-  - STORAGE_* (S3 / Supabase)
+  - STORAGE_* (S3-compatible, e.g. Yandex Object Storage)
   - PORT
 - Секреты хранить в окружении CI/CD или в vault (HashiCorp Vault / cloud secrets).
 

@@ -82,7 +82,7 @@ function cookieOptions() {
     path: '/api/user',
     maxAge: REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   };
-  // Cross-origin (Vercel↔Railway): SameSite=None;Secure required. Do not set domain.
+  // Cross-origin (Vercel↔API domain): SameSite=None;Secure required. Do not set domain.
   return opts;
 }
 
@@ -228,7 +228,7 @@ class UserController {
   }
 
   /**
-   * Save avatar URL (file already uploaded to Supabase by frontend)
+   * Save avatar URL (file already uploaded to object storage by frontend or uploaded via backend)
    */
   async uploadAvatar(req, res) {
     try {

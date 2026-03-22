@@ -61,7 +61,7 @@ function initRealtime(httpServer) {
 
       if (!token) return next(new Error('Not authorized'));
 
-      const decoded = jwt.verify(token, process.env.SECRET_KEY);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || process.env.SECRET_KEY);
       socket.data.user = decoded;
       return next();
     } catch (e) {

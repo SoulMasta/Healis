@@ -37,7 +37,7 @@ export async function deleteElement(elementId) {
 }
 
 /**
- * Upload a file to Supabase and save the URL to the backend
+ * Upload a file to object storage (Yandex) and save the URL to the backend
  * @param {string} deskId - Desk ID
  * @param {File} file - File to upload
  * @param {Object} options - Upload options
@@ -47,7 +47,7 @@ export async function deleteElement(elementId) {
 export async function uploadFileToDesk(deskId, file, options = {}) {
   const { onProgress } = options;
 
-  // Upload to Supabase Storage
+  // Upload to object storage (Yandex)
   const uploaded = await uploadFile(file, {
     folder: `desks/${deskId}`,
     onProgress,

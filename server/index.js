@@ -1,7 +1,7 @@
-// Earliest possible log (stderr, no buffer) so Railway shows something if process starts
+// Earliest possible log (stderr, no buffer) so deployers show something if process starts
 process.stderr.write('[BOOT] index.js loading\n');
 
-// .env only locally; production uses Railway env vars (do not overwrite process.env).
+// .env only locally; production uses environment variables from the deployment (do not overwrite process.env).
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }
@@ -58,7 +58,7 @@ function makeInviteCode(len = 10) {
   return out;
 }
 
-// If deployed behind a proxy (Railway/Nginx), this enables correct req.ip / secure cookies.
+// If deployed behind a proxy (e.g. Nginx on Yandex VM), this enables correct req.ip / secure cookies.
 app.set('trust proxy', 1);
 
 // ——— 1. Global logger: all incoming requests ———
@@ -70,7 +70,8 @@ app.set('trust proxy', 1);
 // Middleware order: cors → OPTIONS short-circuit → express.json → cookieParser → routes → errorHandler (last).
 // CORS: must be first, before any routes. credentials:true requires explicit origin (no wildcard).
 const isDev = process.env.NODE_ENV !== 'production';
-const isLocalRun = !process.env.RAILWAY_ENVIRONMENT; // Railway sets this; locally it's absent
+// Consider local run when no deploy marker env var is present. Support previous RAILWAY_ENVIRONMENT for backward compatibility.
+const isLocalRun = !(process.env.DEPLOY_ENV || process.env.YC_ENV || process.env.RAILWAY_ENVIRONMENT);
 const allowedOrigins = [
   'https://healis111.vercel.app',
   // healis + healis111 and their previews (e.g. healis-xxx, healis111-xxx.vercel.app)
@@ -121,7 +122,7 @@ app.get('/api/debug', (req, res) => {
   });
 });
 
-// Liveness: 200 immediately, no DB. Use this as Railway health check path so proxy stops returning 502.
+// Liveness: 200 immediately, no DB. Use this as a lightweight deployment health check path so external proxy stops returning 502.
 app.get('/api/health/live', (req, res) => {
   res.status(200).json({ ok: true });
 });
@@ -176,13 +177,12 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/library', libraryRoutes);
 app.use('/api/storage', storageRoutes);
 
-// Note: File uploads are now handled by Supabase Storage
-// Old /uploads static serving removed - all files served from Supabase public URLs
+// Note: File uploads are now handled by Yandex Object Storage (via services/storageService.js)
+// Old /uploads static serving removed - files are served from object storage public/signed URLs
 
 // Root -> Home
-// Railway health check uses Host: healthcheck.railway.app and expects 200 (302 = fail → 502)
+// Some deployment platforms perform health checks by Host header. Respond 200 to unknown healthcheck host patterns as needed.
 app.get('/', (req, res) => {
-  if (req.get('host') === 'healthcheck.railway.app') return res.status(200).json({ ok: true });
   res.redirect('/home');
 });
 

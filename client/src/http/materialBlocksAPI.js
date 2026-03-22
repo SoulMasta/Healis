@@ -69,7 +69,7 @@ function delay(ms) {
 }
 
 /**
- * Upload a file to Supabase and save the URL to a material card (with retries for mobile reliability).
+ * Upload a file to object storage (Yandex) and save the URL to a material card (with retries for mobile reliability).
  * @param {string} cardId - Material card ID
  * @param {File} file - File to upload
  * @param {Object} options - Upload options

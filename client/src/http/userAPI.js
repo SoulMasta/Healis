@@ -206,7 +206,7 @@ export async function updateProfile(payload) {
 }
 
 /**
- * Upload an avatar to Supabase and save the URL to the backend
+ * Upload an avatar to object storage (Yandex) and save the URL to the backend
  * @param {File} file - Avatar image file
  * @param {Object} options - Upload options
  * @param {function} options.onProgress - Progress callback (0-100)
@@ -215,7 +215,7 @@ export async function updateProfile(payload) {
 export async function uploadAvatar(file, options = {}) {
   const { onProgress } = options;
 
-  // Upload to Supabase Storage
+  // Upload to object storage (Yandex)
   const uploaded = await uploadFile(file, {
     folder: 'avatars',
     onProgress,
