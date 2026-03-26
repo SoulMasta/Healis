@@ -110,6 +110,26 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   next();
 });
+// Ensure CORS headers are set even if a proxy or intermediary altered the request.
+// This acts as a robust fallback to guarantee Access-Control-* headers on preflight.
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  const allowed = allowedOrigins.find((o) => (typeof o === 'string' ? o === origin : o.test(origin)));
+  if (allowed) return true;
+  if (envOrigins.includes(origin)) return true;
+  return false;
+}
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && isOriginAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-device-id');
+    res.setHeader('Vary', 'Origin');
+  }
+  next();
+});
 app.use(express.json());
 app.use(cookieParser());
 
@@ -300,7 +320,7 @@ async function start() {
             where: { name, faculty: 'Лечебное дело', course: 2 },
             defaults: { name, faculty: 'Лечебное дело', course: 2 },
           });
-A        } catch {
+        } catch {
           // ignore individual failures
         }
       }

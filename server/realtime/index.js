@@ -43,8 +43,23 @@ function initRealtime(httpServer) {
   const io = new Server(httpServer, {
     path: '/api/socket.io',
     cors: {
-      origin: true,
+      // Use a function to validate origin similar to HTTP CORS rules.
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        const allowedOrigins = [
+          'https://healis111.vercel.app',
+          /^https:\/\/(healis|healis111)(-[\w\-.]+)?\.vercel\.app$/,
+          ...(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || process.env.CLIENT_URL
+            ? [ ...(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || process.env.CLIENT_URL).split(',').map(s=>s.trim()).filter(Boolean) ]
+            : []),
+        ].flat();
+        const ok = allowedOrigins.find((o) => (typeof o === 'string' ? o === origin : o.test(origin)));
+        if (ok) return callback(null, origin);
+        return callback(new Error('Origin not allowed'));
+      },
       credentials: true,
+      methods: ['GET', 'POST'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-device-id'],
     },
   });
 
